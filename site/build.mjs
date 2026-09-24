@@ -46,7 +46,8 @@ const page = (name) => readFileSync(join(here, 'src', name), 'utf8')
   .replace('<!--MARK-->', symbol)
   .replaceAll('<!--RING-->', ring())
   .replaceAll('{{SITE}}', SITE)
-  .replaceAll('{{REPO}}', REPO);
+  .replaceAll('{{REPO}}', REPO)
+  .replaceAll('{{VERSION}}', version);
 
 if (process.argv.includes('--og')) {
   const out = join(tmpdir(), 'angelia-og');
@@ -64,6 +65,10 @@ rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 const html = page('index.html');
 writeFileSync(join(out, 'index.html'), html);
+writeFileSync(join(out, '404.html'), page('404.html'));
+writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SITE}/sitemap.xml\n`);
+writeFileSync(join(out, 'sitemap.xml'),
+  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc></url></urlset>\n`);
 copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
@@ -75,7 +80,8 @@ writeFileSync(join(out, '_headers'), [
   '/*',
   '  X-Content-Type-Options: nosniff',
   '  Referrer-Policy: strict-origin-when-cross-origin',
-  "  Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'",
+  // Cloudflare Web Analytics (cookieless) injects its beacon script and posts to cloudflareinsights.com.
+  "  Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; img-src 'self' data:; frame-ancestors 'none'",
   '/fonts/*',
   '  Cache-Control: public, max-age=2592000',
   '',

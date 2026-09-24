@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Not found · Angelia</title>
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+/* Served for any path that has no file, so every URL here is absolute. */
+@font-face{font-family:'IBM Plex Mono';font-weight:400;font-display:swap;src:url(/fonts/plex-mono-400.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Mono';font-weight:600;font-display:swap;src:url(/fonts/plex-mono-600.woff2) format('woff2')}
+:root{--bg:#F4EEE6;--fg:#1A120D;--soft:#6E5D50;--accent:#A8474B;--disc:#D06B6B;--figure:#1A120D}
+@media (prefers-color-scheme: dark){:root{--bg:#15100C;--fg:#F1E4D4;--soft:#AE9A88;--accent:#ECA3A3;--disc:transparent;--figure:#D06B6B}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:400 16px/1.6 "IBM Plex Mono",ui-monospace,monospace;text-align:center;padding:24px 16px}
+.tondo{position:relative;width:170px;height:170px;margin:0 auto 30px}
+.tondo::before{content:"";position:absolute;inset:1%;border-radius:50%;background:var(--disc)}
+.tondo svg.ring{position:absolute;inset:0;width:100%;height:100%;color:var(--figure)}
+.tondo svg.fig{position:absolute;inset:17%;width:66%;height:66%;color:var(--figure)}
+h1{font-weight:600;font-size:clamp(26px,5vw,38px);letter-spacing:-.03em;line-height:1.15;margin:0 0 14px}
+h1 span{font-weight:400;color:var(--accent)}
+p{color:var(--soft);margin:0 0 26px}
+a{display:inline-block;padding:11px 20px;border-radius:999px;background:var(--disc);color:#1A120D;text-decoration:none;font-weight:600}
+@media (prefers-color-scheme: dark){a{background:#D06B6B}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><!--MARK--></svg>
+<main>
+  <div class="tondo" aria-hidden="true">
+    <svg class="ring" viewBox="0 0 400 400"><!--RING--></svg>
+    <svg class="fig"><use href="#mark"/></svg>
+  </div>
+  <h1>This message went astray. <span>Nothing is here.</span></h1>
+  <p>The page you asked for does not exist.</p>
+  <a href="/">Back to Angelia</a>
+</main>
+</body>
+</html>
