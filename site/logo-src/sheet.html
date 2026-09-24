@@ -1,0 +1,11 @@
+<html><body style="margin:0;display:flex;gap:24px;padding:24px;background:#eee;font-family:sans-serif;flex-wrap:wrap">
+<script>
+const f=location.hash.slice(1)||'mark1.svg';
+fetch(f+"?"+Date.now()).then(r=>r.text()).then(s=>{
+ for(const [bg,fg] of [['#C8602E','#1a120d'],['#F4EEE6','#1a120d'],['#15100c','#D97A45']]){
+  for(const sz of [360,96,32,16]){
+   const d=document.createElement('div');d.style.cssText=`background:${bg};color:${fg};padding:12px;display:flex;align-items:center`;
+   d.innerHTML=s.replace('<svg',`<svg width="${sz}" height="${sz}"`);document.body.appendChild(d);
+  }}
+});
+</script></body></html>

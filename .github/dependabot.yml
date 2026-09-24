@@ -1,0 +1,10 @@
+# Weekly pull requests for npm dependencies and for the pinned actions in the workflow.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }

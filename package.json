@@ -1,0 +1,56 @@
+{
+  "name": "angelia-gateway",
+  "version": "0.1.0",
+  "description": "Turn the coding agent CLI you already know into the brain of your personal assistants, on WhatsApp and Telegram. One chat, one folder, one session.",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/korengast/angelia.git" },
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "angelia": "dist/cli/cli.js"
+  },
+  "_files": "Everything an installed copy needs, and nothing else. Without this list npm ships the whole tree - src, tests, docs, plan.md - and `dist/` is only included because no list and no .npmignore exist, so the first .npmignore anyone adds silently removes the very files `bin` points at. Source maps are left out on purpose: they point into `src/`, which an installed copy does not have.",
+  "files": [
+    "dist/",
+    "!dist/**/*.map",
+    "scripts/",
+    "prompts/",
+    "capabilities/",
+    "vendor/",
+    "install.sh",
+    "routing.example.yaml",
+    "allowed_signers",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc && node tools/stamp.mjs",
+    "_prepare": "Runs after a bare `npm install`, after `npm link`, and when this package is installed straight from git. Without it dist/ does not exist and the `angelia` command points at nothing.",
+    "prepare": "tsc && node tools/stamp.mjs",
+    "typecheck": "tsc --noEmit",
+    "_test": "The slow group (a real pack and a global install into an empty prefix) gets its own limit: node applies --test-timeout to the file as a whole, and a cold machine needs minutes for it.",
+    "test": "tsc --noEmit && node --test --import tsx --test-timeout=20000 tests/*.test.ts tests/voice/*.test.ts && node --test --import tsx --test-timeout=600000 tests/slow/*.test.ts",
+    "dev": "tsx src/cli/cli.ts"
+  },
+  "_bundleDependencies": "All of them: the tarball carries every runtime dependency at the version package-lock.json locked, so an install resolves nothing from the registry on the day. npm ignores a shrinkwrap in a tarball installed by path (measured, npm 11.17), so a lock file alone would not do this. Baileys must be bundled anyway: it is a vendored build of a fork.",
+  "bundleDependencies": true,
+  "dependencies": {
+    "baileys": "file:vendor/baileys-7.0.0-rc14-4f263f0.tgz",
+    "grammy": "^1.46.0",
+    "pino": "^10.3.1",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "@types/qrcode": "^1.5.6",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  }
+}

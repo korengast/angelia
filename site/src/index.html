@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Angelia: your coding agent, your personal assistant</title>
+<meta name="description" content="Turn the coding agent CLI you already know into the brain of your personal assistant, on WhatsApp and Telegram. Runs on your machine. Open source, MIT.">
+<link rel="canonical" href="{{SITE}}/">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#F4EEE6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15100C" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Angelia">
+<meta property="og:url" content="{{SITE}}/">
+<meta property="og:title" content="Angelia: your coding agent, your personal assistant">
+<meta property="og:description" content="The coding agent CLI you already trust becomes the brain of your personal assistant, on WhatsApp and Telegram. Runs on your machine. Open source.">
+<meta property="og:image" content="{{SITE}}/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Angelia. Your coding agent. Your personal assistant.">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+/* Served from this site, latin only: no visitor's address goes to a font host. SIL OFL 1.1, see fonts/. */
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;src:url(fonts/plex-mono-400.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Mono';font-style:italic;font-weight:400;font-display:swap;src:url(fonts/plex-mono-400-italic.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;src:url(fonts/plex-mono-500.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:600;font-display:swap;src:url(fonts/plex-mono-600.woff2) format('woff2')}
+@font-face{font-family:'Italiana';font-style:normal;font-weight:400;font-display:swap;src:url(fonts/italiana-400.woff2) format('woff2')}
+:root{
+  --clay:#D06B6B; --clay-deep:#A8474B; --clay-soft:#ECA3A3;
+  --ink:#1A120D; --ink-2:#2A1F18;
+  --paper:#F4EEE6; --paper-2:#EAE0D3; --line:#D8CBBB;
+  --muted:#6E5D50;
+  /* cream page; the cup is a black-figure disc: dark figure on clay */
+  --ground:var(--paper); --figure:var(--ink); --on-ground:var(--ink); --on-ground-soft:var(--muted);
+  --disc:var(--clay); --road:var(--clay); --btn:var(--clay); --btn-fg:var(--ink);
+  --bg:var(--paper); --bg-2:var(--paper-2); --fg:var(--ink); --fg-soft:var(--muted); --rule:var(--line);
+  --accent:var(--clay-deep);
+  --code-bg:var(--ink); --code-fg:#F1E4D4; --code-dim:#A89280; --code-key:#F0AAAA;
+}
+/* dark mode is a red-figure cup: clay figures on black */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#15100C; --figure:var(--clay); --on-ground:#F1E4D4; --on-ground-soft:#BFA893; --disc:transparent; --road:var(--clay); --btn:var(--clay); --btn-fg:#15100C;
+    --bg:#15100C; --bg-2:#1E1712; --fg:#F1E4D4; --fg-soft:#AE9A88; --rule:#3A2D24;
+    --accent:var(--clay-soft); --code-bg:#0E0A08;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#15100C; --figure:var(--clay); --on-ground:#F1E4D4; --on-ground-soft:#BFA893; --disc:transparent; --road:var(--clay); --btn:var(--clay); --btn-fg:#15100C;
+  --bg:#15100C; --bg-2:#1E1712; --fg:#F1E4D4; --fg-soft:#AE9A88; --rule:#3A2D24;
+  --accent:var(--clay-soft); --code-bg:#0E0A08;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:400 15.5px/1.65 "IBM Plex Mono",ui-monospace,monospace;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+code,pre,.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.wrap{max-width:1160px;margin:0 auto;padding:0 28px}
+.hero .wrap>*,.how .grid>*,.install code{min-width:0}
+html,body{overflow-x:clip}
+.serif{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600}
+
+/* header */
+header{background:var(--ground);color:var(--on-ground)}
+.nav{display:flex;align-items:center;justify-content:space-between;height:76px}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none}
+.brand svg{width:40px;height:40px;color:var(--figure)}
+.brand span{font-family:Italiana,serif;font-size:30px;letter-spacing:.02em;line-height:1}
+.nav ul{display:flex;gap:30px;list-style:none;margin:0;padding:0;font-size:15px}
+.nav a{text-decoration:none;opacity:.85}.nav a:hover{opacity:1;text-decoration:underline;text-underline-offset:4px}
+
+/* hero */
+.hero{background:var(--ground);color:var(--on-ground);padding:40px 0 88px}
+.hero .wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:56px;align-items:center}
+.eyebrow{font:500 12px/1 "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--on-ground-soft)}
+h1{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:clamp(34px,4.6vw,60px);line-height:1.04;letter-spacing:-.035em;margin:22px 0 26px}
+h1 em,h2 em{font-style:normal;font-weight:400}
+h1 em{display:block;color:var(--accent)}
+.rot{display:inline-grid;vertical-align:bottom;overflow:hidden;height:1.04em}
+.rot span{grid-area:1/1;animation:rot 6s infinite}
+.rot span+span{animation-delay:-3s}
+@keyframes rot{0%,42%{transform:translateY(0);opacity:1}50%{transform:translateY(-110%);opacity:0}50.01%,92%{transform:translateY(110%);opacity:0}100%{transform:translateY(0);opacity:1}}
+@media (prefers-reduced-motion:reduce){.rot span{animation:none}.rot span+span{display:none}}
+.lede{font-size:19px;max-width:34em;color:var(--on-ground);margin:0 0 32px}
+.install{background:var(--code-bg);color:var(--code-fg);border-radius:10px;padding:16px 16px 16px 20px;display:flex;align-items:center;gap:14px;max-width:620px}
+.install code{font-size:14px;white-space:nowrap;overflow-x:auto;flex:1;scrollbar-width:none}
+.install code::-webkit-scrollbar{display:none}
+.install .p{color:var(--code-dim);user-select:none}
+.copy{flex:none;background:transparent;border:1px solid #4A3A2E;color:var(--code-fg);border-radius:7px;padding:7px 12px;font:500 13px "IBM Plex Mono",monospace;cursor:pointer}
+.copy:hover{border-color:var(--code-key)}
+.ctas{display:flex;gap:12px;margin-top:18px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:999px;font-weight:500;font-size:15px;text-decoration:none;border:1.5px solid var(--on-ground)}
+.btn.solid{background:var(--btn);color:var(--btn-fg);border-color:var(--btn)}
+.fine{font-size:14px;color:var(--on-ground-soft);margin-top:22px}
+
+/* the cup: a tondo with a meander ring */
+.tondo{position:relative;aspect-ratio:1;width:100%;max-width:470px;justify-self:end}
+.tondo::before{content:"";position:absolute;inset:1%;border-radius:50%;background:var(--disc)}
+.tondo svg.ring{position:absolute;inset:0;width:100%;height:100%;color:var(--figure)}
+.tondo svg.fig{position:absolute;inset:17%;width:66%;height:66%;color:var(--figure)}
+
+/* meander band: the road */
+.road{height:26px;color:var(--road);background:var(--ground)}
+.road svg{display:block;width:100%;height:26px}
+
+section{padding:104px 0}
+.kicker{font:500 12px/1 "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0 0 18px}
+h2{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:clamp(28px,3.4vw,42px);line-height:1.1;letter-spacing:-.03em;margin:0 0 20px}
+
+.sub{color:var(--fg-soft);max-width:38em;margin:0}
+
+/* myth */
+.myth{text-align:center;padding:96px 0 40px}
+.myth blockquote{margin:0 auto;max-width:860px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:clamp(19px,2.1vw,25px);line-height:1.5;font-weight:400;letter-spacing:-.01em}
+.myth blockquote em{color:var(--accent);font-style:normal}
+.myth p{color:var(--fg-soft);margin:26px 0 0;font-size:16px}
+.greek{font-weight:600}
+
+/* two outcomes */
+.two{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:48px}
+.card{border-top:1.5px solid var(--fg);padding-top:26px}
+.card .n{font-family:"IBM Plex Mono",monospace;font-size:14px;font-weight:500;color:var(--accent)}
+.card h3{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:22px;line-height:1.25;letter-spacing:-.02em;margin:8px 0 14px}
+.card p{margin:0;color:var(--fg-soft)}
+
+/* how it works */
+.how{background:var(--bg-2)}
+.how .grid{display:grid;grid-template-columns:420px 1fr;gap:64px;align-items:start;margin-top:52px}
+.phone{background:var(--bg);border:1px solid var(--rule);border-radius:28px;padding:18px 16px 22px;box-shadow:0 30px 60px -30px rgba(40,20,10,.35)}
+.phone .top{display:flex;align-items:center;gap:10px;padding:4px 6px 14px;border-bottom:1px solid var(--rule);margin-bottom:14px}
+.phone .top svg{width:34px;height:34px;color:var(--ground);background:var(--figure);border-radius:50%;padding:4px}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .phone .top svg{color:var(--clay);background:#2A1F18}}
+:root[data-theme="dark"] .phone .top svg{color:var(--clay);background:#2A1F18}
+.phone .top b{font-weight:600;font-size:15px;display:block}
+.phone .top small{color:var(--fg-soft);font-size:12px}
+.msg{max-width:84%;padding:9px 13px;border-radius:16px;font-size:14.5px;line-height:1.45;margin:7px 0}
+.me{margin-left:auto;background:var(--ink);color:#F1E4D4;border-bottom-right-radius:5px}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .me{background:var(--clay);color:var(--ink)}}
+:root[data-theme="dark"] .me{background:var(--clay);color:var(--ink)}
+.bot{background:var(--bg-2);border:1px solid var(--rule);border-bottom-left-radius:5px}
+.bot.dim{background:transparent;border-style:dashed;color:var(--fg-soft);font-size:13px}
+.bot code{font-size:12.5px}
+.steps{display:grid;gap:0}
+.step{display:grid;grid-template-columns:54px 1fr;gap:10px;padding:22px 0;border-bottom:1px solid var(--rule)}
+.step:first-child{padding-top:0}
+.step .k{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:24px;line-height:1;color:var(--accent)}
+.step h3{margin:0 0 6px;font-size:19px;font-weight:600}
+.step p{margin:0;color:var(--fg-soft)}
+pre.yaml{background:var(--code-bg);color:var(--code-fg);border-radius:12px;padding:20px 22px;font-size:12px;line-height:1.7;overflow-x:auto;margin:28px 0 0}
+pre.yaml .c{color:var(--code-dim)} pre.yaml .k{color:var(--code-key)}
+
+/* features */
+.feat{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-top:52px;border-top:1px solid var(--rule);border-left:1px solid var(--rule)}
+.feat div{padding:26px 22px 28px;border-right:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.feat h3{font-size:17px;font-weight:600;margin:0 0 8px}
+.feat p{margin:0;font-size:15px;color:var(--fg-soft);line-height:1.5}
+
+/* not an agent */
+.not{background:var(--ink);color:#F1E4D4}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .not{background:#0E0A08}}
+:root[data-theme="dark"] .not{background:#0E0A08}
+.not .kicker{color:var(--clay-soft)}
+.not .sub{color:#BFA893}
+.not ul{list-style:none;padding:0;margin:44px 0 0;display:grid;grid-template-columns:repeat(3,1fr);gap:0 36px}
+.not li{padding:18px 0;border-top:1px solid #3A2D24;font-size:16px}
+.not li b{display:block;font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:18px;color:var(--clay-soft);margin-bottom:2px}
+
+/* backends */
+table{width:100%;border-collapse:collapse;margin-top:40px;font-size:16px}
+th,td{text-align:left;padding:16px 12px 16px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font:500 12px "IBM Plex Mono",monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-soft)}
+td code{font-size:14px}
+.tag{display:inline-block;font:500 12px "IBM Plex Mono",monospace;padding:3px 9px;border-radius:999px;border:1px solid currentColor}
+.tag.on{color:var(--accent)} .tag.off{color:var(--fg-soft)}
+
+/* closing cup */
+.close{background:var(--ground);color:var(--on-ground);text-align:center;padding:96px 0 104px}
+.close .tondo{margin:0 auto 34px;max-width:170px;justify-self:center}
+.close h2{margin-bottom:28px}
+.close .install{margin:0 auto;text-align:left}
+.fine.key{font-size:13px;overflow-wrap:anywhere}
+footer{background:var(--ground);color:var(--on-ground-soft);font-size:14px}
+footer .wrap{display:flex;justify-content:space-between;gap:20px;padding-top:26px;padding-bottom:30px;border-top:1px solid color-mix(in srgb,var(--on-ground) 25%,transparent);flex-wrap:wrap}
+footer a{text-decoration:none}
+
+@media (max-width:960px){
+  .hero .wrap,.how .grid{grid-template-columns:1fr}
+  .tondo{justify-self:center;max-width:360px;order:-1}
+  .feat{grid-template-columns:1fr 1fr}
+  .not ul{grid-template-columns:1fr 1fr}
+}
+@media (max-width:640px){
+  .wrap{padding:0 16px}
+  .nav ul li:not(:last-child){display:none}
+  .hero{padding:12px 0 64px}
+  .tondo{max-width:260px}
+  h1{margin-top:16px}
+  .lede{font-size:17px}
+  .eyebrow{letter-spacing:.08em;font-size:11px}
+  .two,.feat,.not ul{grid-template-columns:1fr}
+  section{padding:72px 0}
+  .install code{font-size:12.5px}
+  th:nth-child(3),td:nth-child(3){display:none}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!--MARK-->
+  <symbol id="meander" viewBox="0 0 20 20"><path d="M0 18 H20 M16 18 V2 H4 V14 H12 V6 H8 V10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"/></symbol>
+</svg>
+
+<header>
+  <nav class="wrap nav" aria-label="Main">
+    <a class="brand" href="#top" aria-label="Angelia home"><svg><use href="#mark"/></svg><span>Angelia</span></a>
+    <ul>
+      <li><a href="#how">How it works</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="https://github.com/{{REPO}}#readme">Docs</a></li>
+      <li><a href="https://github.com/{{REPO}}">GitHub</a></li>
+    </ul>
+  </nav>
+</header>
+
+<main id="top">
+<div class="hero">
+  <div class="wrap">
+    <div>
+      <div class="eyebrow">Open source · MIT · Runs on your machine</div>
+      <h1>Your coding agent. <em>Your personal assistant.</em></h1>
+      <p class="lede">Angelia turns the coding agent CLI you already know and trust into the brain of your personal assistant. It lives in your WhatsApp and Telegram, runs on your own machine, and works with your tools and your subscription.</p>
+      <div class="install"><code><span class="p">$ </span>curl -fsSL {{SITE}}/install | sh</code><button class="copy" data-copy="curl -fsSL {{SITE}}/install | sh">Copy</button></div>
+      <div class="ctas">
+        <a class="btn solid" href="https://github.com/{{REPO}}#quick-start">Quick start</a>
+        <a class="btn" href="https://github.com/{{REPO}}">View on GitHub</a>
+      </div>
+      <p class="fine">Alpha · macOS · Open source</p>
+    </div>
+    <div class="tondo" aria-hidden="true">
+      <svg class="ring" viewBox="0 0 400 400"><!--RING--></svg>
+      <svg class="fig"><use href="#mark"/></svg>
+    </div>
+  </div>
+</div>
+<div class="road" aria-hidden="true"><svg><defs><pattern id="mp" width="26" height="26" patternUnits="userSpaceOnUse"><use href="#meander" width="26" height="26"/></pattern></defs><rect width="100%" height="26" fill="url(#mp)"/></svg></div>
+
+<section class="myth">
+  <div class="wrap">
+    <blockquote>In Greek myth, Hermes carried the words of the gods. His daughter <span class="greek">Angelia</span> carried only the message: not the wisdom, not the decision. <em>Just the promise that what is said in one place arrives whole in another.</em></blockquote>
+    <p>That is the whole job.</p>
+  </div>
+</section>
+
+<section style="padding-top:56px">
+  <div class="wrap">
+    <p class="kicker">Why</p>
+    <h2>Two ways <em>people use it.</em></h2>
+    <div class="two">
+      <div class="card">
+        <div class="n">01</div>
+        <h3>Turn it into a personal assistant.</h3>
+        <p>Give each part of your life its own chat and its own folder: family, money, a side project. Each one gets its own instructions and memory. All on the subscription you already pay for.</p>
+      </div>
+      <div class="card">
+        <div class="n">02</div>
+        <h3>Keep working away from the desk.</h3>
+        <p>Ask why the build failed from the train. Approve the fix from the couch. The agent works on your machine with everything you set up. You just talk to it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="how" id="how">
+  <div class="wrap">
+    <p class="kicker">How it works</p>
+    <h2>One chat, <em>one folder.</em></h2>
+    <p class="sub">Every chat gets its own folder and its own session. One YAML file says which is which, and the setup wizard writes it for you.</p>
+    <div class="grid">
+      <div class="phone" aria-label="Example chat">
+        <div class="top"><svg><use href="#mark"/></svg><div><b>side-project</b><small>you, Angelia</small></div></div>
+        <div class="msg me">Why did last night's build fail?</div>
+        <div class="msg bot">The date parser test fails on the day the clocks change. The fix is one line in <code>src/date.ts</code>. Apply it?</div>
+        <div class="msg me">Yes, and run the tests</div>
+        <div class="msg bot dim">🔐 Bash: <code>npm test</code><br>reply <code>yes 6b480a6f</code> or <code>no 6b480a6f</code></div>
+        <div class="msg me">yes 6b480a6f</div>
+        <div class="msg bot">38 tests green. Pushed to <code>fix/dst</code>.</div>
+      </div>
+      <div>
+        <div class="steps">
+          <div class="step"><div class="k">α</div><div><h3>Install and pair.</h3><p>Run the installer, pick your CLI, send the bot a message. That chat is now connected.</p></div></div>
+          <div class="step"><div class="k">β</div><div><h3>Point it at a folder.</h3><p>The agent opens in that folder and uses what it finds there: instructions, settings, MCP servers. Exactly like in your terminal.</p></div></div>
+          <div class="step"><div class="k">γ</div><div><h3>Talk to it.</h3><p>Text, voice notes, photos, files. Before anything risky, the agent asks you in the chat.</p></div></div>
+        </div>
+<pre class="yaml"><span class="k">profiles:</span>
+  coding:   { cwd: ~/agents/coding, permission_mode: acceptEdits, shell: true }
+  family:   { cwd: ~/agents/family, permission_mode: acceptEdits }
+  research: { cwd: ~/agents/research, effort: high }
+
+<span class="k">routes:</span>
+  - { platform: telegram, chat: 111111111,      profile: coding }
+  - { platform: whatsapp, chat: "1203…@g.us",   profile: family, owners: ["1555…"] }
+  - { platform: telegram, chat: 222222222,      profile: research }
+<span class="c"># angelia init writes the first route. With onboarding on, a new chat adds its own.</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <p class="kicker">What it does today</p>
+    <h2>Built for chat, <em>not a terminal.</em></h2>
+    <div class="feat">
+      <div><h3>Every chat remembers</h3><p>Each chat keeps its own session, even after a restart. <code>/new</code> starts fresh.</p></div>
+      <div><h3>Quiet in groups</h3><p>It answers only when mentioned, and only to people you allow. Strangers get nothing.</p></div>
+      <div><h3>You approve risky steps</h3><p>Before a risky command, the chat asks. You reply yes or no. No reply means no.</p></div>
+      <div><h3>Voice notes and files</h3><p>Send a voice note, a photo or a PDF. The agent can answer with a voice note too.</p></div>
+      <div><h3>New group, new assistant</h3><p>Turn onboarding on, then mention the bot in a new group. It sets up its own folder and asks what the group is for.</p></div>
+      <div><h3>Scheduled check-ins</h3><p>A morning summary, a weekly report. Your OS runs the schedule; the answer lands in the chat.</p></div>
+      <div><h3>Scriptable</h3><p><code>angelia send</code> posts to any of your chats from a script. <code>angelia turn</code> asks the agent.</p></div>
+      <div><h3>No surprise bills</h3><p>API keys are kept out of the agent's environment, so no chat can switch it to a per-token bill.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="not">
+  <div class="wrap">
+    <p class="kicker">By design</p>
+    <h2>Not another <em>AI assistant.</em></h2>
+    <p class="sub">Other assistants ask you to learn a new agent, with its own model, skills and memory. Angelia does not add a brain. It gives the one you already know a phone, a schedule and a place for each part of your life.</p>
+    <ul>
+      <li><b>No second model.</b>Angelia runs no AI of its own. Not even for speech.</li>
+      <li><b>No middleman.</b>Your machine, your chat app, your CLI's own provider. No Angelia server, no telemetry.</li>
+      <li><b>No new bill.</b>Your CLI, your account, your subscription.</li>
+      <li><b>Nothing to relearn.</b>Skills, MCP servers and memory stay in your CLI.</li>
+      <li><b>Plain files.</b>One YAML file. The wizard only writes what you could write by hand.</li>
+      <li><b>Open source.</b>MIT license. Read every line.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="kicker">Backends</p>
+    <h2>Works with <em>the CLI you use.</em></h2>
+    <p class="sub">Supported today: Claude Code and Grok Build. Coming soon: Codex, pi and OpenCode. Every CLI plugs into the same interface.</p>
+    <table>
+      <thead><tr><th>CLI</th><th>Status</th><th>Speed</th></tr></thead>
+      <tbody>
+        <tr><td><b>Claude Code</b><br><code>backend: claude-code</code></td><td><span class="tag on">today</span></td><td>One warm process per chat. One to two seconds a turn.</td></tr>
+        <tr><td><b>Grok Build</b><br><code>backend: grok</code></td><td><span class="tag on">today</span></td><td>One warm process per chat. Three to six seconds a turn.</td></tr>
+        <tr><td><b>Codex, pi, OpenCode</b></td><td><span class="tag off">coming soon</span></td><td>Same interface.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<div class="road" aria-hidden="true"><svg><rect width="100%" height="26" fill="url(#mp)"/></svg></div>
+<section class="close">
+  <div class="wrap">
+    <div class="tondo" aria-hidden="true">
+      <svg class="ring" viewBox="0 0 400 400"><!--RING--></svg>
+      <svg class="fig"><use href="#mark"/></svg>
+    </div>
+    <h2>You already have the brain. <em>Give it a chat.</em></h2>
+    <div class="install"><code><span class="p">$ </span>curl -fsSL {{SITE}}/install | sh</code><button class="copy" data-copy="curl -fsSL {{SITE}}/install | sh">Copy</button></div>
+    <p class="fine key">Every release is signed. Key <code>SHA256:74hZgwt/ABiUQz6C9A1r7hpHZtCRq1KfC1KvvCR1ys0</code></p>
+  </div>
+</section>
+</main>
+<footer>
+  <div class="wrap">
+    <span><span class="greek">Ἀγγελία</span> · message, tidings</span>
+    <span><a href="https://github.com/{{REPO}}">GitHub</a> · <a href="https://github.com/{{REPO}}/blob/main/LICENSE">MIT license</a></span>
+  </div>
+</footer>
+<script>
+document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click',async()=>{
+  try{await navigator.clipboard.writeText(b.dataset.copy);b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1600)}catch(e){}
+}));
+</script>
+</body>
+</html>

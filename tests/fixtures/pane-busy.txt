@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.278
+▝▜██████▀  Haiku 4.5 · Claude Pro
+  ▝▝ ▝▝    /private/tmp/angelia-tui-perm · /rc
+
+
+❯ Use the Bash tool to run exactly: touch /Users/example/angelia-outside-probe.txt
+
+  /remote-control is active · Continue here, on your phone, or at https://claude.ai/code/session_01ExampleExampleExample0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+· Gitifying…
+                                                                                                                         tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 4.5·200k | fab:93%(2d11h)
+  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Angelia share card</title>
+<!-- The link preview: 1200x630. node site/build.mjs --og, then render it into site/static/og.png. -->
+<style>
+@font-face{font-family:'IBM Plex Mono';font-weight:400;src:url(fonts/plex-mono-400.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Mono';font-weight:500;src:url(fonts/plex-mono-500.woff2) format('woff2')}
+@font-face{font-family:'IBM Plex Mono';font-weight:600;src:url(fonts/plex-mono-600.woff2) format('woff2')}
+@font-face{font-family:'Italiana';font-weight:400;src:url(fonts/italiana-400.woff2) format('woff2')}
+html,body{margin:0}
+body{width:1200px;height:630px;overflow:hidden;background:#F4EEE6;color:#1A120D;font-family:"IBM Plex Mono",monospace;position:relative}
+.card{position:absolute;inset:0;display:grid;grid-template-columns:1fr 430px;align-items:center;gap:40px;padding:0 70px 0 80px}
+.brand{display:flex;align-items:center;gap:14px}
+.brand svg{width:54px;height:54px;color:#1A120D}
+.brand span{font-family:Italiana,serif;font-size:44px;letter-spacing:.02em;line-height:1}
+h1{font-weight:600;font-size:60px;line-height:1.06;letter-spacing:-.035em;margin:44px 0 30px}
+h1 em{display:block;font-style:normal;font-weight:400;color:#A8474B}
+.line{font-size:23px;color:#6E5D50;margin:0}
+.url{font-weight:500;font-size:22px;margin-top:40px;letter-spacing:.02em}
+.url b{color:#A8474B;font-weight:500}
+.tondo{position:relative;width:430px;height:430px}
+.tondo::before{content:"";position:absolute;inset:1%;border-radius:50%;background:#D06B6B}
+.tondo svg.ring{position:absolute;inset:0;width:100%;height:100%;color:#1A120D}
+.tondo svg.fig{position:absolute;inset:17%;width:66%;height:66%;color:#1A120D}
+.road{position:absolute;left:0;right:0;bottom:0;height:26px;color:#D06B6B}
+.road svg{display:block;width:100%;height:26px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!--MARK-->
+  <symbol id="meander" viewBox="0 0 20 20"><path d="M0 18 H20 M16 18 V2 H4 V14 H12 V6 H8 V10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"/></symbol>
+</svg>
+<div class="card">
+  <div>
+    <div class="brand"><svg><use href="#mark"/></svg><span>Angelia</span></div>
+    <h1>Your coding agent. <em>Your personal assistant.</em></h1>
+    <p class="line">On WhatsApp and Telegram. On your machine.</p>
+    <div class="url"><b>useangelia.com</b> · open source</div>
+  </div>
+  <div class="tondo">
+    <svg class="ring" viewBox="0 0 400 400"><!--RING--></svg>
+    <svg class="fig"><use href="#mark"/></svg>
+  </div>
+</div>
+<div class="road"><svg><defs><pattern id="mp" width="26" height="26" patternUnits="userSpaceOnUse"><use href="#meander" width="26" height="26"/></pattern></defs><rect width="100%" height="26" fill="url(#mp)"/></svg></div>
+</body>
+</html>

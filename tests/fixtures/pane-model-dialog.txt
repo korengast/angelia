@@ -1,0 +1,45 @@
+
+ ▐▛███▛█   Claude Code v2.1.280
+▝▜██████▀  Opus 5.5 with low effort · Claude Pro
+  ▝▝ ▝▝    /private/tmp/angelia-tui-model · /rc
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ○ low · /effort ▔
+   Select model
+   Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.
+
+     1. Default (recommended)  Opus 5.5 · Best for everyday, complex tasks
+   ❯ 2. Opus ✔                 Opus 5.5 · Best for everyday, complex tasks
+     3. Fable                  Fable 5.1 · Most capable for your hardest and longest-running tasks
+     4. Sonnet                 Sonnet 5 · Efficient for routine tasks
+     5. Haiku                  Haiku 4.5 · Fastest for quick answers
+
+   ○ Low effort ←/→ to adjust
+
+   Enter to set as default · s to use this session only · Esc to cancel

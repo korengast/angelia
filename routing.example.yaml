@@ -1,0 +1,31 @@
+# angelia — the whole product in one file. THIS IS THE EXAMPLE.
+# Your own table lives at ~/.angelia/workspace/routing.yaml and is never part of this repo:
+# it holds your chat ids, your directories and who may talk to your agent.
+# `angelia init` writes it for you. Copy from here only as a starting point.
+# A chat matches a route; a route names a profile; a profile is a directory
+# where your coding CLI already has its instructions file, settings and MCP.
+# backend: claude-code (default) | grok
+# bin: full path to the CLI, only if it is not on PATH, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin,
+#      ~/.bun/bin or ~/.npm-global/bin
+
+profiles:
+  family:  { cwd: ~/.angelia/workspace/profiles/family,  permission_mode: acceptEdits }
+  coding:  { cwd: ~/.angelia/workspace/profiles/coding,  permission_mode: bypassPermissions, add_dirs: [~/code], shell: true }  # shell: true enables /sh
+  side:    { cwd: ~/agents/side,    permission_mode: acceptEdits, model: sonnet, effort: low }
+  research: { cwd: ~/agents/research, backend: grok, permission_mode: acceptEdits }                # prompts relayed to the chat
+
+routes:
+  - { platform: whatsapp, chat: "120363000000000001@g.us", profile: family, mention: required, allow_from: ["15551234567", "15557654321"], owners: ["15551234567"] }   # owners approve tool prompts
+  - { platform: telegram, chat: 123456789,                 profile: coding }            # DM: mention n/a
+  - { platform: whatsapp, chat: "120363000000000002@g.us", profile: side,   mention: required, allow_from: ["15551234567"], owners: ["15551234567"] }
+  - { platform: telegram, chat: 987654321,                 profile: research }
+
+whatsapp: { auth_dir: ~/.angelia/wa }
+telegram: { token_env: TELEGRAM_BOT_TOKEN }
+defaults: { unmatched: drop, max_out_per_min: 10, idle_exit_minutes: 30 }
+
+# To let a new chat get its own agent when you write in it, set unmatched: onboard above and add:
+# onboard:
+#   owners: ["15551234567"]                          # only these senders start a new agent
+#   profile: { permission_mode: acceptEdits }        # what every new profile starts with
+#   mention: any
