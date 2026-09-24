@@ -1,0 +1,8 @@
+// The landing page, served by Cloudflare as a Worker with static assets and no script.
+// Cloudflare's build runs `node site/build.mjs` and then `npx wrangler deploy`, which uploads site/dist.
+// site/dist carries _headers and _redirects (/install -> the release's install.sh).
+{
+  "name": "angelia",
+  "compatibility_date": "2026-09-01",
+  "assets": { "directory": "./site/dist" }
+}
