@@ -44,7 +44,7 @@
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "yaml": "^2.9.1",
-    "zod": "^4.6.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",
