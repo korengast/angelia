@@ -1,6 +1,7 @@
 // Builds the landing page: inlines the mark as a <symbol> and draws the meander ring.
 // node site/build.mjs        ->  site/dist/, ready to upload as it is (Cloudflare Pages reads _redirects, _headers)
-// node site/build.mjs --og   ->  the share card as a page in the temp folder; render it at 1200x630 into static/og.png
+// node site/build.mjs --og   ->  the share card and the README banner as pages in the temp folder; render them
+//                                into static/og.png (1200x630) and static/banner.png (1280x400 at 2x)
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -52,8 +53,9 @@ if (process.argv.includes('--og')) {
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, 'og.html'), page('og.html'));
+  writeFileSync(join(out, 'banner.html'), page('banner.html'));
   cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
-  console.log(`${join(out, 'og.html')}: render at 1200x630 into site/static/og.png`);
+  console.log(`${out}: og.html at 1200x630 into site/static/og.png, banner.html at 1280x400 (2x) into site/static/banner.png`);
   process.exit(0);
 }
 
