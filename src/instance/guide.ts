@@ -87,7 +87,7 @@ profile. Profiles never read each other's folders: they ask, or share files in _
   allow_from: who may talk to the agent besides the owners: sender ids, or "*" for everyone in
           the chat (check-config warns). Empty, the default: the owners only. In a DM, the
           chat's own user.
-  owners: sender ids that may use /new /stop /resume /model /effort /sh /restart, send the CLI's own
+  owners: sender ids that may use /new /stop /resume /model /effort /backend /sh /restart, send the CLI's own
           slash commands, and answer permission prompts
 
 An unknown chat is dropped (defaults.unmatched), or with unmatched: onboard an owner's first message
@@ -230,7 +230,7 @@ was when installed: after editing the file, install again, or the timer refuses 
     get body() {
       return `${usageLines().join('\n')}
 
-In a chat the router itself answers /new /stop /resume /status /model /effort /sh /restart /help;
+In a chat the router itself answers /new /stop /resume /status /model /effort /backend /sh /restart /help;
 those never reach the agent. angelia restart from a terminal is owner only; in a chat the owner
 sends /restart.`;
     },

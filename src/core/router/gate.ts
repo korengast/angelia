@@ -38,4 +38,4 @@ export function isOwner(i: Pick<Inbound, 'sender' | 'isGroup'>, route: Route): b
  *
  * `/help` and `/status` stay open: they tell you what you are in, which is the thing a member needs.
  */
-export const OWNER_COMMANDS = new Set(['new', 'stop', 'resume', 'model', 'effort', 'sh', 'restart']);
+export const OWNER_COMMANDS = new Set(['new', 'stop', 'resume', 'model', 'effort', 'backend', 'sh', 'restart']);

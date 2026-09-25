@@ -3,7 +3,7 @@ import { workspaceDir } from '../instance/instance.js';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { loadConfig, configWarnings } from '../instance/config/load.js';
-import { cliWarnings, pathWithBins } from '../brain/index.js';
+import { cliWarnings, pathWithBins, type BackendName } from '../brain/index.js';
 import { scrubTmuxServer, sweepPanes, tmuxWarnings, tuiHookWarnings } from '../brain/tui.js';
 import { STRIP_ENV } from '../brain/argv.js';
 import { profileEnv, readEnvFile, SESSION_ENV, tableSecrets } from '../core/env.js';
@@ -17,6 +17,7 @@ import { selfPrompt, selfOverrideWarning, upsertSelfBlock, FILE_BACKENDS } from 
 import { blockText, floorWarnings, launchCheck, nestingWarnings, readRecord, seedGuards } from '../capabilities/compile.js';
 import { launchChatRestart, takeRestartNote } from './restart.js';
 import { onboardChat } from '../instance/onboard.js';
+import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
 import type { Inbound } from '../core/types.js';
 
 export const STATE_DIR = process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia');
@@ -107,7 +108,8 @@ export async function runDaemon(configPath: string): Promise<void> {
     }),
   };
   const onboard = (i: Inbound, chatName?: string) => onboardChat({ table, cfg, platform: i.platform, chat: i.chat, chatName, instance: STATE_DIR, self });
-  const orch = new Orchestrator(cfg, senders, { stateDir: STATE_DIR, log: logLine, selfPrompt: self, restart, onboard, transcripts: true, secrets, sessionToken: (key) => sessionToken(apiToken, key), launchGuard });
+  const switchBackend = (profile: string, backend: BackendName) => switchProfileBackend({ table, cfg, profile, backend, instance: STATE_DIR, self });
+  const orch = new Orchestrator(cfg, senders, { stateDir: STATE_DIR, log: logLine, selfPrompt: self, restart, onboard, switchBackend, transcripts: true, secrets, sessionToken: (key) => sessionToken(apiToken, key), launchGuard });
   // A tmux server outlives the daemon and keeps the environment it was started with. One started by an
   // older build still carries the bot token and hands it to every new pane: take the secrets out.
   if (Object.values(cfg.profiles).some((p) => p.tui)) {

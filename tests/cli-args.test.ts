@@ -68,3 +68,13 @@ test('the real CLI: workspace sync --help prints usage and exits 0 without synci
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /unknown flag --bogus/);
 });
+
+test('the real CLI: --version names the package version', () => {
+  const cli = join(import.meta.dirname, '..', 'src', 'cli', 'cli.ts');
+  const version = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')).version;
+  for (const arg of ['--version', '-v', 'version']) {
+    const r = spawnSync(process.execPath, ['--import', 'tsx', cli, arg], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`^angelia ${version.replace(/\./g, '\\.')}( \\(|\\n)`));
+  }
+});

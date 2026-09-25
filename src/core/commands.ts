@@ -3,18 +3,18 @@ import type { SessionMap } from './session/map.js';
 export type Command =
   | { name: 'new' } | { name: 'stop' } | { name: 'status' } | { name: 'help' } | { name: 'restart' }
   | { name: 'resume'; selector?: string }
-  | { name: 'model'; value?: string } | { name: 'effort'; value?: string }
+  | { name: 'model'; value?: string } | { name: 'effort'; value?: string } | { name: 'backend'; value?: string }
   | { name: 'sh'; script: string };
 
 /** Router-handled commands (0 Claude tokens). Anything else starting with "/" is passed to Claude as text. */
 export function parseCommand(text: string): Command | null {
   const sh = /^\/sh(?:@\w+)?(?:\s+|\n)([\s\S]+)$/i.exec(text.trim());
   if (sh) return { name: 'sh', script: sh[1].trim() };
-  const m = /^\/(new|stop|status|help|resume|model|effort|restart)(?:@\w+)?(?:\s+(\S+))?\s*$/i.exec(text.trim());
+  const m = /^\/(new|stop|status|help|resume|model|effort|backend|restart)(?:@\w+)?(?:\s+(\S+))?\s*$/i.exec(text.trim());
   if (!m) return null;
   const name = m[1].toLowerCase() as Exclude<Command['name'], 'sh'>;
   if (name === 'resume') return { name, selector: m[2] };
-  if (name === 'model' || name === 'effort') return { name, value: m[2] };
+  if (name === 'model' || name === 'effort' || name === 'backend') return { name, value: m[2] };
   return { name };
 }
 
@@ -24,8 +24,9 @@ export const COMMANDS: { command: string; args?: string; description: string }[]
   { command: 'stop', description: 'interrupt the current turn' },
   { command: 'status', description: 'active session, turns, last use' },
   { command: 'resume', args: '[N | id prefix]', description: 'list recent sessions, or switch to one' },
-  { command: 'model', args: '[name | default]', description: 'show or set the model for this session only' },
-  { command: 'effort', args: '[low..max | default]', description: 'show or set the effort for this session only' },
+  { command: 'model', args: '[name | default]', description: 'the model now and the ones to choose from; set it for this session only' },
+  { command: 'effort', args: '[level | default]', description: 'the effort now and the levels to choose from; set it for this session only' },
+  { command: 'backend', args: '[claude-code | grok | codex]', description: 'the CLI now and the ones installed; switch this profile to another (owner only)' },
   { command: 'sh', args: '<command>', description: 'run a shell command in the profile directory, no agent involved' },
   { command: 'restart', description: 'check the routing table, then restart Angelia (owner only)' },
   { command: 'help', description: 'this list' },

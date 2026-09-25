@@ -9,7 +9,7 @@
 </p>
 <p align="center">
   <a href="https://useangelia.com"><img src="https://img.shields.io/badge/Website-useangelia.com-D06B6B?style=for-the-badge" alt="Website"></a>
-  <a href="https://github.com/korengast/angelia/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/Release-v0.2.0%20signed-1A120D?style=for-the-badge" alt="Release v0.2.0, signed"></a>
+  <a href="https://github.com/korengast/angelia/releases/tag/v0.2.1"><img src="https://img.shields.io/badge/Release-v0.2.1%20signed-1A120D?style=for-the-badge" alt="Release v0.2.1, signed"></a>
   <a href="#backends"><img src="https://img.shields.io/badge/Platform-macOS-A8474B?style=for-the-badge&logo=apple&logoColor=white" alt="macOS"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
@@ -118,7 +118,8 @@ Answered by Angelia itself, without spending a token. Registered in Telegram's c
 | `/resume` | List past sessions and switch back to one |
 | `/stop` | Interrupt the current turn |
 | `/status` | The active session, its turns and last use |
-| `/model`, `/effort` | Change the model or effort for this session only |
+| `/model`, `/effort` | Alone: the one in use and the choices the CLI offers. With a value: set it for this session only |
+| `/backend` | Alone: the CLI in use and the ones installed. `/backend codex`: move this profile to another CLI, with a fresh session |
 | `/sh <command>` | Run a shell command in the profile folder, no agent (opt-in per profile) |
 | `/restart` | Check the routing table, then restart Angelia; it says "back up" when it is |
 | `/help` | The list |

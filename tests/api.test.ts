@@ -143,9 +143,9 @@ test('/model and /effort: session-only overrides reach the next spawn, /status s
   t.after(() => o.shutdown());
   const dm = (text: string): Inbound => ({ platform: 'telegram', chat: '1', sender: 'u1', text, isGroup: false, mentioned: false, media: [] });
   await o.handle(dm('/effort'));
-  assert.equal(sent.at(-1), 'effort for this session: (profile default: low)');
+  assert.equal(sent.at(-1), "Effort: low (profile a)\nLevels for Claude Code's default model: low, medium, high, xhigh, max\n\nSet for this session: /effort <level>. Back to the profile's: /effort default");
   await o.handle(dm('/effort turbo'));
-  assert.match(sent.at(-1)!, /effort is one of/);
+  assert.match(sent.at(-1)!, /^effort for Claude Code's default model is one of low, medium, high, xhigh, max, or default\.$/);
   await o.handle(dm('/model opus')); await o.handle(dm('/effort max'));
   await o.handle(dm('hi'));
   assert.match(sent.at(-1)!, /--model opus/); assert.match(sent.at(-1)!, /--effort max/);

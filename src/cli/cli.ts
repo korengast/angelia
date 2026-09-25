@@ -12,6 +12,8 @@ import { guideText } from '../instance/guide.js';
 import { profilesText, profilesJson, readSessions } from '../instance/profiles.js';
 import { checkArgs, usageLines } from './cli-args.js';
 import { parseSessionKey } from '../core/types.js';
+import { readFileSync } from 'node:fs';
+import { packageRoot, readBuild } from '../daemon/update.js';
 
 const [cmd, ...rest] = process.argv.slice(2);
 
@@ -30,6 +32,14 @@ try {
   switch (cmd) {
     case '--help': case '-h': case 'help':
       usage(0);
+    case '--version': case '-v': case 'version': {
+      // The package's version, and the commit and tag the build stamp names (none for a copy built by hand).
+      const root = packageRoot();
+      const b = readBuild(root);
+      const v = (JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version?: string }).version ?? '?';
+      console.log(`angelia ${v}${b?.commit ? ` (${b.commit.slice(0, 7)}${b.tag ? `, ${b.tag}` : ''}${b.dirty ? ', modified' : ''})` : ''}`);
+      break;
+    }
     case 'init':
       await initCommand();
       break;

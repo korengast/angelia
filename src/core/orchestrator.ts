@@ -17,6 +17,7 @@ import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
 import { failureLine, isLimitText, limitHint, UNMATCHED_LINE, NOT_OWNER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText } from './commands.js';
 import { runShell } from './shell.js';
+import { catalog as askCatalog, effortsFor, LABELS, type Catalog } from '../brain/catalog.js';
 import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
 import { API_SOCKET } from '../instance/instance.js';
@@ -55,7 +56,16 @@ export interface OrchestratorOptions {
   /** defaults.unmatched: onboard. Makes the profile and route for a new chat, adds them to the live
    *  config, and returns the new profile's name and the prompt for its first turn (onboard.ts). */
   onboard?: (i: Inbound, chatName?: string) => { name: string; prompt: string; git?: Promise<string> };
+  /** /backend: moves a profile to another CLI in the table, compiled, and in the live config (switch-backend.ts). */
+  switchBackend?: (profile: string, backend: BackendName) => { removed: string[]; notes: string[] };
+  /** What a backend offers for /model and /effort (catalog.ts); a test passes its own. */
+  catalog?: (backend: BackendName, bin: string | undefined, env: NodeJS.ProcessEnv) => Promise<Catalog>;
 }
+
+/** The backends /backend offers. pi is built but not released (load.ts). */
+const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex'];
+/** How long a CLI's model list is reused before it is asked again. */
+const CATALOG_MS = 10 * 60_000;
 
 const DROP_LOG_MS = 10 * 60_000;
 /** Messages that may wait behind a chat's running turn. Past it, the chat is told once, and the rest dropped. */
@@ -88,6 +98,7 @@ export class Orchestrator {
    *  that was running at the time sees its era go stale, and knows the failure it is about to
    *  report was the user pulling the plug rather than the agent crashing. */
   private era = new Map<string, number>();
+  private catalogs = new Map<string, { at: number; c: Catalog }>();
   private log: (line: string) => void;
 
   constructor(private readonly cfg: Config, private readonly senders: Partial<Record<Platform, Sender>>, private readonly opts: OrchestratorOptions = {}) {
@@ -175,15 +186,9 @@ export class Orchestrator {
         await this.dropBrain(key);
         return this.reply(i, 'Stopped.');
       }
-      case 'model': case 'effort': {
-        const row = this.map.ensureActive(key);
-        if (!cmd.value) return this.reply(i, `${cmd.name} for this session: ${row[cmd.name] ?? `(profile default${this.profileDefault(profileName, cmd.name)})`}`);
-        const clear = /^(default|reset|none)$/i.test(cmd.value);
-        if (cmd.name === 'effort' && !clear && !['low', 'medium', 'high', 'xhigh', 'max'].includes(cmd.value.toLowerCase())) return this.reply(i, 'effort is one of low, medium, high, xhigh, max, or default.');
-        this.map.setOverride(key, { [cmd.name]: clear ? null : (cmd.name === 'effort' ? cmd.value.toLowerCase() : cmd.value) });
-        await this.dropBrain(key); // the next message respawns with the override; the session id is kept
-        return this.reply(i, clear ? `${cmd.name} back to the profile default.` : `${cmd.name} set to ${cmd.value} for this session.`);
-      }
+      case 'model': return this.modelCommand(i, key, profileName, cmd.value);
+      case 'effort': return this.effortCommand(i, key, profileName, cmd.value);
+      case 'backend': return this.backendCommand(i, key, profileName, cmd.value);
       case 'resume': {
         if (!cmd.selector) return this.reply(i, resumeListText(this.map, key));
         await this.dropBrain(key);
@@ -223,9 +228,101 @@ export class Orchestrator {
     return this.turn(i, key, made.name, { preface: made.prompt });
   }
 
-  private profileDefault(profileName: string, what: 'model' | 'effort'): string {
+  /** The backend's catalog, asked of the CLI at most every ten minutes. */
+  private async catalogFor(profileName: string): Promise<Catalog> {
+    const p = this.cfg.profiles[profileName];
+    const bin = this.binFor(p);
+    const k = `${p.backend} ${bin ?? ''}`;
+    const hit = this.catalogs.get(k);
+    if (hit && Date.now() - hit.at < CATALOG_MS) return hit.c;
+    const c = await (this.opts.catalog ?? askCatalog)(p.backend, bin, this.childEnv(profileName).env);
+    if (c.models.length) this.catalogs.set(k, { at: Date.now(), c });
+    return c;
+  }
+
+  /** What this chat runs with now, and where that comes from. */
+  private current(key: string, profileName: string, what: 'model' | 'effort'): { value?: string; from: string } {
+    const row = this.map.getActive(key);
+    if (row?.[what]) return { value: row[what], from: 'this session' };
     const v = this.cfg.profiles[profileName]?.[what];
-    return v ? `: ${v}` : '';
+    return v ? { value: v, from: `profile ${profileName}` } : { from: 'default' };
+  }
+
+  private async modelCommand(i: Inbound, key: string, profileName: string, value?: string): Promise<void> {
+    const p = this.cfg.profiles[profileName];
+    const c = await this.catalogFor(profileName);
+    const cli = LABELS[p.backend];
+    if (!value) {
+      const cur = this.current(key, profileName, 'model');
+      const def = c.models.find((m) => m.isDefault)?.id;
+      const now = cur.value ? `${cur.value} (${cur.from})` : `${cli}'s default${def ? `, ${def}` : ''}`;
+      const list = c.models.length ? c.models.map((m) => `• ${m.id}${m.isDefault ? ' (default)' : ''}`).join('\n') : `(${cli} did not list its models)`;
+      return this.reply(i, [`Model: ${now}`, '', `${cli} models:`, list, ...(c.note ? [c.note] : []), '', 'Set for this session: /model <name>. Back to the profile\'s: /model default'].join('\n'));
+    }
+    const clear = /^(default|reset|none)$/i.test(value);
+    if (!clear && !c.anyModel && !c.models.some((m) => m.id === value)) {
+      return this.reply(i, `${cli} has no model ${value}. Choose one of: ${c.models.map((m) => m.id).join(', ')}.`);
+    }
+    this.map.ensureActive(key);
+    this.map.setOverride(key, { model: clear ? null : value });
+    await this.dropBrain(key); // the next message respawns with the override; the session id is kept
+    return this.reply(i, clear ? 'model back to the profile default.' : `model set to ${value} for this session.`);
+  }
+
+  private async effortCommand(i: Inbound, key: string, profileName: string, value?: string): Promise<void> {
+    const p = this.cfg.profiles[profileName];
+    const c = await this.catalogFor(profileName);
+    const model = this.current(key, profileName, 'model').value;
+    const { levels, defaultLevel } = effortsFor(c, model);
+    const forWhat = model ?? c.models.find((m) => m.isDefault)?.id ?? `${LABELS[p.backend]}'s default model`;
+    if (!value) {
+      const cur = this.current(key, profileName, 'effort');
+      const list = levels.map((l) => `${l}${l === defaultLevel ? ' (default)' : ''}`).join(', ');
+      return this.reply(i, [`Effort: ${cur.value ? `${cur.value} (${cur.from})` : `the default${defaultLevel ? `, ${defaultLevel}` : ''}`}`, `Levels for ${forWhat}: ${list}`, '', 'Set for this session: /effort <level>. Back to the profile\'s: /effort default'].join('\n'));
+    }
+    const clear = /^(default|reset|none)$/i.test(value);
+    const level = value.toLowerCase();
+    if (!clear && !levels.includes(level)) return this.reply(i, `effort for ${forWhat} is one of ${levels.join(', ')}, or default.`);
+    this.map.ensureActive(key);
+    this.map.setOverride(key, { effort: clear ? null : level });
+    await this.dropBrain(key);
+    return this.reply(i, clear ? 'effort back to the profile default.' : `effort set to ${level} for this session.`);
+  }
+
+  private async backendCommand(i: Inbound, key: string, profileName: string, value?: string): Promise<void> {
+    const p = this.cfg.profiles[profileName];
+    const installed = (b: BackendName) => !!(this.opts.bins?.[b] ?? locateBin(b === p.backend ? profileBin(p) : profileBin({ ...p, backend: b, bin: undefined }), this.opts.env ?? process.env));
+    const others = this.cfg.routes.filter((r) => r.profile === profileName).length - 1;
+    if (!value) {
+      const rows = SWITCHABLE.map((b) => `• ${b} (${LABELS[b]})${b === p.backend ? ' — now' : installed(b) ? '' : ' — not installed'}`);
+      return this.reply(i, [`Backend of profile ${profileName}: ${p.backend} (${LABELS[p.backend]})`, '', ...rows, '', `Switch: /backend <name>. It changes the profile${others > 0 ? ` for all ${others + 1} chats that use it` : ''} and starts a fresh session.`].join('\n'));
+    }
+    const b = value.toLowerCase() as BackendName;
+    if (!SWITCHABLE.includes(b)) return this.reply(i, `No backend ${value}. Choose one of: ${SWITCHABLE.join(', ')}.`);
+    if (b === p.backend) return this.reply(i, `Profile ${profileName} already runs on ${LABELS[b]}.`);
+    if (!installed(b)) return this.reply(i, `${LABELS[b]} is not installed on this computer, so nothing changed.`);
+    if (!this.opts.switchBackend) return this.reply(i, 'This daemon cannot change the routing table. Edit backend in routing.yaml, then angelia compile and angelia restart.');
+    const from = p.backend;
+    let done: { removed: string[]; notes: string[] };
+    try { done = this.opts.switchBackend(profileName, b); }
+    catch (e) {
+      this.log(`backend switch failed key=${key} profile=${profileName} to=${b} ${(e as Error).message}`);
+      return this.reply(i, `Nothing changed: ${(e as Error).message}`);
+    }
+    this.log(`backend switched key=${key} profile=${profileName} to=${b} sender=${i.sender}`);
+    // Every chat on this profile: its running CLI is the old one. Each starts on the new one at its next message.
+    const chats = new Set(this.cfg.routes.filter((r) => r.profile === profileName).map((r) => `${r.platform}:${r.chat}`));
+    for (const k of new Set([...this.brains.keys(), ...this.parked.keys()])) {
+      const s = parseSessionKey(k);
+      if (chats.has(`${s.platform}:${s.chat}`)) await this.dropBrain(k);
+    }
+    const row = this.map.startNew(key);
+    return this.reply(i, [
+      `Profile ${profileName} now runs on ${LABELS[b]}. New session ${row.id.slice(0, 8)} started.`,
+      ...(done.removed.length ? [`Taken off the profile, they belonged to ${LABELS[from]}: ${done.removed.join(', ')}.`] : []),
+      ...(others > 0 ? [`${others} other chat${others > 1 ? 's on this profile switch' : ' on this profile switches'} at their next message.`] : []),
+      ...done.notes.map((n) => `Note: ${n}`),
+    ].join('\n'));
   }
 
   /** /sh: runs outside the brain queue so it works even while a turn is stuck. Opt-in per profile. */

@@ -33,6 +33,7 @@ const L = {
   speak: '  speak <text> [--voice name] [--rate n] [--out path]   the bundled voice (run by agents)',
   update: '  update [--check] [--from <git URL|folder>] [--head] [--force]   install the newest signed release',
   guide: '  guide [topic]                          the manual agents read before changing the setup',
+  version: '  version | --version                    the installed version and the commit it was built from',
 };
 
 export const COMMANDS: Record<string, Spec> = {
@@ -59,6 +60,7 @@ export const COMMANDS: Record<string, Spec> = {
   speak: { line: L.speak, flags: { '--voice': true, '--out': true, '--rate': true } },
   update: { line: L.update, flags: { '--check': false, '--from': true, '--head': false, '--force': false } },
   guide: { line: L.guide },
+  version: { line: L.version },
 };
 
 /** Every command's line once, in table order: the body of `angelia --help`. */
