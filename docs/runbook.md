@@ -116,7 +116,12 @@ printf '%s namespaces="git" %s\n' "<login>@users.noreply.github.com" "$(cat ~/.s
 # paste the same line between the quotes of SIGNERS='' in install.sh; npm test checks the two match
 git -c gpg.format=ssh -c user.signingkey=~/.ssh/angelia-release.pub tag -s vX.Y.Z -m "Angelia X.Y.Z"
 git push origin vX.Y.Z
+git show vX.Y.Z:install.sh > /tmp/install.sh                                # the tag's own copy
+gh release create vX.Y.Z --verify-tag --title "Angelia X.Y.Z" --notes "..." /tmp/install.sh
 ```
+
+The site's `/install` redirects to the `install.sh` attached to the release named in `package.json`
+(GitHub counts its downloads), so bump the version, cut the release, then push the site.
 
 Every installed copy checks the next release against the `allowed_signers` it was installed with,
 so a new key reaches users only through a release signed with the old one that ships both.

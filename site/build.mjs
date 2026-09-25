@@ -73,9 +73,10 @@ copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
 cpSync(join(here, 'static'), out, { recursive: true });
-// The short install line. It points at the release's own install.sh, which carries that release's key.
+// The short install line. It points at the install.sh attached to the release, byte for byte the one in
+// the signed tag (it carries that release's key), because GitHub counts an asset's downloads.
 writeFileSync(join(out, '_redirects'),
-  `/install https://raw.githubusercontent.com/${REPO}/v${version}/install.sh 302\n`);
+  `/install https://github.com/${REPO}/releases/download/v${version}/install.sh 302\n`);
 writeFileSync(join(out, '_headers'), [
   '/*',
   '  X-Content-Type-Options: nosniff',
