@@ -212,6 +212,7 @@ ANGELIA_STATE_DIR=$(mktemp -d) npm run dev -- init  # a scratch instance that ne
 
 - 🐛 [Issues](https://github.com/korengast/angelia/issues)
 - 🔐 [Security reports](SECURITY.md), privately, never in an issue
+- ✉️ [info@useangelia.com](mailto:info@useangelia.com) for anything that is not a bug report
 
 ---
 

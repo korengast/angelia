@@ -8,6 +8,8 @@ privately.
 
 **How:** open a private security advisory on this repository (GitHub > Security > Report a
 vulnerability). Do not open a public issue for a vulnerability.
+No GitHub account? Email info@useangelia.com with "security" in the subject, and say what it
+affects; we reply with a private channel for the details.
 
 **What to expect:** an acknowledgement within a week, a fix or a plan in the advisory thread, and
 credit in the release notes if you want it.

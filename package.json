@@ -4,6 +4,7 @@
   "description": "Turn the coding agent CLI you already know into the brain of your personal assistants, on WhatsApp and Telegram. One chat, one folder, one session.",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://useangelia.com",
   "repository": { "type": "git", "url": "git+https://github.com/korengast/angelia.git" },
   "private": true,
   "engines": {
