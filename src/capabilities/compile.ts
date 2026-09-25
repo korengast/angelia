@@ -6,6 +6,7 @@ import { resolveProfile } from './resolve.js';
 import { SELF_END, SELF_START, upsertSelfBlock } from '../daemon/self.js';
 import { API_SOCKET, HOME_PRIVATE, INSTANCE_DIR, STATE_PRIVATE, commonDir, workspaceDir } from '../instance/instance.js';
 import { isInside } from '../core/paths.js';
+import { codexUserMcpServers } from '../brain/codex-config.js';
 
 /**
  * `angelia compile`: turn a profile's capabilities into the profile's own files, the ones its CLI
@@ -61,7 +62,13 @@ export function strictMcpArgs(cwd: string): string[] {
  * off with it. The state folder is in the deny floor, and in the sandbox's reach only for reading the
  * socket.
  */
-export interface LaunchGuard { cwd: string; deny: string[]; sandbox?: boolean }
+export interface LaunchGuard {
+  cwd: string; deny: string[]; sandbox?: boolean;
+  /** Codex: the profile ran in Codex's sandbox at the last compile; `sandbox: false` since is a refusal. */
+  codexSandbox?: boolean;
+  /** The backend compiled for: its rules differ per CLI, so another backend since is a refusal. */
+  backend?: Profile['backend'];
+}
 
 const guardFile = (stateDir: string, name: string) => join(stateDir, 'compiled', `${encodeURIComponent(name)}.json`);
 
@@ -82,6 +89,7 @@ export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR):
   try { g = JSON.parse(readFileSync(guardFile(stateDir, name), 'utf8')) as LaunchGuard; }
   catch (e) { return [(e as NodeJS.ErrnoException).code === 'ENOENT' ? 'never compiled' : `the compiled record in ${join(stateDir, 'compiled')} cannot be read`]; }
   if (resolve(g.cwd) !== resolve(p.cwd)) return [`compiled for another folder (${g.cwd})`];
+  if (g.backend && g.backend !== p.backend) return [`compiled for ${g.backend}, not ${p.backend}; compile again`];
   const read = (f: string): Record<string, any> | undefined => {
     try { return JSON.parse(readFileSync(join(p.cwd, '.claude', f), 'utf8')); }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {}; return undefined; }
@@ -94,6 +102,8 @@ export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR):
     if (settings.sandbox?.enabled !== true || settings.sandbox?.allowUnsandboxedCommands !== false) out.push('sandbox off');
     if (local.sandbox?.enabled === false || local.sandbox?.allowUnsandboxedCommands === true) out.push('sandbox off in settings.local.json');
   }
+  // Codex's sandbox comes from the table, not a settings file: turning it off there needs a compile.
+  if (g.codexSandbox && (p.backend !== 'codex' || p.sandbox === false)) out.push('sandbox off: the table turned Codex\'s sandbox off since the last compile; compile again to accept it');
   return out;
 }
 
@@ -130,10 +140,12 @@ export interface ProfilePlan {
 
 /** A path rule in the form this backend reads as absolute. For Claude a path under the home folder
  *  is written as `~/…` (measured: Claude 2.1.278 refuses the read), so the settings file carries no
- *  username and still holds after a move. grok keeps `/abs`: measured on grok 1.0.40, it ignores a `~` rule. */
+ *  username and still holds after a move. grok keeps `/abs`: measured on grok 1.0.40, it ignores a `~` rule.
+ *  pi has no rules of its own; Angelia's gate extension reads the same `/abs` form (pi-gate.ts), and
+ *  Codex's sandbox gets them as absolute paths too (codex-config.ts). */
 export function pathRule(tool: 'Read' | 'Edit', path: string, backend: Profile['backend'], home = homedir()): string {
   const abs = resolve(path);
-  if (backend === 'grok') return `${tool}(${abs})`;
+  if (backend !== 'claude-code') return `${tool}(${abs})`;
   const h = resolve(home);
   return abs.startsWith(h + sep) ? `${tool}(~/${abs.slice(h.length + 1)})` : `${tool}(/${abs})`;
 }
@@ -192,6 +204,15 @@ export function profileFloor(cfg: Config, name: string, stateDir: string, home =
  */
 export const LAUNCH_FILES = [join('.claude', 'settings.json'), join('.claude', 'settings.local.json'), RECORD, '.mcp.json', 'angelia-jobs.yaml'];
 
+/** pi's own launch inputs in the profile folder: `.pi/` (extensions, settings and packages, SYSTEM.md,
+ *  skills) and `.agents/` (skills). pi loads them once the folder is trusted, as code in its own
+ *  process, so an agent that writes there runs whatever it wrote on the next start. */
+export const PI_LAUNCH_DIRS = [join('.pi', '**'), join('.agents', '**')];
+
+/** Codex's project inputs in the profile folder: `.codex/` (config, hooks, rules; loaded once the
+ *  folder is trusted) and `.agents/` (skills). Its sandbox makes these read-only for the agent. */
+export const CODEX_LAUNCH_DIRS = [join('.codex', '**'), join('.agents', '**')];
+
 /** One warning per profile whose settings lack part of the floor: never compiled, or compiled before
  *  the floor grew (an update, a new profile). */
 export function floorWarnings(cfg: Config, stateDir = INSTANCE_DIR, home = homedir()): string[] {
@@ -203,7 +224,16 @@ export function floorWarnings(cfg: Config, stateDir = INSTANCE_DIR, home = homed
 }
 
 function settingsDeny(cwd: string): string[] {
-  try { return JSON.parse(readFileSync(join(cwd, '.claude', 'settings.json'), 'utf8'))?.permissions?.deny ?? []; } catch { return []; }
+  return profilePermissions(cwd, false).deny;
+}
+
+/** The deny rules and extra folders a profile's settings hold; with `local`, merged with the owner's
+ *  own settings.local.json, as Claude Code merges them. An unreadable file counts as empty. */
+export function profilePermissions(cwd: string, local = true): { deny: string[]; dirs: string[] } {
+  const perms = (f: string): Record<string, unknown> => { try { return JSON.parse(readFileSync(join(cwd, '.claude', f), 'utf8'))?.permissions ?? {}; } catch { return {}; } };
+  const files = [perms('settings.json'), ...(local ? [perms('settings.local.json')] : [])];
+  const list = (k: string) => [...new Set(files.flatMap((x) => (Array.isArray(x[k]) ? (x[k] as unknown[]).filter((v): v is string => typeof v === 'string') : [])))];
+  return { deny: list('deny'), dirs: list('additionalDirectories') };
 }
 
 /** Two profiles, one inside the other's folder: the outer one cannot be denied to the inner. */
@@ -215,13 +245,22 @@ export function nestingWarnings(cfg: Config, home = homedir()): string[] {
   return out;
 }
 
+/** Where the backend finds skills installed for every profile, which no compile can filter. pi takes a
+ *  compiled profile's own skills on argv (`--skill`, argv.ts) and ignores Claude's folder. */
+function userSkillDirs(backend: Profile['backend'], home: string): string[] {
+  if (backend === 'pi') return [join(home, '.pi', 'agent', 'skills'), join(home, '.agents', 'skills')];
+  if (backend === 'codex') return [join(process.env.CODEX_HOME ?? join(home, '.codex'), 'skills'), join(home, '.agents', 'skills')];
+  return [join(home, '.claude', 'skills')];
+}
+
 function glob(p: string): string { return p.endsWith('**') || p.includes('*') ? p : `${p.replace(/\/+$/, '')}/**`; }
 
 function denyEntries(name: string, c: Capability, backend: Profile['backend'], home: string): string[] {
   const out: string[] = [];
   if (c.kind === 'mcp') out.push(`mcp__${name}`);
-  // grok rejects Skill(...) as an unknown tool prefix (grok inspect: "skipped"), so it only gets the path rules.
-  if (c.kind === 'skill') out.push(...(backend === 'grok' ? [] : [`Skill(${name})`]), pathRule('Read', glob(c.path), backend, home), pathRule('Edit', glob(c.path), backend, home));
+  // grok rejects Skill(...) as an unknown tool prefix (grok inspect: "skipped"), and pi's gate knows no
+  // such rule, so both only get the path rules.
+  if (c.kind === 'skill') out.push(...(backend === 'claude-code' ? [`Skill(${name})`] : []), pathRule('Read', glob(c.path), backend, home), pathRule('Edit', glob(c.path), backend, home));
   if (c.kind === 'directory') out.push(pathRule('Read', glob(c.path), backend, home), pathRule('Edit', glob(c.path), backend, home));
   if (c.kind === 'skill' || c.kind === 'mcp') for (const s of c.secrets) out.push(pathRule('Read', s, backend, home), pathRule('Edit', s, backend, home));
   return out;
@@ -289,7 +328,8 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   const changes: string[] = [], conflicts: string[] = [], duplicates: string[] = [], notes: string[] = [];
 
   // Skills: a link per allowed skill; a denied one must not be there at all.
-  const skillsDir = join(p.cwd, '.claude', 'skills');
+  // Codex finds project skills in .agents/skills (measured with skills/list), not in Claude's folder.
+  const skillsDir = join(p.cwd, ...(p.backend === 'codex' ? ['.agents', 'skills'] : ['.claude', 'skills']));
   const wantLinks: Record<string, string> = {};
   for (const [n, c] of allowed) if (c.kind === 'skill') wantLinks[n] = c.path;
   const oldLinks = rec?.links ?? {};
@@ -323,8 +363,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     const here = join(skillsDir, n);
     const oursBefore = n in oldLinks && isLinkTo(here, oldLinks[n]); // removed above
     if (existsOrLink(here) && !(n in wantLinks) && !oursBefore) conflicts.push(`denied skill ${n} is present at ${here}; a deny rule does not stop a skill typed as /${n}, so remove it by hand`);
-    const user = join(home, '.claude', 'skills', n);
-    if (existsOrLink(user)) conflicts.push(`denied skill ${n} is installed for every profile at ${user}; remove it there`);
+    for (const user of userSkillDirs(p.backend, home).map((d) => join(d, n))) if (existsOrLink(user)) conflicts.push(`denied skill ${n} is installed for every profile at ${user}; remove it there`);
   }
 
   // MCP. Claude: the profile's .mcp.json, loaded strictly, so user-level servers stay out — but only
@@ -351,6 +390,10 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     if (!strict && rec?.mcpStrict) changes.push('- strict MCP: user-level servers (such as github, tavily) load again');
     if (!strict) notes.push('no MCP server is denied here, so MCP is not strict: user-level servers (such as github, tavily) load as well');
     if (touched) mcpOp = () => writeFileSync(mcpPath, JSON.stringify({ ...cur, mcpServers: servers }, null, 2) + '\n');
+  } else if (p.backend === 'codex') {
+    if (Object.keys(wantMcp).length) notes.push(`codex: allowed MCP servers are not written yet (${Object.keys(wantMcp).join(', ')}); add them with codex mcp add`);
+  } else if (p.backend === 'pi') {
+    if (Object.keys(wantMcp).length) notes.push(`pi has no MCP: the allowed servers (${Object.keys(wantMcp).join(', ')}) are not available to this profile`);
   } else {
     if (Object.keys(wantMcp).length) notes.push(`grok: allowed MCP servers are not written yet (${Object.keys(wantMcp).join(', ')}); add them with grok mcp add --scope project in ${p.cwd}`);
   }
@@ -359,11 +402,13 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   const settingsPath = join(p.cwd, '.claude', 'settings.json');
   const settings = readJson(settingsPath);
   const perms: Record<string, any> = { ...(settings.permissions ?? {}) };
-  const launch = LAUNCH_FILES.map((f) => pathRule('Edit', join(p.cwd, f), p.backend, home));
+  const launch = [...LAUNCH_FILES, ...(p.backend === 'pi' ? PI_LAUNCH_DIRS : p.backend === 'codex' ? CODEX_LAUNCH_DIRS : [])].map((f) => pathRule('Edit', join(p.cwd, f), p.backend, home));
   const wantDeny = [...new Set([...profileFloor(cfg, name, stateDir, home), ...launch, ...[...denied].flatMap(([n, c]) => denyEntries(n, c, p.backend, home))])];
   // grok has no strict mode: servers set up for the whole user reach every folder, so each one this
   // profile was not given is denied by name. (Claude leaves them out through --strict-mcp-config.)
   if (p.backend === 'grok') for (const n of userMcpServers(home)) if (!(n in wantMcp) && !wantDeny.includes(`mcp__${n}`)) wantDeny.push(`mcp__${n}`);
+  // Codex: the same for the servers in its own config; the launch switches each denied one off (codex-config.ts).
+  if (p.backend === 'codex') for (const n of codexUserMcpServers(home)) if (!(n in wantMcp) && !wantDeny.includes(`mcp__${n}`)) wantDeny.push(`mcp__${n}`);
   const capDirs = [...allowed.values()].filter((c) => c.kind === 'directory').map((c) => (c as { path: string }).path);
   // The co-working folder every profile that is not isolated may read and write; an isolated one is
   // denied it. Only once the instance has a workspace to hold it.
@@ -392,7 +437,9 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   for (const x of rec?.sockets ?? []) if (!wantSockets.includes(x) && sockets.includes(x)) { sockets.splice(sockets.indexOf(x), 1); changes.push(`- sandbox socket ${x}`); sandboxChanged = true; }
   for (const x of wantSockets) if (!sockets.includes(x)) { sockets.push(x); changes.push(`+ sandbox socket ${x}`); sandboxChanged = true; }
   const wantSandbox = p.backend === 'claude-code' && p.sandbox;
-  if (p.sandbox && p.backend !== 'claude-code') notes.push('sandbox: true is for Claude Code; grok has no such setting here, so it is ignored');
+  if (p.sandbox && (p.backend === 'grok' || p.backend === 'pi')) notes.push(`sandbox: true is for Claude Code and Codex; ${p.backend} has no such setting here, so it is ignored`);
+  if (p.backend === 'codex') notes.push(p.sandbox === false ? 'codex: sandbox: false, so the agent runs with full access: the deny rules bind nothing, and in every mode it runs commands without asking' : 'codex: the deny rules and the writable folders are held by Codex\'s own sandbox (the OS), shell commands included');
+  if (p.backend === 'codex' && existsSync(join(p.cwd, 'AGENTS.md'))) notes.push('codex: this folder has an AGENTS.md, which Codex reads instead of CLAUDE.md, so the instructions and the capability block in CLAUDE.md do not reach it; merge them and remove AGENTS.md');
   if (wantSandbox) {
     if (sb.enabled !== true || sb.allowUnsandboxedCommands !== false) {
       changes.push('+ sandbox on, no unsandboxed escape');
@@ -436,13 +483,21 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     const tilde = ['deny', 'allow', 'ask'].flatMap((k) => ((perms[k] ?? []) as string[]).filter((r) => /\(~\//.test(r)).map((r) => `${k} ${r}`));
     if (tilde.length) notes.push(`grok ignores rules written with ~ (write the full path instead): ${tilde.join(', ')}`);
   }
-  if (p.permission_mode === 'bypassPermissions' && !wantSandbox) notes.push('bypassPermissions: deny rules stop the file tools, not the shell; a program the agent runs can still read a denied path (sandbox: true closes that for Claude Code)');
-  const userSkills = safeList(join(home, '.claude', 'skills'));
+  if (p.permission_mode === 'bypassPermissions' && !wantSandbox && !(p.backend === 'codex' && p.sandbox !== false)) notes.push('bypassPermissions: deny rules stop the file tools, not the shell; a program the agent runs can still read a denied path (sandbox: true closes that for Claude Code)');
+  const userSkills = userSkillDirs(p.backend, home).flatMap((d) => safeList(d));
+  if (p.backend === 'pi') {
+    // pi's global settings can add skill folders and packages for every folder; compile cannot filter those.
+    let global: Record<string, unknown> = {};
+    try { global = JSON.parse(readFileSync(join(home, '.pi', 'agent', 'settings.json'), 'utf8')); } catch { /* none, or not ours to fix */ }
+    const extra = ['skills', 'packages'].filter((k) => Array.isArray(global[k]) && (global[k] as unknown[]).length);
+    if (extra.length) notes.push(`pi's global settings list ${extra.join(' and ')} for every folder (${join(home, '.pi', 'agent', 'settings.json')}); a denied skill there still loads`);
+  }
   if (userSkills.length) notes.push(`skills installed for every profile, not filtered: ${userSkills.join(', ')}`);
 
   const record: CompiledRecord = {
     version: 1, backend: p.backend, links: wantLinks, // written only by apply(), which refuses on any conflict
-    mcpServers: p.backend === 'claude-code' ? Object.keys(wantMcp) : [], mcpStrict: strict,
+    // Codex: the servers it may load, checked against Codex's merged config at every start (codex.ts).
+    mcpServers: p.backend === 'claude-code' || p.backend === 'codex' ? Object.keys(wantMcp) : [], mcpStrict: strict,
     deny: wantDeny, additionalDirectories: wantDirs, blockLines: lines, compiledAt: new Date().toISOString(),
     ...(wantSandbox ? { sandbox: true } : {}), ...(wantSockets.length ? { sockets: wantSockets } : {}),
   };
@@ -463,7 +518,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
       if (wantDirs.includes(common)) mkdirSync(common, { recursive: true });
       mkdirSync(join(p.cwd, '.claude'), { recursive: true });
       writeFileSync(join(p.cwd, RECORD), JSON.stringify(record, null, 2) + '\n');
-      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, ...(wantSandbox ? { sandbox: true } : {}) });
+      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}) });
     },
   };
 }

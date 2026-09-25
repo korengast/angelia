@@ -42,9 +42,9 @@ export const Profile = z.object({
   shell_timeout_seconds: z.number().positive().default(60),
   /** Launch the agent with Claude in Chrome (--chrome): browser tools inside the user's everyday Chrome. */
   chrome: z.boolean().default(false),
-  /** Which local CLI answers this profile. claude-code: Claude Code. grok: Grok Build. */
-  backend: z.enum(['claude-code', 'grok']).default('claude-code'),
-  /** The backend's executable, when it is not `claude` / `grok` on PATH or in the usual
+  /** Which local CLI answers this profile. claude-code: Claude Code. grok: Grok Build. pi: pi. codex: Codex. */
+  backend: z.enum(['claude-code', 'grok', 'pi', 'codex']).default('claude-code'),
+  /** The backend's executable, when it is not `claude` / `grok` / `pi` / `codex` on PATH or in the usual
    *  install folders. A full path; `~` is allowed. */
   bin: z.string().optional(),
   /** Claude Code only: run the agent as a real interactive session in tmux instead of print mode.
@@ -62,8 +62,9 @@ export const Profile = z.object({
   /** Claude Code only: compile the CLI's own sandbox on (`sandbox.enabled`, no unsandboxed escape). The
    *  OS then holds every command the agent runs to the deny rules and to its own folder for writes, so
    *  the deny floor stops a program, not only the file tools. Network from the shell is blocked except
-   *  what `sandbox.network.allowedDomains` lists in the profile's settings.local.json. */
-  sandbox: z.boolean().default(false),
+   *  what `sandbox.network.allowedDomains` lists in the profile's settings.local.json.
+   *  Codex: its own sandbox is on unless this is `false` (then full access); see codex-config.ts. */
+  sandbox: z.boolean().optional(),
   /** Cut off from the other profiles: it cannot message them and they cannot message it, and it does
    *  not get the shared co-working folder (workspace/_common). For a profile other people talk to. */
   isolated: z.boolean().default(false),

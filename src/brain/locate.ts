@@ -5,9 +5,9 @@ import type { Config, Profile } from '../instance/config/schema.js';
 import type { BackendName } from './brain.js';
 
 /** Default executable per backend; a profile's `bin:` wins. */
-export const DEFAULT_BIN: Record<BackendName, string> = { 'claude-code': 'claude', grok: 'grok' };
+export const DEFAULT_BIN: Record<BackendName, string> = { 'claude-code': 'claude', grok: 'grok', pi: 'pi', codex: 'codex' };
 
-/** Where the three CLIs install themselves when PATH does not say. The daemon must not depend on
+/** Where the CLIs install themselves when PATH does not say. The daemon must not depend on
  *  the PATH of whatever shell started it: on 2026-09-21 a restart inherited one without
  *  ~/.local/bin, every tmux pane ran `claude`, found nothing and died, and the chat heard only
  *  "the agent exited while starting". */

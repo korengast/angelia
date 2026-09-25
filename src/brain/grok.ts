@@ -4,8 +4,7 @@ import { EventEmitter } from 'node:events';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { grokArgv, childEnv } from './argv.js';
-import { exitReason } from './claude.js';
-import { BrainExited, PermissionBook, permissionPreview, waitExit, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 
 type Msg = Record<string, any>;
 
@@ -214,14 +213,7 @@ export class GrokBrain extends EventEmitter implements Brain {
   hasPendingPermission(id: string): boolean { return this.permissions.has(id); }
 
   async stop(graceMs = 5000): Promise<void> {
-    const c = this.child;
-    if (!c || this.exited) return;
-    c.stdin.end();
-    if (await waitExit(this.lines, () => this.exited, graceMs)) return;
-    c.kill('SIGTERM');
-    if (await waitExit(this.lines, () => this.exited, graceMs)) return;
-    c.kill('SIGKILL');
-    await waitExit(this.lines, () => this.exited, graceMs);
+    if (this.child && !this.exited) await stopChild(this.child, this.lines, () => this.exited, graceMs);
   }
 
   kill(): void { this.child?.kill('SIGKILL'); }

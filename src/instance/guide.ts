@@ -36,17 +36,29 @@ The easy way: \`angelia guide onboard\`. A new chat an owner writes in gets its 
 or \`angelia profile add <platform:chat> [name]\` makes one before anyone writes.
 
 By hand:
-1. Create workspace/profiles/<name>/ with its instruction file, CLAUDE.md (claude-code and grok).
-2. Add it under \`profiles:\` in routing.yaml. Fields: cwd, backend (claude-code | grok),
+1. Create workspace/profiles/<name>/ with its instruction file, CLAUDE.md (every backend reads it).
+2. Add it under \`profiles:\` in routing.yaml. Fields: cwd, backend (claude-code | grok | pi | codex),
    permission_mode (default | acceptEdits | bypassPermissions | plan), model, effort, add_dirs,
    shell, shell_timeout_seconds, chrome, tui (claude-code only), media_tags, bin (the CLI's full
    path when it is not found), unsafe_ok, agent_commands (CLI slash commands every group member
    may send, e.g. [compact]), sandbox (claude-code: the CLI's own sandbox on, no escape; shell
-   network only to sandbox.network.allowedDomains in settings.local.json), isolated (cut off from
-   the other profiles and from _common/: for a profile other people talk to), and capabilities,
-   except, deny (\`angelia guide capabilities\`).
+   network only to sandbox.network.allowedDomains in settings.local.json; codex: on unless false),
+   isolated (cut off from the other profiles and from _common/: for a profile other people talk
+   to), and capabilities, except, deny (\`angelia guide capabilities\`).
    grok reads CLAUDE.md only in a folder it trusts: run \`grok --trust\` there once;
    \`grok inspect\` then says "Project trusted: yes".
+   pi has no permission prompt of its own: Angelia loads a small extension into it that asks the
+   chat and holds the compiled deny rules; in acceptEdits pi's own read and search tools and plain
+   read-only commands run unasked, other shell commands ask. pi has no MCP and no sandbox. Its
+   login is its own (\`pi\`, then /login); set model: as provider/model (e.g. from
+   \`pi --list-models\`). A Claude subscription through pi draws on extra usage or fails.
+   pi loads a folder's .pi/ settings and extensions only once you trust the folder in pi; Angelia
+   needs neither, and compile denies the agent writes to .pi/ and .agents/ in its folder.
+   Codex runs inside its own sandbox (the OS enforces it, shell included): it writes only in its
+   folder, add_dirs, _common/ and temp, cannot read the denied paths, and has network. A command
+   the sandbox stops is the cue to add a folder to add_dirs (then compile and restart).
+   \`sandbox: false\` gives it full access. It asks in the chat only to run something outside the
+   sandbox. It reads CLAUDE.md (as a fallback for AGENTS.md). Its login is its own (\`codex login\`).
 3. Route a chat to it (\`angelia guide routing\`).
 4. \`angelia compile <name> --write\`: the deny floor. The daemon starts no agent for a profile
    that was never compiled.

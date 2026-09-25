@@ -38,7 +38,9 @@ export const STATE_PRIVATE = {
 export const HOME_PRIVATE = {
   dirs: ['.ssh', '.aws', '.gnupg', '.config/gh', '.config/gcloud', '.docker', '.kube', '.password-store',
     'Library/Keychains', 'Library/Cookies', 'Library/Messages', 'Library/Mail'],
-  files: ['.netrc', '.git-credentials', '.npmrc', '.pypirc', '.pgpass', '.vault-token', '.zsh_history', '.bash_history'],
+  files: ['.netrc', '.git-credentials', '.npmrc', '.pypirc', '.pgpass', '.vault-token', '.zsh_history', '.bash_history',
+    // The logins pi, grok and Codex keep in plain text: an agent that reads one holds the owner's model account.
+    '.pi/agent/auth.json', '.grok/auth.json', '.codex/auth.json'],
 };
 
 /** The daemon's API socket in the state folder (daemon/api/server.ts). */

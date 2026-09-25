@@ -9,7 +9,7 @@
 </p>
 <p align="center">
   <a href="https://useangelia.com"><img src="https://img.shields.io/badge/Website-useangelia.com-D06B6B?style=for-the-badge" alt="Website"></a>
-  <a href="https://github.com/korengast/angelia/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/Release-v0.1.0%20signed-1A120D?style=for-the-badge" alt="Release v0.1.0, signed"></a>
+  <a href="https://github.com/korengast/angelia/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/Release-v0.2.0%20signed-1A120D?style=for-the-badge" alt="Release v0.2.0, signed"></a>
   <a href="#backends"><img src="https://img.shields.io/badge/Platform-macOS-A8474B?style=for-the-badge&logo=apple&logoColor=white" alt="macOS"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
@@ -154,9 +154,10 @@ Found a hole? Report it privately: [SECURITY.md](SECURITY.md).
 | --- | --- | --- | --- |
 | Claude Code | `claude-code` (default) | supported | 2.1.270 or newer, signed in to claude.ai |
 | Grok Build | `grok` | supported | 1.0.13 or newer, `grok login` |
-| Codex, pi, OpenCode | | coming soon | |
+| Codex | `codex` | supported | 0.157 or newer, `codex login` |
+| pi, OpenCode | | coming soon | |
 
-Each chat keeps one warm process: one to two seconds a turn on Claude Code, three to six on Grok Build. Permission prompts reach the chat on both. Every CLI plugs into the same small interface in `src/brain/`, and nothing else in Angelia knows which one is running.
+Each chat keeps one warm process, so a message never waits for a CLI to start. Permission prompts reach the chat on all three. Codex runs inside its own sandbox, which the operating system enforces: Angelia hands it the profile's rules, so it writes only in its folders and cannot read your credentials or the other profiles, shell commands included. Every CLI plugs into the same small interface in `src/brain/`, and nothing else in Angelia knows which one is running.
 
 ---
 
@@ -195,7 +196,7 @@ Each chat keeps one warm process: one to two seconds a turn on Claude Code, thre
 
 Angelia is not an agent and will not become one. No second model, no skills system, no memory framework, no scheduler in the daemon, no plugin marketplace. Knowledge belongs in the profile's instruction file; scheduled work belongs to the operating system, which `angelia jobs` only sets up. No payments: the agent sends you a checkout link and you pay on your phone.
 
-**Next:** Codex, pi and OpenCode backends. Linux with a systemd unit. `/profile` to switch which assistant answers a chat.
+**Next:** pi and OpenCode backends. Linux with a systemd unit. `/profile` to switch which assistant answers a chat.
 
 ---
 

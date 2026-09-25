@@ -4,10 +4,10 @@ import { EventEmitter } from 'node:events';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { claudeArgv, childEnv, versionAtLeast, MIN_CLAUDE_VERSION } from './argv.js';
-import { BrainExited, PermissionBook, permissionPreview, waitExit, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 import { LOST_SESSION_LINE, placeTranscript } from './transcripts.js';
 
-export { BrainExited, type BrainOptions } from './brain.js';
+export { BrainExited, exitReason, type BrainOptions } from './brain.js';
 
 type Line = Record<string, any>;
 
@@ -178,28 +178,11 @@ export class ClaudeBrain extends EventEmitter implements Brain {
 
   /** Graceful stop: close stdin, then SIGTERM, then SIGKILL. */
   async stop(graceMs = 5000): Promise<void> {
-    const c = this.child;
-    if (!c || this.exited) return;
-    c.stdin.end();
-    if (await this.waitExit(graceMs)) return;
-    c.kill('SIGTERM');
-    if (await this.waitExit(graceMs)) return;
-    c.kill('SIGKILL');
-    await this.waitExit(graceMs);
+    if (this.child && !this.exited) await stopChild(this.child, this.lines, () => this.exited, graceMs);
   }
 
   kill(): void {
     this.child?.kill('SIGKILL');
   }
 
-  private waitExit(ms: number): Promise<boolean> { return waitExit(this.lines, () => this.exited, ms); }
-}
-
-/**
- * Why the child died, for the log and for the retry decision. Always starts with `exit`, because
- * that prefix is what tells the orchestrator a brand-new session died before it ever answered.
- */
-export function exitReason(failure: string): string {
-  const line = failure.split('\n').map((l) => l.trim()).filter(Boolean).pop();
-  return line ? `exit: ${line.slice(0, 200)}` : 'exit';
 }

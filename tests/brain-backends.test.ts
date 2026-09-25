@@ -36,10 +36,10 @@ test('factory picks the class by profile.backend', () => {
   assert.ok(createBrain(profile('grok'), { id: 'x', started: false }, { bin: 'true' }) instanceof GrokBrain);
 });
 
-test('config accepts the two backends, rejects others, and says what happened to agy', () => {
+test('config accepts the known backends and rejects others', () => {
   const cfg = Config.parse({ profiles: { g: { cwd: here, backend: 'grok' }, c: { cwd: here } }, routes: [] });
   assert.equal(cfg.profiles.g.backend, 'grok'); assert.equal(cfg.profiles.c.backend, 'claude-code');
-  assert.throws(() => Config.parse({ profiles: { a: { cwd: here, backend: 'codex' } }, routes: [] }));
+  assert.throws(() => Config.parse({ profiles: { a: { cwd: here, backend: 'opencode' } }, routes: [] }));
 });
 
 test('argv: grok carries the stance on argv', () => {

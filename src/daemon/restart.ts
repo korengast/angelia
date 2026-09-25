@@ -156,7 +156,7 @@ function readPid(path: string): number {
 }
 
 function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' && !!process.env.CODEX_SANDBOX; }
 }
 
 /** The config the daemon was last started with, recorded in status.json. */

@@ -25,6 +25,8 @@ export function configWarnings(cfg: Config, workspace?: string): string[] {
   });
   for (const [name, p] of Object.entries(cfg.profiles)) {
     if (p.tui && p.backend !== 'claude-code') out.push(`profiles.${name}: tui: true is Claude Code only and is ignored by ${p.backend}`);
+    if (p.backend === 'pi' && !p.model) out.push(`profiles.${name}: backend pi with no model uses pi's own default provider, which may be one with no login here; set model: provider/model`);
+    if (p.chrome && p.backend !== 'claude-code') out.push(`profiles.${name}: chrome: true is Claude Code only and is ignored by ${p.backend}`);
   }
   const used = new Set(cfg.routes.map((r) => r.profile));
   for (const name of Object.keys(cfg.profiles)) {
@@ -91,6 +93,14 @@ function removedKeys(raw: unknown): string[] {
   return out;
 }
 
+/** A folder that exists, or, inside Codex's sandbox, one this process may not look at: an agent that
+ *  runs \`angelia profiles\` cannot stat the other profiles' folders, and that is not a broken table.
+ *  Outside the sandbox an unreadable cwd stays an error (a typo under a locked folder, a macOS-protected one). */
+function folderOrHidden(path: string): boolean {
+  try { return statSync(path).isDirectory(); }
+  catch (e) { const code = (e as NodeJS.ErrnoException).code; return !!process.env.CODEX_SANDBOX && (code === 'EPERM' || code === 'EACCES'); }
+}
+
 export function loadConfig(path: string): Config {
   let raw: unknown;
   try {
@@ -106,11 +116,11 @@ export function loadConfig(path: string): Config {
   const cfg = parsed.data;
   removed.set(cfg, removedKeys(raw));
   for (const [name, p] of Object.entries(cfg.profiles)) {
+    // pi is built but paused (known gaps in its bypass mode): a release does not run it until it is done.
+    if (p.backend === 'pi' && process.env.ANGELIA_UNRELEASED_PI !== '1') throw new ConfigError(`profiles.${name}.backend: pi is not released yet; use claude-code, grok or codex`);
     p.cwd = resolve(expandHome(p.cwd));
     p.add_dirs = p.add_dirs.map((d) => resolve(expandHome(d)));
-    if (!existsSync(p.cwd) || !statSync(p.cwd).isDirectory()) {
-      throw new ConfigError(`profiles.${name}.cwd: not a directory: ${p.cwd}`);
-    }
+    if (!folderOrHidden(p.cwd)) throw new ConfigError(`profiles.${name}.cwd: not a directory: ${p.cwd}`);
     if (p.permission_mode === 'bypassPermissions' && !p.unsafe_ok) {
       // add_dirs are as reachable to the agent as cwd is, and are often the wider grant of the two:
       // a profile whose own folder is clean can still be handed a whole home directory next to it.
@@ -136,8 +146,8 @@ export function loadConfig(path: string): Config {
     if (!cfg.profiles[r.profile]) throw new ConfigError(`routes[${i}].profile: unknown profile "${r.profile}"`);
     // Every member of the group would run commands on this machine with no prompt and nothing around them.
     const p = cfg.profiles[r.profile];
-    if (isGroupChat(r.platform, r.chat) && p.permission_mode === 'bypassPermissions' && r.allow_from.includes(EVERYONE) && !(p.sandbox && p.backend === 'claude-code')) {
-      throw new ConfigError(`routes[${i}] (${r.platform} ${r.chat}): a group on the bypassPermissions profile ${r.profile}, open to every member (allow_from: "*"), without the sandbox. List who may in allow_from, or set sandbox: true on a Claude Code profile`);
+    if (isGroupChat(r.platform, r.chat) && (p.permission_mode === 'bypassPermissions' || (p.backend === 'codex' && p.sandbox === false)) && r.allow_from.includes(EVERYONE) && !((p.sandbox && p.backend === 'claude-code') || (p.backend === 'codex' && p.sandbox !== false))) {
+      throw new ConfigError(`routes[${i}] (${r.platform} ${r.chat}): a group on the profile ${r.profile}, open to every member (allow_from: "*"), that runs anything without asking and without a sandbox (bypassPermissions, or Codex with sandbox: false). List who may in allow_from, or keep a sandbox: sandbox: true on Claude Code, Codex's own by default`);
     }
     // A route for a platform the table does not set up passes the router and has nobody to reply
     // through: the daemon crashed in reply(), and the API answered with the raw TypeError.

@@ -19,6 +19,7 @@ import { parseCommand, HELP, statusText, resumeListText } from './commands.js';
 import { runShell } from './shell.js';
 import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
+import { API_SOCKET } from '../instance/instance.js';
 
 export interface Sender {
   send(chat: string, text: string, thread?: string): Promise<void>;
@@ -264,6 +265,8 @@ export class Orchestrator {
       permissionTimeoutMs: this.cfg.defaults.permission_timeout_minutes * 60_000,
       system: this.opts.selfPrompt?.(name),
       projectsDir: this.opts.transcripts === true ? projectsDir() : this.opts.transcripts,
+      apiSocket: join(this.opts.stateDir ?? join(homedir(), '.angelia'), API_SOCKET),
+      profileName: name,
     });
     b.on('log', (line: string) => this.log(`${line} key=${key}`));
     // A prompt nobody answered is denied; the chat hears it, or the turn just seems to go wrong.

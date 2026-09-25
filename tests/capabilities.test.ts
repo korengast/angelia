@@ -7,7 +7,7 @@ import { parse, stringify } from 'yaml';
 import { loadConfig, ConfigError, configWarnings } from '../src/instance/config/load.js';
 import { resolveProfile } from '../src/capabilities/resolve.js';
 import { planProfile, planText, readRecord, strictMcpArgs, pathRule, linkText, RECORD, launchCheck, seedGuards, floorWarnings, profileFloor, nestingWarnings } from '../src/capabilities/compile.js';
-import { claudeArgv } from '../src/brain/argv.js';
+import { claudeArgv, piArgv } from '../src/brain/argv.js';
 import { SELF_START } from '../src/daemon/self.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-cap-'));
@@ -422,4 +422,56 @@ test('the co-working folder: every profile that is not isolated gets it as an ex
   assert.equal(settings('shut').additionalDirectories, undefined);
   assert.ok(settings('shut').deny.includes('Read(~/.angelia/workspace/_common/**)') && settings('shut').deny.includes('Edit(~/.angelia/workspace/_common/**)'));
   assert.ok(!settings('open').deny.some((r: string) => r.includes('_common')));
+});
+
+test('a release refuses backend pi until it is done', () => {
+  const d = tmp();
+  const path = join(d, 'routing.yaml');
+  writeFileSync(path, stringify({ profiles: { p: { cwd: d, backend: 'pi' } }, routes: [] }));
+  const before = process.env.ANGELIA_UNRELEASED_PI;
+  delete process.env.ANGELIA_UNRELEASED_PI;
+  try { assert.throws(() => loadConfig(path), /profiles\.p\.backend: pi is not released yet/); } finally { if (before !== undefined) process.env.ANGELIA_UNRELEASED_PI = before; }
+});
+
+test('compile (pi): /abs rules, no Skill() entry, no MCP file, a note for MCP; the compiled skills reach pi on argv; its user skill folders are checked', () => {
+  process.env.ANGELIA_UNRELEASED_PI = '1';
+  const r = rig();
+  writeTable(r.path, (t) => { t.profiles.home.backend = 'pi'; });
+  mkdirSync(join(r.home, '.pi', 'agent', 'skills', 'ledger'), { recursive: true });
+  const pl = planProfile(r.cfg(), 'home', { home: r.home });
+  assert.ok(pl.conflicts.some((c) => c.includes(join(r.home, '.pi', 'agent', 'skills', 'ledger'))), pl.conflicts.join('\n'));
+  rmSync(join(r.home, '.pi', 'agent', 'skills', 'ledger'), { recursive: true });
+  const ok = planProfile(r.cfg(), 'home', { home: r.home });
+  assert.deepEqual(ok.conflicts, []);
+  assert.ok(ok.notes.some((n) => /pi has no MCP: the allowed servers \(fx-rates\)/.test(n)));
+  ok.apply();
+  assert.ok(!existsSync(join(r.cwd, '.mcp.json')));
+  const deny: string[] = JSON.parse(readFileSync(join(r.cwd, '.claude', 'settings.json'), 'utf8')).permissions.deny;
+  assert.ok(deny.includes(`Read(${join(r.lib, 'ledger')}/**)`));
+  assert.ok(!deny.some((d) => d.startsWith('Skill(')));
+  const argv = piArgv(r.cfg().profiles.home, { id: 's', started: false });
+  assert.ok(argv.includes(join(r.lib, 'fitness')) && argv.includes(join(r.lib, 'maps')) && !argv.includes(join(r.lib, 'ledger')));
+});
+
+test('compile (codex): /abs rules, .codex/ and .agents/ read-only, user-level Codex MCP servers denied unless given, a note for allowed MCP and the sandbox', () => {
+  const r = rig();
+  writeTable(r.path, (t) => { t.profiles.home.backend = 'codex'; });
+  mkdirSync(join(r.home, '.codex'), { recursive: true });
+  writeFileSync(join(r.home, '.codex', 'config.toml'), '[mcp_servers.github]\ncommand = "gh-mcp"\n[mcp_servers.fx-rates]\ncommand = "x"\n');
+  mkdirSync(join(r.home, '.codex', 'skills', 'ledger'), { recursive: true });
+  const saved = process.env.CODEX_HOME; delete process.env.CODEX_HOME;
+  try {
+    const pl = planProfile(r.cfg(), 'home', { home: r.home });
+    assert.ok(pl.conflicts.some((c) => c.includes(join(r.home, '.codex', 'skills', 'ledger'))), pl.conflicts.join('\n'));
+    rmSync(join(r.home, '.codex', 'skills', 'ledger'), { recursive: true });
+    const ok = planProfile(r.cfg(), 'home', { home: r.home });
+    assert.deepEqual(ok.conflicts, []);
+    assert.ok(ok.notes.some((n) => /codex: allowed MCP servers are not written yet \(fx-rates\)/.test(n)));
+    assert.ok(ok.notes.some((n) => /held by Codex's own sandbox/.test(n)));
+    ok.apply();
+    const deny: string[] = JSON.parse(readFileSync(join(r.cwd, '.claude', 'settings.json'), 'utf8')).permissions.deny;
+    assert.ok(deny.includes('mcp__github') && !deny.includes('mcp__fx-rates'));
+    assert.ok(deny.includes(`Edit(${join(r.cwd, '.codex')}/**)`) && deny.includes(`Edit(${join(r.cwd, '.agents')}/**)`));
+    assert.ok(deny.includes(`Read(${join(r.lib, 'ledger')}/**)`) && !deny.some((d) => d.startsWith('Skill(')));
+  } finally { if (saved !== undefined) process.env.CODEX_HOME = saved; }
 });

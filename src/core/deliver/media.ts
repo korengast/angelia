@@ -80,7 +80,7 @@ export function isOpus(path: string): boolean {
  * in its workspace; its private state files are (STATE_PRIVATE).
  */
 const DENY_DIRS = ['/etc', '/proc', '/sys', '/dev', '/var/db', '/private/etc', '/private/var/db'];
-const DENY_HOME_DIRS = [...HOME_PRIVATE.dirs, '.claude', '.grok', '.config/git', 'Library/Application Support', 'Library/Containers', 'Library/Group Containers'];
+const DENY_HOME_DIRS = [...HOME_PRIVATE.dirs, '.claude', '.grok', '.pi', '.codex', '.config/git', 'Library/Application Support', 'Library/Containers', 'Library/Group Containers'];
 const DENY_SEGMENTS = ['secrets', '.secrets', 'credentials', 'keychains', '.gnupg', '.ssh'];
 const DENY_NAMES = /^(\.env(\..+)?|\.netrc|\.npmrc|\.pypirc|\.pgpass|\.vault-token|\.git-credentials|\.[a-z]*_history|credentials(\.toml)?|id_[a-z0-9]+|.*\.(pem|key|p12|pfx|keystore|jks)|.*token.*\.json|auth\.json|.*credentials.*\.json)$/i;
 

@@ -1,6 +1,6 @@
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainSession } from './brain.js';
-import { strictMcpArgs } from '../capabilities/compile.js';
+import { readRecord, strictMcpArgs } from '../capabilities/compile.js';
 
 /** Variables that switch a CLI from the user's subscription to per-token API billing, or send it
  *  to another endpoint. None of them reaches any agent, whatever its backend: a grok profile's shell
@@ -10,6 +10,7 @@ export const STRIP_ENV = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
   'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_USE_VERTEXAI',
   'XAI_API_KEY', 'GROK_CODE_XAI_API_KEY',
+  'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY',
 ];
 export const MIN_CLAUDE_VERSION = '2.1.270';
 
@@ -93,5 +94,24 @@ export function grokArgv(p: Profile, bin = 'grok'): string[] {
   if (p.effort) a.push('--reasoning-effort', p.effort);
   if (p.permission_mode === 'bypassPermissions') a.push('--always-approve');
   a.push('stdio');
+  return a;
+}
+
+/** Read-only tools for plan mode: pi has no plan mode of its own. */
+export const PI_PLAN_TOOLS = 'read,grep,find,ls';
+
+/** pi in RPC mode. Measured 2026-09-25 on pi 0.86.1: `--session-id` creates the session under the
+ *  given id or resumes it, and `--append-system-prompt` is honoured in RPC mode. The permission
+ *  stance is not on argv: the gate extension reads it from the environment (pi-gate.ts). A compiled
+ *  profile's skills are passed one by one; pi does not read Claude's skills folder. */
+export function piArgv(p: Profile, s: BrainSession, bin = 'pi', system?: string, gate?: string): string[] {
+  const a = [bin, '--mode', 'rpc', '--session-id', s.id];
+  if (p.model) a.push('--model', p.model);
+  // Passed as is: pi's levels (off, minimal, low, medium, high, xhigh, max) include all of Angelia's.
+  if (p.effort) a.push('--thinking', p.effort);
+  if (p.permission_mode === 'plan') a.push('--tools', PI_PLAN_TOOLS);
+  for (const path of Object.values(readRecord(p.cwd)?.links ?? {})) a.push('--skill', path);
+  if (gate) a.push('-e', gate);
+  if (system) a.push('--append-system-prompt', system);
   return a;
 }

@@ -162,7 +162,7 @@ function readPid(): number {
 }
 
 function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' && !!process.env.CODEX_SANDBOX; }
 }
 
 export async function serviceCommand(argv: string[]): Promise<void> {

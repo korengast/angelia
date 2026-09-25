@@ -4,7 +4,7 @@
 # `angelia init` writes it for you. Copy from here only as a starting point.
 # A chat matches a route; a route names a profile; a profile is a directory
 # where your coding CLI already has its instructions file, settings and MCP.
-# backend: claude-code (default) | grok
+# backend: claude-code (default) | grok | codex
 # bin: full path to the CLI, only if it is not on PATH, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin,
 #      ~/.bun/bin or ~/.npm-global/bin
 

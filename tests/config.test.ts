@@ -213,9 +213,9 @@ routes:
 whatsapp: {}
 `);
   const everyone = ', allow_from: ["*"]';
-  assert.throws(() => loadConfig(table('', everyone)), /routes\[0\].*bypassPermissions profile yolo, open to every member.*sandbox: true/);
+  assert.throws(() => loadConfig(table('', everyone)), /routes\[0\].*profile yolo, open to every member.*bypassPermissions.*sandbox: true/);
   assert.equal(loadConfig(table(', sandbox: true', everyone)).profiles.yolo.sandbox, true);
-  assert.throws(() => loadConfig(table(', sandbox: true, backend: grok', everyone)), /without the sandbox/, 'grok has no sandbox to hold it');
+  assert.throws(() => loadConfig(table(', sandbox: true, backend: grok', everyone)), /without a sandbox/, 'grok has no sandbox to hold it');
   assert.deepEqual(loadConfig(table('', ', allow_from: ["15550000001"]')).routes[0].allow_from, ['15550000001']);
   assert.deepEqual(loadConfig(table('')).routes[0].allow_from, [], 'no allow_from: the owners only, nothing to refuse');
 });

@@ -18,12 +18,16 @@ export interface BrainOptions {
   granted?: string[];
   /** tmux mode: secret names the agent must never see, even if the server still has them. */
   withheld?: string[];
-  /** The self-awareness prompt, for backends that take one at launch (Claude Code). grok reads it from a file; see self.ts. */
+  /** The self-awareness prompt, for backends that take one at launch (Claude Code, pi). grok reads it from a file; see self.ts. */
   system?: string;
   /** Claude Code's projects folder (transcripts.ts). When set, a resume first places the session's
    *  transcript under the profile cwd's own folder, and a session whose conversation is gone from
    *  every folder starts fresh under the same id instead of failing every turn. Unset in tests. */
   projectsDir?: string;
+  /** The daemon's API socket, which a sandboxed agent (Codex) must be allowed to reach for `angelia send-media` and `angelia turn`. */
+  apiSocket?: string;
+  /** The profile's name in the table, for text the agent is told (Codex's sandbox note). */
+  profileName?: string;
 }
 
 export interface BrainSession {
@@ -138,4 +142,23 @@ export function waitExit(lines: EventEmitter, exited: () => boolean, ms: number)
     const done = () => { clearTimeout(t); resolve(true); };
     lines.once('exit', done);
   });
+}
+
+/** Graceful stop of a backend's child: close stdin (every CLI here ends on EOF), then SIGTERM, then SIGKILL. */
+export async function stopChild(child: { stdin: { end(): void }; kill(signal: NodeJS.Signals): boolean }, lines: EventEmitter, exited: () => boolean, graceMs: number): Promise<void> {
+  child.stdin.end();
+  if (await waitExit(lines, exited, graceMs)) return;
+  child.kill('SIGTERM');
+  if (await waitExit(lines, exited, graceMs)) return;
+  child.kill('SIGKILL');
+  await waitExit(lines, exited, graceMs);
+}
+
+/**
+ * Why the child died, for the log and for the retry decision. Always starts with `exit`, because
+ * that prefix is what tells the orchestrator a brand-new session died before it ever answered.
+ */
+export function exitReason(failure: string): string {
+  const line = failure.split('\n').map((l) => l.trim()).filter(Boolean).pop();
+  return line ? `exit: ${line.slice(0, 200)}` : 'exit';
 }

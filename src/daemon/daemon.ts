@@ -22,7 +22,7 @@ import type { Inbound } from '../core/types.js';
 export const STATE_DIR = process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia');
 
 function pidAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' && !!process.env.CODEX_SANDBOX; }
 }
 
 /** `~/.angelia/env`: the bot token and the secrets capabilities name. See core/env.ts. */

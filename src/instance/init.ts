@@ -36,13 +36,17 @@ export interface InitDeps {
   createRepo?(workspace: string, name: string): string;
 }
 
-type Backend = 'claude-code' | 'grok';
+type Backend = 'claude-code' | 'grok' | 'pi' | 'codex';
 export interface ProfileDraft { name: string; cwd: string; permission_mode: string; shell: boolean; model?: string; backend: Backend }
 interface RouteDraft { platform: 'telegram'; chat: string; profile: string; mention?: 'required'; owners?: string[]; allow_from?: string[] }
 
 const BACKENDS: { key: Backend; label: string; bin: string; instructions: string }[] = [
   { key: 'claude-code', label: 'Claude Code (claude)', bin: 'claude', instructions: 'CLAUDE.md' },
   { key: 'grok', label: 'Grok Build (grok)', bin: 'grok', instructions: 'CLAUDE.md' },
+  // pi reads AGENTS.md or CLAUDE.md; CLAUDE.md, because compile writes its managed block there.
+  { key: 'pi', label: 'pi (pi)', bin: 'pi', instructions: 'CLAUDE.md' },
+  // Codex reads CLAUDE.md through the fallback name Angelia passes it (codex-config.ts).
+  { key: 'codex', label: 'Codex (codex)', bin: 'codex', instructions: 'CLAUDE.md' },
 ];
 
 const MODES = [
@@ -214,7 +218,8 @@ async function telegramToken(d: InitDeps, envPath: string): Promise<string> {
 
 /** One question when more than one supported CLI is installed; otherwise the one that is, or Claude Code. */
 async function backendQuestion(d: InitDeps, name: string): Promise<Backend> {
-  const found = BACKENDS.filter((b) => d.hasBin(b.bin));
+  // pi is not released yet (load.ts refuses it): never offered, or the table written would not load.
+  const found = BACKENDS.filter((b) => d.hasBin(b.bin) && (b.key !== 'pi' || process.env.ANGELIA_UNRELEASED_PI === '1'));
   if (found.length === 0) return 'claude-code';
   if (found.length === 1) return found[0].key;
   return d.ask.choose(`Which CLI answers "${name}"?`, found.map((b) => ({ key: b.key, label: b.label })), found[0].key);
@@ -226,8 +231,11 @@ async function profileQuestions(d: InitDeps, name: string, defCwd: string): Prom
   const instructions = BACKENDS.find((b) => b.key === backend)!.instructions;
   const cwd = await ask.text(`Directory for "${name}" (the agent's home: its ${instructions}, settings, memory live there)`, defCwd);
   const permission_mode = await ask.choose('Permission mode', MODES.map((m) => ({ key: m.key, label: m.label })), 'acceptEdits');
+  // pi falls back to its own default provider, which may be one the owner has no login for (or, for a
+  // Claude subscription, one billed as extra usage), so its model is asked for.
+  const model = backend === 'pi' ? (await ask.text('Model for pi, as provider/model (empty: pi\'s own default)', '')).trim() || undefined : undefined;
   const shell = await ask.confirm('Enable /sh (run raw shell commands from the chat, no agent)? Only for chats you alone can write to.', false);
-  return { name, cwd, permission_mode, shell, backend };
+  return { name, cwd, permission_mode, shell, backend, ...(model ? { model } : {}) };
 }
 
 /**
