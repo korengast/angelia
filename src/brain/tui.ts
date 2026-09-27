@@ -19,7 +19,13 @@ const HOOK = fileURLToPath(new URL('../../scripts/tui-stop-hook.mjs', import.met
 const POLL_MS = 700;
 const START_TIMEOUT_MS = 90_000;
 const PROMPT_TIMEOUT_MS = 10 * 60_000;
-const TURN_TIMEOUT_MS = 60 * 60_000;
+/** A turn has no end time: a long build or a run of subagents may take hours, and `/stop` ends a
+ *  stuck one. Each full hour the chat gets one line saying so, so a silent turn is not taken for a
+ *  crash. */
+const TURN_NOTICE_MS = 60 * 60_000;
+/** A pane and transcript unchanged this long: the hourly line says the turn may be stuck. A working
+ *  CLI redraws its spinner and timer every second, so only a screen that waits on nothing is this still. */
+const STILL_MS = 30 * 60_000;
 /** How long a pane must sit at an idle prompt, with nothing new in the transcript and no answer
  *  from the Stop hook, before the turn counts as over anyway. A slash command such as `/compact`
  *  is handled by the CLI itself and ends without a Stop event, so without this the turn would
@@ -148,6 +154,11 @@ export class TuiBrain extends EventEmitter implements Brain {
   backendSessionId?: string;
   /** tmux session name and Remote Control name: the same readable string in both places. */
   readonly name: string;
+  /** When the turn now running was typed in; unset between turns. Markers older than it are not its answer. */
+  turnSentAt?: number;
+  /** Bumped whenever the reader of the pane changes (a release, the background, a follow): a watch
+   *  loop that sees it move stops reading, so two loops never read one pane. */
+  private gen = 0;
 
   constructor(
     readonly profile: Profile,
@@ -241,7 +252,9 @@ export class TuiBrain extends EventEmitter implements Brain {
       }
     }
     const argv = this.argv(resume);
-    const r = await this.tm(['new-session', '-d', '-s', this.name, '-c', this.profile.cwd, '-x', '220', '-y', '50', ...pinned, ...wrap, 'env', ...unset, ...argv]);
+    // remain-on-exit off in the same call: the server reads the user's ~/.tmux.conf, and a dead pane
+    // left on screen would pass for a live session, so a turn would wait on it for ever.
+    const r = await this.tm(['new-session', '-d', '-s', this.name, '-c', this.profile.cwd, '-x', '220', '-y', '50', ...pinned, ...wrap, 'env', ...unset, ...argv, ';', 'set-option', '-w', '-t', this.name, 'remain-on-exit', 'off']);
     if (r.code !== 0) { rmSync(this.envPath, { force: true }); return `tmux could not start the session: ${r.err.trim() || 'new-session failed'}`; }
     writeFileSync(this.launchPath, this.fingerprint(resume));
     this.up = true;
@@ -332,49 +345,108 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.at = fileSize(this.transcript); // only rows written from here on are this turn's
     rmSync(this.markerPath, { force: true });
     const sentAt = Date.now();
+    const gen = this.gen;
     if (!(await this.paste(text))) {
       yield { kind: 'result', text: '', isError: true, reason: this.up ? 'the session never came back to a prompt' : 'exit' };
       return;
     }
+    this.turnSentAt = sentAt;
+    yield* this.watch(sentAt, false, gen);
+  }
+
+  /**
+   * Keep the running turn going with nobody reading it: a handoff moved the chat to another session
+   * while this one worked. Yields a permission event for each new dialog (nothing answers it from
+   * here: it waits, as it would in a forgotten terminal, until someone answers it in the Claude app,
+   * in tmux, or after `/resume`), and a result once the turn is over. No time limit.
+   */
+  backgroundTurn(): AsyncGenerator<BrainEvent> {
+    const gen = ++this.gen;
+    this.permissions.clear();
+    this.up = false;
+    return this.watch(this.turnSentAt ?? Date.now(), true, gen);
+  }
+
+  /** Read the running turn again, in the foreground: `/resume` of a session sent to the background.
+   *  The pane is this brain's again from the call on (alive, reader switched); what the result yields
+   *  is what `turn` would have. */
+  follow(): AsyncGenerator<BrainEvent> {
+    const gen = ++this.gen;
+    this.up = true;
+    this.ready = Promise.resolve(null);
+    this.lastUsedAt = Date.now();
+    this.at = fileSize(this.transcript);
+    return this.watch(this.turnSentAt ?? Date.now(), false, gen);
+  }
+
+  /** Take over a pane that runs already, without starting one: a restarted daemon finds a turn it had
+   *  sent to the background. False when nothing runs under this name any more. */
+  async adopt(turnSentAt: number): Promise<boolean> {
+    this.turnSentAt = turnSentAt;
+    if ((await this.tm(['has-session', '-t', this.name])).code !== 0) return false;
+    this.ready = Promise.resolve(null);
+    return true;
+  }
+
+  /** The polling half of a turn. `background`: no permission book (nobody in the chat answers) and no
+   *  hourly line. Ends early, as a failed result, once another reader takes the pane (`gen` moved). */
+  private async *watch(sentAt: number, background: boolean, gen: number): AsyncGenerator<BrainEvent> {
     let pending: string | null = null;
     const dialogs = new DialogWatch();
     let quietSince = 0;
-    const deadline = Date.now() + TURN_TIMEOUT_MS;
-    while (Date.now() < deadline) {
+    let hours = 0, lastPane = '', movedAt = Date.now();
+    // A dialog still open when the turn ends can no longer be answered from the chat: its timer goes too.
+    const over = (): void => { this.turnSentAt = undefined; this.lastUsedAt = Date.now(); this.permissions.clear(); };
+    for (;;) {
       await sleep(POLL_MS);
+      if (gen !== this.gen) { yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
+      const h = Math.floor((Date.now() - sentAt) / TURN_NOTICE_MS);
+      if (!background && h > hours) {
+        hours = h;
+        const still = Math.floor((Date.now() - movedAt) / 60_000);
+        // A notice, not a progress line: the answer is never taken for a repeat of it.
+        yield { kind: 'notice', text: still >= STILL_MS / 60_000
+          ? `Nothing has moved in this turn for ${still} minutes; it may be stuck. /stop ends it.`
+          : `Still working on this turn after ${h === 1 ? 'an hour' : `${h} hours`}. /stop ends it.` };
+      }
       const rows = this.readTranscript();
-      if (rows.length) quietSince = 0;
+      if (rows.length) { quietSince = 0; movedAt = Date.now(); }
       for (const ev of rows) {
         if (ev.kind === 'text') { if (pending) yield { kind: 'progress', text: pending }; pending = ev.text; }
         else if (pending) { yield { kind: 'progress', text: pending }; pending = null; }
       }
       const done = this.takeMarker(sentAt);
       if (done !== null) {
-        this.lastUsedAt = Date.now();
+        over();
         yield { kind: 'result', text: done, isError: false };
         return;
       }
       const pane = await this.capture(30);
+      if (pane !== lastPane) { lastPane = pane; movedAt = Date.now(); }
       const open = permissionDialog(pane);
-      const seen = dialogs.see(open, (id) => this.permissions.has(id));
-      if (seen.gone) this.permissions.take(seen.gone); // answered in the app or in the terminal
+      const seen = dialogs.see(open, (id) => background || this.permissions.has(id));
+      if (seen.gone && !background) this.permissions.take(seen.gone); // answered in the app or in the terminal
       if (seen.announce && open) {
-        this.permissions.add(seen.announce);
+        if (!background) this.permissions.add(seen.announce);
         yield { kind: 'permission', id: seen.announce, tool: open.tool, preview: open.preview };
       }
-      if (!pane && !(await this.sessionAlive())) { yield { kind: 'result', text: '', isError: true, reason: 'exit' }; return; }
+      if (!pane && (await this.tm(['has-session', '-t', this.name])).code !== 0) {
+        if (!background) this.up = false;
+        over();
+        yield { kind: 'result', text: '', isError: true, reason: 'exit' };
+        return;
+      }
       if (paneIdle(pane) && !dialogs.open) {
         if (!quietSince) quietSince = Date.now();
         else if (Date.now() - quietSince > QUIET_MS) {
           // No Stop event is coming: either the CLI answered the message itself, or the hook failed
           // and the transcript holds the answer.
-          this.lastUsedAt = Date.now();
+          over();
           yield { kind: 'result', text: pending ?? '', isError: false };
           return;
         }
       } else quietSince = 0;
     }
-    yield { kind: 'result', text: '', isError: true, reason: 'the turn did not finish in an hour' };
   }
 
   /** New transcript rows since the last read, as the two things a progress line cares about.
@@ -434,11 +506,13 @@ export class TuiBrain extends EventEmitter implements Brain {
    * the next message respawned and resumed by id.
    */
   async release(): Promise<void> {
+    this.gen++; // a turn being read stops being read; the pane goes on with it
     this.permissions.clear();
     this.up = false;
   }
 
   async stop(): Promise<void> {
+    this.gen++;
     this.permissions.clear();
     await this.tm(['kill-session', '-t', this.name]);
     this.up = false;

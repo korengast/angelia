@@ -3,7 +3,7 @@ import { loadConfig } from '../instance/config/load.js';
 import type { Config } from '../instance/config/schema.js';
 import { configPath, INSTANCE_DIR } from '../instance/instance.js';
 import { selfPrompt } from '../daemon/self.js';
-import { planProfile, planText, readRecord } from './compile.js';
+import { planHandoffSkill, planProfile, planText, readRecord } from './compile.js';
 
 /** The profiles whose compiled files no longer match the table (all compiled ones when none are
  *  named), as text; empty when every one matches. Profiles never compiled are skipped. A table with no
@@ -40,9 +40,12 @@ export async function compileCommand(argv: string[]): Promise<void> {
   }
   const plans = (names.length ? names : Object.keys(cfg.profiles)).map((n) => planProfile(cfg, n, { self }));
   for (const pl of plans) console.log(planText(pl) + '\n');
+  const handoff = planHandoffSkill();
+  if (handoff.change || handoff.conflict) console.log(`${handoff.conflict ? `conflict: ${handoff.conflict}` : handoff.change}\n`);
   if (!write) { console.log('Nothing written. Add --write and the profile names to apply.'); return; }
   const blocked = plans.filter((pl) => pl.conflicts.length);
   if (blocked.length) throw new Error(`not written: conflicts in ${blocked.map((pl) => pl.profile).join(', ')}`);
   for (const pl of plans) pl.apply();
+  handoff.apply();
   console.log(`Written: ${plans.map((pl) => pl.profile).join(', ')}. A running session picks this up when it next starts; a tui pane relaunches by itself at the next restart.`);
 }

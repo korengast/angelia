@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import type { Config, Profile } from '../instance/config/schema.js';
-import type { Inbound, BrainEvent, Platform } from './types.js';
+import type { Inbound, BrainEvent, Platform, SessionRow } from './types.js';
 import { cleanName, cleanText, isGroupChat, parseSessionKey, sessionKey } from './types.js';
 import { matchRoute } from './router/match.js';
 import { gate, isOwner, OWNER_COMMANDS } from './router/gate.js';
@@ -16,6 +16,7 @@ import { extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, 
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
 import { failureLine, isLimitText, limitHint, UNMATCHED_LINE, NOT_OWNER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText } from './commands.js';
+import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
 import { catalog as askCatalog, effortsFor, LABELS, type Catalog } from '../brain/catalog.js';
 import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
@@ -62,8 +63,8 @@ export interface OrchestratorOptions {
   catalog?: (backend: BackendName, bin: string | undefined, env: NodeJS.ProcessEnv) => Promise<Catalog>;
 }
 
-/** The backends /backend offers. pi is built but not released (load.ts). */
-const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex'];
+/** The backends /backend offers. */
+const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex', 'pi'];
 /** How long a CLI's model list is reused before it is asked again. */
 const CATALOG_MS = 10 * 60_000;
 
@@ -85,6 +86,9 @@ export class Orchestrator {
    *  message reattaches it by name. Kept here so that /new, /resume or a backend switch in between
    *  ends the pane too, instead of leaving it running with nobody to reach it. */
   private parked = new Map<string, Brain>();
+  /** Sessions a handoff moved a chat away from while their turn ran, by session id. Their panes go on
+   *  with nobody reading them until the turn is over, or `/resume` takes one back (handoff). */
+  private background = new Map<string, { key: string; brain: Brain }>();
   /** When each chat last messaged each other chat (reach). */
   private peerSends = new Map<string, number[]>();
   /** Chats told their queue is full, until one message gets in again. */
@@ -193,7 +197,17 @@ export class Orchestrator {
         if (!cmd.selector) return this.reply(i, resumeListText(this.map, key));
         await this.dropBrain(key);
         const row = this.map.setActive(key, cmd.selector);
-        return this.reply(i, row ? `Resumed ${row.id.slice(0, 8)} · ${row.label || '(no label)'}` : 'No such session.');
+        if (!row) return this.reply(i, 'No such session.');
+        const bg = this.background.get(row.id);
+        if (!bg || bg.key !== key || !bg.brain.follow) return this.reply(i, `Resumed ${row.id.slice(0, 8)} · ${row.label || '(no label)'}`);
+        // Its turn still runs: read it here again, so a waiting permission can be answered and the answer arrives.
+        this.background.delete(row.id);
+        this.map.setBackground(key, row.id, null);
+        const follow = bg.brain.follow();
+        this.brains.set(key, bg.brain);
+        this.log(`background taken back key=${key} session=${row.id.slice(0, 8)}`);
+        await this.reply(i, `Resumed ${row.id.slice(0, 8)} · ${row.label || '(no label)'}. Its turn is still running; the answer comes here.`);
+        return this.queue.enqueue(key, () => this.turn(i, key, profileName, { follow }));
       }
     }
   }
@@ -228,11 +242,12 @@ export class Orchestrator {
     return this.turn(i, key, made.name, { preface: made.prompt });
   }
 
-  /** The backend's catalog, asked of the CLI at most every ten minutes. */
+  /** The backend's catalog, asked of the CLI at most every ten minutes. Kept per profile: a CLI lists
+   *  the models its keys reach, and each profile is given its own keys. */
   private async catalogFor(profileName: string): Promise<Catalog> {
     const p = this.cfg.profiles[profileName];
     const bin = this.binFor(p);
-    const k = `${p.backend} ${bin ?? ''}`;
+    const k = `${profileName} ${p.backend} ${bin ?? ''}`;
     const hit = this.catalogs.get(k);
     if (hit && Date.now() - hit.at < CATALOG_MS) return hit.c;
     const c = await (this.opts.catalog ?? askCatalog)(p.backend, bin, this.childEnv(profileName).env);
@@ -316,11 +331,18 @@ export class Orchestrator {
       const s = parseSessionKey(k);
       if (chats.has(`${s.platform}:${s.chat}`)) await this.dropBrain(k);
     }
+    // A session not started yet is reused at the next message: its /model and /effort were for the old CLI.
+    for (const k of this.map.keys()) {
+      const s = parseSessionKey(k);
+      if (chats.has(`${s.platform}:${s.chat}`) && !this.map.getActive(k)?.started) this.map.setOverride(k, { model: null, effort: null });
+    }
     const row = this.map.startNew(key);
     return this.reply(i, [
       `Profile ${profileName} now runs on ${LABELS[b]}. New session ${row.id.slice(0, 8)} started.`,
       ...(done.removed.length ? [`Taken off the profile, they belonged to ${LABELS[from]}: ${done.removed.join(', ')}.`] : []),
       ...(others > 0 ? [`${others} other chat${others > 1 ? 's on this profile switch' : ' on this profile switches'} at their next message.`] : []),
+      // The switch takes the model off, and pi's own default provider may have no login here.
+      ...(b === 'pi' ? ['Pick a model with /model: pi\'s own default may be a provider with no login here.'] : []),
       ...done.notes.map((n) => `Note: ${n}`),
     ].join('\n'));
   }
@@ -347,16 +369,24 @@ export class Orchestrator {
   }
 
   private async brainFor(key: string, name: string): Promise<Brain> {
-    let b = this.brains.get(key);
+    const b = this.brains.get(key);
     if (b?.alive) return b;
+    const next = this.makeBrain(key, name, this.map.ensureActive(key, '', this.cfg.profiles[name].backend));
+    next.start();
+    this.brains.set(key, next);
+    this.parked.delete(key); // the same pane, reattached by name
+    return next;
+  }
+
+  /** A brain for one session of a chat, with its listeners, not started. */
+  private makeBrain(key: string, name: string, row: SessionRow): Brain {
     const profile = this.cfg.profiles[name];
-    const row = this.map.ensureActive(key, '', profile.backend);
     const effective = { ...profile, ...(row.model ? { model: row.model } : {}), ...(row.effort ? { effort: row.effort as Profile['effort'] } : {}) };
     const env = this.childEnv(name);
     // The chat's own API token is a secret like the capability ones: in tmux mode it reaches the
     // pane through the private file, never a command line.
     const api = this.opts.sessionToken?.(key);
-    b = createBrain(effective, { id: row.id, started: row.started }, {
+    const b = createBrain(effective, { id: row.id, started: row.started }, {
       bin: this.binFor(profile), env: { ...env.env, ANGELIA_SESSION_KEY: key, ...(api ? { ANGELIA_API_TOKEN: api } : {}) },
       hostEnv: this.childEnv().env, granted: api ? [...env.granted, 'ANGELIA_API_TOKEN'].sort() : env.granted, withheld: env.withheld,
       permissionTimeoutMs: this.cfg.defaults.permission_timeout_minutes * 60_000,
@@ -371,16 +401,15 @@ export class Orchestrator {
       this.log(`permission timed out key=${key} id=${id.slice(0, 8)}`);
       void this.notify(key, `${PERMISSION_TIMEOUT_LINE} (${id.slice(0, 8)})`).catch((e) => this.log(`permission timeout note: ${(e as Error).message}`));
     });
-    b.start();
-    this.brains.set(key, b);
-    this.parked.delete(key); // the same pane, reattached by name
     return b;
   }
 
   /** `bare`: the message is a CLI command and goes as is, without the envelope. `preface` goes before
    *  the message, to the agent only (the onboarding prompt); the session label stays the message. */
-  private async turn(i: Inbound, key: string, name: string, o: { bare?: boolean; preface?: string; retried?: boolean } = {}): Promise<void> {
-    const { bare = false, preface, retried = false } = o;
+  /** `follow`: no message goes in; the events are those of a turn already running (a /resume of a
+   *  session sent to the background), delivered as any turn's are. */
+  private async turn(i: Inbound, key: string, name: string, o: { bare?: boolean; preface?: string; retried?: boolean; follow?: AsyncGenerator<BrainEvent> } = {}): Promise<void> {
+    const { bare = false, preface, retried = false, follow } = o;
     const profile = this.cfg.profiles[name];
     const sender = this.senders[i.platform];
     const era = this.era.get(key) ?? 0;
@@ -403,6 +432,7 @@ export class Orchestrator {
     }
     const b = await this.brainFor(key, name);
     const text = preface ? `${preface}\n\n${agentText(i, bare)}` : agentText(i, bare);
+    const events = follow ?? b.turn(text);
     await sender?.typing?.(i.chat, true);
     let result: Extract<BrainEvent, { kind: 'result' }> | undefined;
     // Progress lines never hold the turn: they queue, merge while the bucket is full, and give way
@@ -410,7 +440,7 @@ export class Orchestrator {
     const progress = new ProgressOutbox(this.rateFor(i.platform), (t) => this.replyFromAgent(i, t, profile, true),
       (e) => this.log(`progress failed key=${key} ${(e as Error).message}`));
     try {
-      for await (const e of b.turn(text)) {
+      for await (const e of events) {
         if (e.kind === 'progress') progress.push(e.text);
         else if (e.kind === 'notice') await this.reply(i, e.text);
         else if (e.kind === 'permission') {
@@ -478,13 +508,102 @@ export class Orchestrator {
   /** A prompt from this machine (`angelia turn`, a job). `fromAgent`: the chat's own agent asked, with
    *  its own token. That one is labelled as such and never runs as a CLI command: an agent a member
    *  talked into it must not reach /model or /logout, which only an owner may send. */
-  async injectTurn(key: string, text: string, fromAgent = false, fromKey?: string): Promise<void> {
+  async injectTurn(key: string, text: string, fromAgent = false, fromKey?: string, label = 'scheduled'): Promise<void> {
     const k = parseSessionKey(key);
-    const senderName = fromKey ? `profile ${this.profileName(fromKey) ?? '?'} (${fromKey})` : fromAgent ? 'this chat\'s agent' : 'scheduled';
+    const senderName = fromKey ? `profile ${this.profileName(fromKey) ?? '?'} (${fromKey})` : fromAgent ? 'this chat\'s agent' : label;
     const i: Inbound = { ...k, sender: fromKey ? 'profile' : 'local', senderName, text: cleanText(text), isGroup: isGroupChat(k.platform, k.chat), mentioned: true, media: [] };
     const route = matchRoute(this.cfg, i);
     if (!route) return;
     await this.queue.enqueue(key, () => this.turn(i, key, route.profile, { bare: !fromAgent && isAgentCommand(i) }));
+  }
+
+  /**
+   * `/angelia-handoff` from a terminal (`angelia handoff`, owner only). In a profile's own folder the
+   * terminal's Claude Code session becomes the chat's active one; anywhere else the chat starts a fresh
+   * session whose first turn is the brief. A turn running in the chat goes on in the background.
+   */
+  async handoff(r: HandoffRequest): Promise<HandoffResult> {
+    const t = handoffTarget(this.cfg, r.cwd);
+    const key = pickChat(t, r.chat);
+    const summary = r.summary.split(/\s+/).join(' ').trim().replace(/[.\s]+$/, '');
+    if (!summary) throw new HandoffError('a one-line summary is needed');
+    if (t.mode === 'session') {
+      if (!r.session) throw new HandoffError('no session id: run it inside Claude Code, or pass --session <id>');
+      if (this.map.getActive(key)?.id === r.session) throw new HandoffError(`this session is already the active one in ${key}`);
+    } else if (!r.brief?.trim()) throw new HandoffError(`this folder is not profile ${t.profile}'s own, so the session does not move: a brief is needed after the summary line`);
+    const moved = await this.clearForHandoff(key);
+    if (t.mode === 'session') this.map.adopt(key, r.session!, summary, 'claude-code');
+    else this.map.startNew(key, summary);
+    const n = moved ? this.map.position(key, moved) : 0;
+    const said = [
+      t.mode === 'session' ? `From the terminal: ${summary}. Continuing here.` : `From the terminal, ${r.project ?? r.cwd}: ${summary}.`,
+      ...(moved ? [`A running turn went to the background${n ? `; /resume ${n} shows it` : ''}.`] : []),
+    ].join(' ');
+    this.log(`handoff key=${key} profile=${t.profile} mode=${t.mode}${moved ? ` background=${moved.slice(0, 8)}` : ''}`);
+    await this.notify(key, said);
+    if (t.mode === 'brief') void this.injectTurn(key, briefTurn(r.project ?? r.cwd, r.brief!), false, undefined, 'terminal handoff')
+      .catch((e) => this.log(`handoff brief failed key=${key} ${(e as Error).message}`));
+    return { key, profile: t.profile, mode: t.mode, said };
+  }
+
+  /** Free the chat for a handoff. Idle: its session ends, as on /resume. Mid-turn: the pane goes on in
+   *  the background, and its session id comes back. A CLI that cannot go on alone refuses the handoff. */
+  private async clearForHandoff(key: string): Promise<string | undefined> {
+    if (this.queue.queued(key) === 0) { await this.dropBrain(key); return undefined; }
+    const b = this.brains.get(key);
+    const row = this.map.getActive(key);
+    if (!b?.alive || !b.release || !b.backgroundTurn || !row) {
+      throw new HandoffError(`${key} is in the middle of a turn, and its agent cannot go on in the background. Wait for the answer, or /stop it there, then try again.`);
+    }
+    this.era.set(key, (this.era.get(key) ?? 0) + 1); // the turn being read ends quietly: its chat moved on
+    this.brains.delete(key);
+    await b.release();
+    this.toBackground(key, row.id, b, b.turnSentAt ?? Date.now());
+    return row.id;
+  }
+
+  private toBackground(key: string, id: string, b: Brain, since: number): void {
+    this.background.set(id, { key, brain: b });
+    this.map.setBackground(key, id, new Date(since));
+    void this.watchBackground(id);
+  }
+
+  /** Read a background turn until it is over: a permission dialog is told to the chat once (it waits
+   *  for an answer, with no time limit), and the end of the turn ends the pane. */
+  private async watchBackground(id: string): Promise<void> {
+    const e = this.background.get(id);
+    if (!e?.brain.backgroundTurn) return;
+    let result: Extract<BrainEvent, { kind: 'result' }> | undefined;
+    try {
+      for await (const ev of e.brain.backgroundTurn()) {
+        if (ev.kind === 'result') result = ev;
+        else if (ev.kind === 'permission') {
+          const n = this.map.position(e.key, id);
+          this.log(`background permission key=${e.key} session=${id.slice(0, 8)} tool=${ev.tool}`);
+          await this.notify(e.key, `The background turn of session ${id.slice(0, 8)} is waiting for a permission: ${ev.tool}${ev.preview ? `: ${ev.preview}` : ''}. ${n ? `/resume ${n} to answer it here, or answer it` : 'Answer it'} in the Claude app.`)
+            .catch((err) => this.log(`background note failed key=${e.key} ${(err as Error).message}`));
+        }
+      }
+    } catch (err) { this.log(`background watch failed key=${e.key} ${(err as Error).message}`); }
+    if (this.background.get(id) !== e || result?.reason === 'released') return; // taken back by /resume
+    this.background.delete(id);
+    this.map.setBackground(e.key, id, null);
+    this.log(`background turn over key=${e.key} session=${id.slice(0, 8)}${result?.isError ? ` reason=${result.reason}` : ''}`);
+    await this.end(e.key, e.brain);
+  }
+
+  /** At startup: take back the background turns a restart cut off from their reader. A pane that is
+   *  gone just loses its mark; the session stays in /resume. */
+  async restoreBackground(): Promise<void> {
+    for (const { key, row } of this.map.background()) {
+      const name = this.profileName(key);
+      const since = Date.parse(row.background_since ?? '');
+      const b = name ? this.makeBrain(key, name, row) : undefined;
+      if (b?.adopt && !Number.isNaN(since) && (await b.adopt(since).catch(() => false))) {
+        this.log(`background restored key=${key} session=${row.id.slice(0, 8)}`);
+        this.toBackground(key, row.id, b, since);
+      } else this.map.setBackground(key, row.id, null);
+    }
   }
 
   /** Post into the chat behind a session key (`angelia send`, a cron launcher). `fromKey`: another
@@ -632,7 +751,7 @@ export class Orchestrator {
    *  none of these names is an orphan (brain/tui.ts, sweepPanes). */
   tuiPanes(): { keep: Set<string>; prefixes: string[] } {
     const keep = new Set<string>();
-    for (const b of [...this.brains.values(), ...this.parked.values()]) { const n = (b as { name?: unknown }).name; if (typeof n === 'string') keep.add(n); }
+    for (const b of [...this.brains.values(), ...this.parked.values(), ...[...this.background.values()].map((e) => e.brain)]) { const n = (b as { name?: unknown }).name; if (typeof n === 'string') keep.add(n); }
     for (const key of this.map.keys()) {
       const p = this.profileFor(key);
       const row = this.map.getActive(key);
@@ -658,6 +777,23 @@ export class Orchestrator {
     await Promise.all([...this.brains.keys()].map((k) => this.dropBrain(k, false)));
   }
 }
+
+export interface HandoffRequest {
+  /** The terminal's folder: it decides the profile (core/handoff.ts). */
+  cwd: string;
+  /** The terminal's Claude Code session id; needed when the session itself moves. */
+  session?: string;
+  /** One line for the chat, and the session's label. */
+  summary: string;
+  /** For a folder that is not the profile's own: what the chat's agent needs to go on with the work. */
+  brief?: string;
+  /** The project as the brief names it: path, git branch, last commit. Default: `cwd`. */
+  project?: string;
+  /** Which of the profile's chats, when it has several: 1-based, or a session key. */
+  chat?: string;
+}
+
+export interface HandoffResult { key: string; profile: string; mode: 'session' | 'brief'; said: string }
 
 const AUDIO_EXT = /\.(ogg|opus|oga|m4a|mp3|wav|aac|flac|amr)$/i;
 

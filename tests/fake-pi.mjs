@@ -13,6 +13,8 @@
 //   text "LATE" / "LATE?"    -> a select dialog sent after the turn settled / whether it was cancelled
 //   text contains "TIMEOUT"  -> a bash call; the answer is the timeout the gate gave it
 //   text contains "TOOLS"    -> the answer is the active tool list after the gate's session_start
+//   text "RUN:<cmd>"         -> a bash call of <cmd>, gated, then run as pi runs it (the shell with -c
+//                               and the command the gate left); the answer is its output
 //   {type:"compact"}         -> a compact response with token counts
 //   env FAKE_PI_BUSY_ONCE=1  -> the first get_state says compaction is running
 //   env FAKE_PI_LOST=1       -> stderr says the session was not found (a resume that starts fresh)
@@ -79,6 +81,15 @@ async function prompt(m) {
   if (text === 'LATE?') { out(assistant([{ type: 'text', text: lateCancelled ? 'late dialog cancelled' : 'late dialog pending' }])); return settle(); }
   if (text.includes('TIMEOUT')) { const input = { command: 'ls' }; await tool('bash', input); out(assistant([{ type: 'text', text: `timeout ${input.timeout}` }])); return settle(); }
   if (text.includes('SEP')) { out(assistant([{ type: 'text', text: 'one two' }])); return settle(); }
+  if (text.startsWith('RUN:')) {
+    const input = { command: text.slice(4) };
+    const r = await tool('bash', input);
+    if (r !== 'ran') { out(assistant([{ type: 'text', text: `refused: ${r}` }])); return settle(); }
+    const { spawnSync } = await import('node:child_process');
+    const x = spawnSync('/bin/bash', ['-c', input.command], { encoding: 'utf8' });
+    out(assistant([{ type: 'text', text: `exit ${x.status}: ${(x.stdout + x.stderr).trim()}` }]));
+    return settle();
+  }
   if (text.includes('TOOLS')) { out(assistant([{ type: 'text', text: active.join(',') }])); return settle(); }
   if (text.includes('ARGV')) { out(assistant([{ type: 'text', text: JSON.stringify(argv) }])); return settle(); }
   out(assistant([{ type: 'text', text: `echo: ${text}` }]));

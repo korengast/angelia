@@ -122,7 +122,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   const inboxFor = (i: Omit<Inbound, 'media'>) => { const r = matchRoute(cfg, i); return r && routeGate(i, r).ok ? cfg.profiles[r.profile].cwd : undefined; };
   const onInbound = (i: Inbound) => orch.handle(i).catch((e) => logLine(`handle error: ${(e as Error).message}`));
   const api = new ApiServer({
-    send: (key, text, fromKey) => orch.notify(key, text, fromKey), turn: (key, text, fromAgent, fromKey) => orch.injectTurn(key, text, fromAgent, fromKey), routed: (key) => orch.routed(key),
+    send: (key, text, fromKey) => orch.notify(key, text, fromKey), turn: (key, text, fromAgent, fromKey) => orch.injectTurn(key, text, fromAgent, fromKey), routed: (key) => orch.routed(key), handoff: (req) => orch.handoff(req),
     reach: (from, to) => orch.reach(from, to),
     sendMedia: (key, m) => orch.sendMediaTo(key, m),
   }, apiToken);
@@ -176,6 +176,9 @@ export async function runDaemon(configPath: string): Promise<void> {
     const gone = await sweepPanes(keep, prefixes, tmuxEnv);
     if (gone.length) logLine(`tmux: ended ${gone.length} idle pane(s) no chat uses any more: ${gone.join(', ')}`);
   };
+  // Turns a handoff sent to the background before this restart: read them again, or drop their mark.
+  // Before the first sweep below, so their panes count as ours.
+  await orch.restoreBackground().catch((e) => logLine(`background restore failed: ${(e as Error).message}`));
   const reapTimer = setInterval(() => reap().catch((e) => logLine(`idle reap failed: ${(e as Error).message}`)), 60_000);
   // A /restart asked for this: tell that chat we are back, once its platform can deliver.
   const note = takeRestartNote(STATE_DIR);

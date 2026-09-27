@@ -41,7 +41,7 @@ export function isLimitText(text: string): boolean {
 
 /** What to add under a limit message: how to keep going on another model now. */
 export function limitHint(backend: string): string {
-  return backend === 'claude-code'
-    ? 'To keep going now, switch model for this session: send /model opus (or /model sonnet). /model default goes back once the limit resets.'
-    : 'To keep going now, switch model for this session: send /model <name>. /model default goes back once the limit resets.';
+  if (backend === 'claude-code') return 'To keep going now, switch model for this session: send /model opus (or /model sonnet). /model default goes back once the limit resets.';
+  if (backend === 'pi') return 'To keep going now, switch model for this session: send /model to see the ones pi is signed in to, then /model provider/model. /model default goes back once the limit resets.';
+  return 'To keep going now, switch model for this session: send /model <name>. /model default goes back once the limit resets.';
 }

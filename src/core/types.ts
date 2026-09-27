@@ -40,6 +40,9 @@ export interface SessionRow {
   /** /model and /effort overrides for this session only; /new starts clean. */
   model?: string;
   effort?: string;
+  /** A handoff moved the chat on while this session's turn was running (ISO time the turn was typed in).
+   *  Its pane keeps working with nobody reading it; cleared when the turn is over or /resume takes it back. */
+  background_since?: string;
 }
 
 export interface ChatSessions {

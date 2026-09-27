@@ -5,25 +5,28 @@
  * can_use_tool (measured 2026-09-25, pi 0.86.1).
  *
  * pi loads this file by itself, so it imports nothing but Node. The policy comes from the
- * ANGELIA_PI_POLICY environment variable: the profile's permission mode, its folders, and the deny
- * rules its last compile wrote (the same `Read(/abs)` / `Edit(/abs)` entries as grok's). Without a
- * valid policy nothing runs.
+ * ANGELIA_PI_POLICY environment variable: the profile's permission mode, its folders, whether the
+ * shell runs sandboxed, and the deny rules its last compile wrote (the same `Read(/abs)` / `Edit(/abs)`
+ * entries as grok's). Without a valid policy nothing runs.
  *
- * Paths are read the way pi's own tools read them (a leading `@`, `file://`, `~`, Unicode spaces,
- * the read tool's fallback spellings), resolved through symlinks one component at a time as the OS
- * does, and compared by file identity (device and inode), so no spelling the disk treats as the same
- * name gets past a rule; folded text only backs that up for paths that do not exist yet.
- * A deny rule stops the file tools. A shell command is only checked for a denied path written in
- * it, so a command that builds the path itself gets through: not a sandbox, the same as for grok.
- * That is why no mode but bypass runs a command unasked unless it is on a short list and every
- * path in it is a plain one inside the profile's folders.
+ * Two layers hold the deny rules. pi's file tools are checked here: paths read the way pi's own tools
+ * read them (a leading `@`, `file://`, `~`, Unicode spaces, the read tool's fallback spellings),
+ * resolved through symlinks one component at a time as the OS does, and compared by file identity
+ * (device and inode), so no spelling the disk treats as the same name gets past a rule. Shell
+ * commands are not read at all: each runs inside macOS's sandbox (sandbox-exec) with a profile made
+ * from the same rules, so the kernel refuses a denied path whatever the command's spelling, for every
+ * program the command starts. Measured 2026-09-27: other case, symlinks, relative links, `..`, globs,
+ * NFD names, a hard link or a rename made by the command, all refused. The sandbox does not stop a
+ * command from asking a program outside it to act (a terminal through tmux or Apple Events, launchd);
+ * that is why no mode but bypass runs a command unasked, except a short list of plain read-only ones.
  */
-import { lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export type PiMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+type PiMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
 const MODES: PiMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
 
 export interface PiPolicy {
@@ -33,6 +36,13 @@ export interface PiPolicy {
   dirs: string[];
   /** Compiled deny rules: `Read(<path or glob>)`, `Edit(<path or glob>)`; anything else is ignored. */
   deny: string[];
+  /** Shell commands run inside macOS's sandbox with the deny rules; false only when the table says `sandbox: false`. */
+  sandbox: boolean;
+  /** Unix sockets no command may connect to besides those under a Read rule: Angelia's tmux server,
+   *  where other profiles' agents run. */
+  sockets?: string[];
+  /** The profile's own cache folder (npm, pip, uv, XDG point there), writable to its commands. */
+  cache?: string;
 }
 
 /** The title prefix PiBrain recognises; any other dialog is not ours. */
@@ -57,11 +67,6 @@ const NAME_WALKS = new Set(['find']);
  *  `tree -o`, `git --output`, git's config hooks (`core.fsmonitor`), `file -C` and `tail -f` (which
  *  never ends) are why rg, tree, git, file and tail are not here. */
 const READ_ONLY = new Set(['ls', 'pwd', 'cat', 'head', 'wc', 'echo', 'date', 'whoami', 'uname', 'stat']);
-/** Programs that run a heredoc as code: their heredoc bodies are checked like the command itself. */
-const RUNS_CODE = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'python', 'python3', 'node', 'perl', 'ruby', 'php', 'osascript', 'eval', 'source', '.', 'xargs', 'env', 'sudo', 'exec']);
-/** More words than this that look like paths, and a command is not checked word by word but asked
- *  about (refused under bypass): each word costs file lookups inside pi's event loop. */
-export const MAX_PATH_WORDS = 400;
 const NO_CASE = process.platform === 'darwin' || process.platform === 'win32';
 
 /**
@@ -109,8 +114,8 @@ export function real(abs: string, depth = 0): string {
   return here;
 }
 
-/** File ids, folder chains and folded spellings already worked out during one decision: a command's
- *  words share most of their folders, and every word is held against every rule. */
+/** File ids, folder chains and folded spellings already worked out during one decision: the read
+ *  tool's spellings share their folders, and each is held against every rule. */
 let ids: Map<string, string | undefined> | null = null;
 let chains: Map<string, Set<string>> | null = null;
 let folds: Map<string, string> | null = null;
@@ -172,118 +177,43 @@ function rootOf(raw: string): () => string {
 export function parseRules(deny: string[], home = homedir()): Rule[] {
   const out: Rule[] = [];
   for (const r of deny) {
-    const m = /^(Read|Edit)\((.+)\)$/.exec(r);
+    const m = /^(Read|Edit)\(([\s\S]+)\)$/.exec(r);
     if (!m) continue;
     // Claude's absolute form is `//abs`; grok's and pi's is `/abs`. Both mean the same here.
     const raw = piPath(m[2].replace(/^\/\//, '/'), '/', home);
     const tool = m[1] as 'Read' | 'Edit';
-    const star = raw.indexOf('*');
+    // A brace group that holds a `/` or is left open is syntax this does not model: the rule then
+    // covers its whole fixed folder (fails closed).
+    const brace = raw.indexOf('{');
+    if (brace !== -1 && /\{[^}]*(\/|$)/.test(raw.slice(brace))) {
+      const root = rootOf(raw.slice(0, raw.slice(0, brace).lastIndexOf('/')) || '/');
+      out.push({ tool, root, test: (abs) => under(abs, root()) });
+      continue;
+    }
+    // Any glob character starts the pattern, as in the sandbox (sandboxProfile).
+    const star = raw.search(/[*?[{]/);
     if (star === -1 || (raw.endsWith('/**') && star === raw.length - 2)) {
       const root = rootOf(star === -1 ? raw : raw.slice(0, -3));
       out.push({ tool, root, test: (abs) => under(abs, root()) });
     } else {
       const dir = raw.slice(0, raw.slice(0, star).lastIndexOf('/')) || '/';
       const root = rootOf(dir);
-      const pats = raw.slice(dir.length).split('/').filter(Boolean).map((x) => (x === '**' ? null : glob(fold(x), false)));
-      out.push({ tool, root, test: (abs) => { const names = below(abs, root()); return !!names && reaches(pats, names, true); } });
+      const pats = raw.slice(dir.length).split('/').filter(Boolean).map((x) => (x === '**' ? null : glob(fold(x))));
+      out.push({ tool, root, test: (abs) => { const names = below(abs, root()); return !!names && reaches(pats, names); } });
     }
   }
   return out;
-}
-
-/** The words of a command as a shell would hand them to the program: quotes and backslashes
- *  removed, split on blanks and operators, `~`, `~user` and `$HOME` expanded only where bash expands
- *  them (a `~` at the start of an unquoted word; `$HOME` outside single quotes). Other variables and
- *  substitutions are beyond it: not a sandbox. */
-export function shellWords(cmd: string, home = homedir()): string[] {
-  const words: string[] = [];
-  let cur = '', quote: string | null = null, quoted = false;
-  /** Whether the word's first character came from a quote or an escape: then a `~` is literal. */
-  let firstQuoted: boolean | null = null;
-  const add = (x: string, q: boolean) => { if (!x) return; if (firstQuoted === null) firstQuoted = q; cur += x; };
-  const push = () => {
-    if (cur || quoted) words.push(!cur.startsWith('~') ? cur : firstQuoted ? `./${cur}` : cur.replace(/^~([A-Za-z0-9._-]+)(?=\/|$)/, (_, u: string) => join(dirname(home), u)));
-    cur = ''; quoted = false; firstQuoted = null;
-  };
-  const homeAt = (i: number) => { const m = /^(\$\{HOME\}|\$HOME(?![A-Za-z0-9_]))/.exec(cmd.slice(i)); return m ? m[1].length : 0; };
-  for (let i = 0; i < cmd.length; i++) {
-    const c = cmd[i];
-    if (quote === "'") { if (c === "'") quote = null; else add(c, true); continue; }
-    if (quote === '"') {
-      if (c === '"') quote = null;
-      else if (c === '\\' && i + 1 < cmd.length) add(cmd[++i], true);
-      else { const n = homeAt(i); if (n) { add(home, true); i += n - 1; } else add(c, true); }
-      continue;
-    }
-    if (c === '$' && cmd[i + 1] === "'") {
-      // ANSI-C quoting: $'..' with backslash escapes, which bash turns into plain text.
-      const j = ansiEnd(cmd, i + 2);
-      add(ansiText(cmd.slice(i + 2, j)), true); quoted = true; i = j; continue;
-    }
-    if (c === '$' && cmd[i + 1] === '"') continue; // $"..": locale quoting, read as "..".
-    if (c === "'" || c === '"') { quote = c; quoted = true; continue; }
-    if (c === '\\' && i + 1 < cmd.length) { add(cmd[++i], true); quoted = true; continue; }
-    if (/[\s;|&<>()`=:]/.test(c)) { push(); continue; }
-    const n = homeAt(i);
-    if (n) { add(home, false); i += n - 1; continue; }
-    add(c, false);
-  }
-  push();
-  return words;
-}
-
-/**
- * The command split from its heredoc bodies (`<<EOF` ... `EOF`). A body fed to a program that runs it
- * as code (a shell, an interpreter) is kept to be checked like the command; any other body is text
- * the program reads, such as a commit message or a file's new content, and is left out.
- */
-export function heredocs(cmd: string): { cmd: string; code: string[] } {
-  const re = /(?<!<)<<(?!<)(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g;
-  let out = '', from = 0, m: RegExpExecArray | null;
-  const code: string[] = [];
-  while ((m = re.exec(cmd))) {
-    const nl = cmd.indexOf('\n', re.lastIndex);
-    if (nl === -1) break;
-    const end = new RegExp(`^${m[1] === '-' ? '\\t*' : ''}${m[3]}$`, 'm').exec(cmd.slice(nl + 1));
-    const stop = end ? nl + 1 + end.index + end[0].length : cmd.length;
-    const program = cmd.slice(0, m.index).split(/[;|&\n(]/).pop()!.trim().split(/\s+/)[0] ?? '';
-    if (RUNS_CODE.has(basename(program))) code.push(cmd.slice(nl + 1, end ? nl + 1 + end.index : cmd.length));
-    out += cmd.slice(from, nl + 1);
-    from = stop;
-    re.lastIndex = stop;
-  }
-  return { cmd: out + cmd.slice(from), code };
-}
-
-/** Where a $'..' string ends: the next quote not escaped by a backslash. */
-function ansiEnd(cmd: string, from: number): number {
-  for (let i = from; i < cmd.length; i++) { if (cmd[i] === '\\') i++; else if (cmd[i] === "'") return i; }
-  return cmd.length;
-}
-
-/** The text bash makes of a $'..' body (bash manual, ANSI-C Quoting). */
-export function ansiText(body: string): string {
-  const simple: Record<string, string> = { n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' };
-  return body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)/g, (_, e: string) => {
-    if (/^[xuU]/.test(e)) { const cp = parseInt(e.slice(1), 16); return cp <= 0x10ffff ? String.fromCodePoint(cp) : ''; }
-    if (/^[0-7]/.test(e)) return String.fromCharCode(parseInt(e, 8));
-    if (e[0] === 'c') return String.fromCharCode(e.charCodeAt(1) & 31);
-    return simple[e] ?? '\\' + e;
-  });
 }
 
 /** A glob segment as a matcher, or 'any' for syntax this does not model (fails closed). */
 type Glob = ((name: string) => boolean) | 'any';
 
 /**
- * One glob segment (`*`, `?`, `[..]`, `{a,b}`) as a matcher over a folded name, with no regular
- * expression: the model writes the pattern, so a backtracking regex could stall pi. Braces are
- * expanded first (bash does that before globbing); nested braces, `{a..z}` ranges, `[[:class:]]`
- * and a `[` left open (the lexer splits words on `:`) are taken as reaching everything. As in bash
- * without dotglob, a wildcard at the start of a name never matches a leading dot; `{.ssh,x}` still
- * names .ssh.
+ * One glob segment of a rule (`*`, `?`, `[..]`, `{a,b}`) as a matcher over a folded name, with no
+ * regular expression, so a pattern cannot make a check slow. Braces are expanded first; nested
+ * braces, `{a..z}` ranges, `[[:class:]]` and a `[` left open are taken as reaching everything.
  */
-export function glob(pat: string, dotRule = true): Glob {
+export function glob(pat: string): Glob {
   if (/\{[^}]*\{|\{[^}]*\.\.[^}]*\}|\[:|\[\]|\[!\]|\[\^\]|\[[^\]]*$/.test(pat)) return 'any';
   const alts: string[] = [];
   const expand = (p: string) => {
@@ -294,8 +224,7 @@ export function glob(pat: string, dotRule = true): Glob {
   };
   expand(pat);
   if (alts.length > 64) return 'any';
-  const one = (p: string) => (name: string) => (dotRule && /^[*?[]/.test(p) && name.startsWith('.') ? false : wild(p, name));
-  const ms = alts.map(one);
+  const ms = alts.map((p) => (name: string) => wild(p, name));
   return (name) => ms.some((f) => f(name));
 }
 
@@ -328,28 +257,38 @@ function wild(p: string, s: string): boolean {
   return i === p.length;
 }
 
-/** Whether a path of glob segments can reach the names down to a root (null is `**`). With `prefix`,
- *  a pattern longer than the names still counts: it reaches the root on the way down. */
-function reaches(pats: (Glob | null)[], names: string[], full = false): boolean {
+/** Whether a path of glob segments reaches the names down to a root (null is `**`): a pattern
+ *  longer than the names still counts only when it goes on with `**`. */
+function reaches(pats: (Glob | null)[], names: string[]): boolean {
   for (let i = 0; i < Math.min(pats.length, names.length); i++) {
     const g = pats[i];
     if (g === null || g === 'any') return true;
     if (!g(fold(names[i]))) return false;
   }
-  return full ? pats.length <= names.length || pats[names.length] === null : true;
+  return pats.length <= names.length || pats[names.length] === null;
 }
 
-export type Verdict = { action: 'allow' } | { action: 'ask' } | { action: 'block'; reason: string };
+type Verdict = { action: 'allow' } | { action: 'ask' } | { action: 'block'; reason: string };
 
-interface Compiled { rules: Rule[]; folders: string[] }
+interface Compiled { rules: Rule[]; folders: string[]; writable: string[]; cacheParent?: string; cache?: string }
 const compiled = new WeakMap<PiPolicy, Map<string, Compiled>>();
+
+/** Where a command that runs unasked, and a bypass file write, may write (TEMP_DIRS aside): the
+ *  profile's folders and its cache. One list for both, or the file tool would be the way around. */
+function unaskedWritable(policy: PiPolicy, home: string): string[] {
+  return [...[policy.cwd, ...policy.dirs].map((d) => piPath(d, '/', home)), ...(policy.cache ? [policy.cache] : [])];
+}
 
 /** The rules and folders of a policy, parsed once: the gate's policy never changes while pi runs. */
 function compile(policy: PiPolicy, home: string): Compiled {
   let byHome = compiled.get(policy);
   if (!byHome) compiled.set(policy, (byHome = new Map()));
   let c = byHome.get(home);
-  if (!c) byHome.set(home, (c = { rules: parseRules(policy.deny, home), folders: [policy.cwd, ...policy.dirs].map((d) => real(piPath(d, '/', home))) }));
+  if (!c) {
+    const folders = [policy.cwd, ...policy.dirs].map((d) => real(piPath(d, '/', home)));
+    const cache = policy.cache ? real(policy.cache) : undefined;
+    byHome.set(home, (c = { rules: parseRules(policy.deny, home), folders, writable: [...unaskedWritable(policy, home).map(real), ...TEMP_DIRS], ...(cache ? { cache, cacheParent: dirname(cache) } : {}) }));
+  }
   return c;
 }
 
@@ -360,12 +299,14 @@ export function decide(policy: PiPolicy, tool: string, input: Record<string, unk
 }
 
 function decideOnce(policy: PiPolicy, tool: string, input: Record<string, unknown>, home: string): Verdict {
-  const { rules, folders } = compile(policy, home);
+  const { rules, folders, writable, cache, cacheParent } = compile(policy, home);
   const at = (p: unknown) => real(piPath(typeof p === 'string' && p ? p : '.', policy.cwd, home));
   const inside = (abs: string) => folders.some((d) => under(abs, d));
   const denied = (abs: string, kinds: ('Read' | 'Edit')[], walk: boolean) =>
     rules.find((r) => kinds.includes(r.tool) && (r.test(abs) || (walk && under(r.root(), abs))));
   const blocked = (what: string) => ({ action: 'block' as const, reason: `Angelia's profile rules deny ${what}. It did not run; tell the owner it was refused, do not report it as done.` });
+  // The other pi profiles' cache folders sit next to this one's: closed, as their folders are.
+  const foreignCache = (abs: string) => !!cacheParent && under(abs, cacheParent) && fold(abs) !== fold(cacheParent) && !under(abs, cache!);
 
   if (READ_TOOLS.has(tool) || WRITE_TOOLS.has(tool)) {
     const kinds: ('Read' | 'Edit')[] = READ_TOOLS.has(tool) ? ['Read'] : ['Read', 'Edit'];
@@ -374,6 +315,7 @@ function decideOnce(policy: PiPolicy, tool: string, input: Record<string, unknow
     const clean = piPath(typeof input.path === 'string' && input.path ? input.path : '.', policy.cwd, home);
     const spellings = (tool === 'read' ? readVariants(clean) : [clean]).map((sp) => real(sp));
     for (const abs of spellings) {
+      if (foreignCache(abs)) return blocked(`${tool} of ${abs}, another profile's cache`);
       const r = denied(abs, kinds, WALK_TOOLS.has(tool) && !NAME_WALKS.has(tool));
       if (r) return blocked(`${tool} of ${abs}${fold(r.root()) !== fold(abs) ? ` (rule on ${r.root()})` : ''}`);
       // find over a folder that holds a denied one would list names in it: asked, not refused.
@@ -381,19 +323,22 @@ function decideOnce(policy: PiPolicy, tool: string, input: Record<string, unknow
     }
     if (READ_TOOLS.has(tool)) return { action: 'allow' };
     if (policy.mode === 'plan') return blocked('changes in plan mode');
-    if (policy.mode === 'bypassPermissions') return { action: 'allow' };
+    // Bypass writes without asking only where its unasked commands may write too; a write elsewhere
+    // would get around the sandbox with the file tool. With `sandbox: false` it writes anywhere.
+    if (policy.mode === 'bypassPermissions') {
+      if (!policy.sandbox || writable.some((d) => under(spellings[0], d))) return { action: 'allow' };
+      return { action: 'block', reason: `In bypass, pi writes without asking only in the profile's folders (${folders.join(', ')}), its cache folder and temp; ${spellings[0]} is outside them. It did not run. Tell the owner: adding the folder to add_dirs lets you write there.` };
+    }
     if (policy.mode === 'acceptEdits' && inside(spellings[0])) return { action: 'allow' };
     return { action: 'ask' };
   }
   if (tool === 'bash') {
-    const raw = String(input.command ?? '');
-    const { cmd, code } = heredocs(raw);
-    const hit = reachesDenied([cmd, ...code].flatMap((x) => shellWords(x, home)), rules, at);
-    if (hit === 'too-long') return policy.mode === 'bypassPermissions' ? blocked(`a command with more than ${MAX_PATH_WORDS} path-like words (too long to check; split it)`) : { action: 'ask' };
-    if (hit) return blocked(`a command that reaches ${hit}`);
+    // The command is not read for paths: the sandbox holds it to the deny rules (sandboxed() below).
     if (policy.mode === 'plan') return blocked('commands in plan mode');
     if (policy.mode === 'bypassPermissions') return { action: 'allow' };
-    if (policy.mode === 'acceptEdits' && readOnly(raw, (w) => inside(at(w)))) return { action: 'allow' };
+    // A read-only command runs unasked only on paths inside the folders that no Read rule covers: with
+    // `sandbox: false` nothing else would stop it.
+    if (policy.mode === 'acceptEdits' && readOnly(String(input.command ?? ''), (w) => { const a = at(w); return inside(a) && !denied(a, ['Read'], true); })) return { action: 'allow' };
     return { action: 'ask' };
   }
   // A tool an extension or package added: nothing to check it against, so only bypass lets it run unasked.
@@ -401,43 +346,220 @@ function decideOnce(policy: PiPolicy, tool: string, input: Record<string, unknow
   return policy.mode === 'bypassPermissions' ? { action: 'allow' } : { action: 'ask' };
 }
 
-/**
- * The denied root a command's words reach, if any. A command cannot be told apart as reading or
- * writing, so only Read rules (secrets, other profiles) are held against it; the launch files' Edit
- * rules stop the file tools, and the launch guard refuses the next start when one is gone. A path
- * glued to a short option (`-f/path`, `-d@/path`) is checked too; a glob stands for every name its
- * segments can match on the way down to a denied root.
- */
-function reachesDenied(words: string[], rules: Rule[], at: (p: string) => string): string | 'too-long' | undefined {
-  const reads = rules.filter((r) => r.tool === 'Read');
-  const cands = new Set<string>();
-  for (const w of words) {
-    if (!/[/~.@]/.test(w)) continue;
-    if (!w.startsWith('-')) { cands.add(w); continue; }
-    // -X<value> and bundled short options (-rf/path): every tail after the option letters.
-    const letters = /^-+([A-Za-z0-9]*)/.exec(w)![0].length;
-    for (let k = 2; k <= letters; k++) if (/[/~.@]/.test(w.slice(k))) cands.add(w.slice(k));
+/** macOS's sandbox tool: every shell command runs under it, with a profile made from the rules. */
+export const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
+
+/** A string in a sandbox profile (SBPL, a Scheme dialect): backslash and double quote escaped. */
+const sbpl = (s: string) => `"${s.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
+
+/** Text matched as itself in the sandbox's regex, ASCII letters in either case: the kernel compares
+ *  the name as stored on disk, and APFS lets a file be reached, or made, under another case. */
+const reText = (s: string) => [...s].map((c) => (/[A-Za-z]/.test(c) ? `[${c.toLowerCase()}${c.toUpperCase()}]` : /[.[\]()*+?{}|^$\\]/.test(c) ? `\\${c}` : c)).join('');
+const segRe = (s: string) => s.replace(/\*|\?|[^*?]+/g, (m) => (m === '*' ? '[^/]*' : m === '?' ? '[^/]' : reText(m)));
+
+/** A rule's glob part as regexes, one per segment (`**` spans folders), or undefined for syntax this
+ *  does not model: classes, nested or open braces, `{a..z}` ranges, a brace group holding a `/`,
+ *  letters outside ASCII. */
+function globSegs(tail: string): string[] | undefined {
+  // Non-ASCII letters: the disk folds their case and normalisation, which a regex does not.
+  if (/[[\]]/.test(tail) || /[^\x00-\x7f]/.test(tail) || /\{[^}]*(\{|\.\.|\/|$)/.test(tail) || /\}/.test(tail.replace(/\{[^{}]*\}/g, ''))) return undefined;
+  const segs = tail.split('/').filter(Boolean);
+  return segs.map((seg, i) => (seg === '**' ? (i === segs.length - 1 ? '(/.*)?' : '(/[^/]+)*')
+    : '/' + seg.replace(/\{([^{}]*)\}|[^{}]+/g, (m, alts?: string) => (alts !== undefined ? `(${alts.split(',').map(segRe).join('|')})` : segRe(m)))));
+}
+
+/** The glob part of a rule (after its fixed folder, `/`-separated) as a regex tail, or undefined for
+ *  syntax it does not model. */
+export function globRegex(tail: string): string | undefined {
+  return globSegs(tail)?.join('');
+}
+
+/** A path as the kernel names it: links resolved (real), and the part that exists in the case and
+ *  Unicode form stored on disk (realpath(3)); the part that does not exist yet as written. */
+function onDisk(abs: string): string {
+  const r = real(abs);
+  for (let cur = r; ; cur = dirname(cur)) {
+    try { return join(realpathSync.native(cur), relative(cur, r)); } catch { /* not there yet */ }
+    if (dirname(cur) === cur) return r;
   }
-  if (cands.size > MAX_PATH_WORDS) return 'too-long';
-  for (const w of cands) {
-    const g = w.search(/[*?[{]/);
-    if (g === -1) {
-      const p = at(w);
-      const hit = reads.find((r) => r.test(p));
-      if (hit) return hit.root();
-      continue;
+}
+
+/** The devices a command may write to wherever it runs: output, the null device, its own descriptors. */
+const DEVICES = ['(literal "/dev/null")', '(literal "/dev/zero")', '(literal "/dev/tty")', '(literal "/dev/stdout")', '(literal "/dev/stderr")', '(literal "/dev/dtracehelper")', '(regex #"^/dev/fd/")'];
+
+/** Temp folders every command may write, as the kernel names them: /tmp and this user's own temp
+ *  folder ($TMPDIR), not the rest of /var/folders, which holds other apps' caches. */
+const TEMP_DIRS = [...new Set(['/private/tmp', onDisk(tmpdir())])];
+
+interface SandboxOptions {
+  /** Unix sockets no command may connect to, besides those under a Read rule. */
+  sockets?: string[];
+  /** When given, the only folders a command may write in (with temp and the output devices). */
+  writable?: string[];
+  /** The profile's own cache folder: the others next to it are closed, for reading and writing. */
+  cache?: string;
+}
+
+/**
+ * The sandbox profile for a policy's deny rules. Everything is allowed but what the rules deny: a Read
+ * rule closes reading (listing and stat too), writing and connecting to a socket under its path; an
+ * Edit rule closes every kind of write (create, change, delete, rename, link, mode). Each rule path is
+ * given as written and as the OS resolves it. A rule with a glob becomes a regex, ASCII case folded;
+ * one whose glob this does not model denies its whole fixed folder (fails closed).
+ * The kernel matches paths, so a folder above a rule could be renamed and the protected files read or
+ * changed under the new name (a review showed it): every folder above a rule, and above a closed
+ * socket, cannot itself be renamed, removed or replaced; what is inside them stays open. With
+ * `writable`, a command writes nowhere else: the confinement Codex's sandbox and Claude Code's apply.
+ */
+export function sandboxProfile(deny: string[], home = homedir(), o: SandboxOptions = {}): string {
+  const out = new Set<string>();
+  const kept = new Set<string>();
+  const keepAbove = (p: string) => { for (let cur = dirname(p); ; cur = dirname(cur)) { kept.add(cur); if (dirname(cur) === cur) break; } };
+  for (const r of deny) {
+    const m = /^(Read|Edit)\(([\s\S]+)\)$/.exec(r);
+    if (!m) continue;
+    const raw = piPath(m[2].replace(/^\/\//, '/'), '/', home);
+    // Any glob character starts the pattern, as in the file-tool check (parseRules).
+    const star = raw.search(/[*?[{]/);
+    // Each as a folder (subpath) or a regex; a socket filter names the regex kind path-regex.
+    let filter: { kind: 'subpath' | 'regex'; value: string }[];
+    if (star === -1 || (raw.endsWith('/**') && star === raw.length - 2)) {
+      const root = star === -1 ? raw : raw.slice(0, -3);
+      const roots = [...new Set([root, onDisk(root)])];
+      roots.forEach(keepAbove);
+      filter = roots.map((value) => ({ kind: 'subpath', value }));
+    } else {
+      const dir = raw.slice(0, raw.slice(0, star).lastIndexOf('/')) || '/';
+      const names = raw.slice(dir.length).split('/').filter(Boolean);
+      const segs = globSegs(raw.slice(dir.length));
+      const dirs = [...new Set([dir, onDisk(dir)])];
+      dirs.forEach((d) => keepAbove(join(d, '_')));
+      const head = (d: string) => `^${reText(d === '/' ? '' : d)}`;
+      if (!segs) filter = dirs.map((value) => ({ kind: 'subpath', value }));
+      else {
+        const tail = segs.join('');
+        filter = dirs.map((x) => ({ kind: 'regex', value: `${head(x)}${tail}${names.at(-1) === '**' ? '' : '(/.*)?'}$` }));
+        // The folders a pattern passes through on the way down (up to the first `**`) are kept too.
+        const stop = names.slice(0, -1).indexOf('**');
+        for (let i = 1; i <= (stop === -1 ? names.length - 1 : stop); i++)
+          for (const x of dirs) out.add(`(deny file-write* (regex ${sbpl(`${head(x)}${segs.slice(0, i).join('')}$`)}))`);
+      }
     }
-    // A glob: its fixed folder, then each segment tried against the names down to a denied root.
-    const fixed = w.slice(0, w.slice(0, g).lastIndexOf('/') + 1);
-    const base = at(fixed || '.');
-    const pats = w.slice(fixed.length).split('/').filter(Boolean).map((x) => (x === '**' ? null : glob(fold(x))));
-    for (const r of reads) {
-      if (r.test(base)) return r.root();
-      const names = below(r.root(), base);
-      if (names && reaches(pats, names)) return r.root();
+    for (const { kind, value } of filter) {
+      const f = `(${kind} ${sbpl(value)})`;
+      out.add(`(deny file-write* ${f})`);
+      if (m[1] === 'Read') {
+        out.add(`(deny file-read* ${f})`);
+        out.add(`(deny network-outbound (remote unix-socket (${kind === 'regex' ? 'path-regex' : kind} ${sbpl(value)})))`);
+      }
     }
+  }
+  for (const s of o.sockets ?? []) {
+    out.add(`(deny network-outbound (remote unix-socket (path-literal ${sbpl(s)})))`);
+    out.add(`(deny file-write* (literal ${sbpl(s)}))`);
+    keepAbove(s);
+  }
+  // launchd's ssh-agent socket: the key it holds would sign for a command that cannot read ~/.ssh.
+  const lines = ['(version 1)', '(allow default)', `(deny network-outbound (remote unix-socket (path-regex ${sbpl('^/private/(tmp|var/run)/com\\.apple\\.launchd\\.[^/]+/Listeners$')})))`];
+  if (o.cache) {
+    const own = [...new Set([o.cache, onDisk(o.cache)])], parent = [...new Set([dirname(o.cache), onDisk(dirname(o.cache))])];
+    // Strictly below the shared folder: tools such as npx look at the folders above their cache.
+    out.add(`(deny file-read* file-write* (require-all (require-any ${parent.map((d) => `(regex ${sbpl(`^${reText(d)}/`)})`).join(' ')}) (require-not (require-any ${own.map((d) => `(subpath ${sbpl(d)})`).join(' ')}))))`);
+  }
+  if (o.writable) {
+    const where = [...new Set([...o.writable.flatMap((d) => [d, onDisk(d)]), ...TEMP_DIRS])].map((d) => `(subpath ${sbpl(d)})`);
+    lines.push(`(deny file-write* (require-not (require-any ${[...where, ...DEVICES].join(' ')})))`);
+    // What git runs later, outside any sandbox, when someone runs git there: a repo's config and hooks,
+    // and a new `.git` (git init, or a gitdir file pointing elsewhere). Commits still work. Codex
+    // keeps `.git` read-only in its writable folders for the same reason.
+    const git = `/${reText('.git')}(/(${reText('config')}|${reText('hooks')}(/.*)?|${reText('info/attributes')}))?$`;
+    lines.push(`(deny file-write* (regex ${sbpl(git)}))`);
+  }
+  return [...lines, ...out, ...[...kept].map((k) => `(deny file-write* (literal ${sbpl(k)}))`)].join('\n');
+}
+
+/** A shell word in single quotes: the one POSIX quoting with no escapes inside. */
+const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * The command pi's bash tool runs instead of the model's: the same command, in the same shell (`$0`
+ * of the shell pi started), under sandbox-exec with the profile. pi keeps the model's own command in
+ * the session (measured on 0.87.1: the session file and the model's context never see this line).
+ * ANGELIA_SANDBOX tells Angelia's own CLI, run inside, that an unreadable profile folder is the
+ * sandbox, not a broken table.
+ */
+export function sandboxed(command: string, profile: string): string {
+  return `exec /usr/bin/env ANGELIA_SANDBOX=pi ${SANDBOX_EXEC} -p ${sq(profile)} "$0" -c ${sq(command)}`;
+}
+
+/** One program under sandbox-exec with the profile: its stdout, or an Error with its stderr (for a
+ *  denied path, the kernel's "Operation not permitted"). */
+function inSandbox(profile: string, argv: string[], input = ''): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const c = spawn(SANDBOX_EXEC, ['-p', profile, ...argv], { env: { ...process.env, ANGELIA_SANDBOX: 'pi' } });
+    const out: Buffer[] = [], err: Buffer[] = [];
+    c.stdout.on('data', (d: Buffer) => out.push(d));
+    c.stderr.on('data', (d: Buffer) => err.push(d));
+    c.on('error', reject);
+    c.on('close', (code) => (code === 0 ? resolve(Buffer.concat(out)) : reject(new Error(Buffer.concat(err).toString().trim() || `exit ${code}`))));
+    c.stdin.on('error', () => { /* the program ended before reading: its exit says why */ });
+    c.stdin.end(input);
+  });
+}
+
+/**
+ * The disk access of pi's read, write and edit tools, each done by a program under sandbox-exec. The
+ * gate checks a path when the call comes, and pi opens it later, in its own process: a command left
+ * running in the background could swap a checked file for a symlink to a denied one in between (a
+ * review measured it). Done here, the kernel checks the open itself. `detectImage` is pi's own check,
+ * given a copy of the file's first bytes.
+ */
+export function fileOps(profile: string, detectImage?: (file: string) => Promise<string | null | undefined>) {
+  const run = (argv: string[], input?: string) => inSandbox(profile, argv, input);
+  const readFile = (path: string) => run(['/bin/cat', '--', path]);
+  return {
+    readFile,
+    access: async (path: string) => { await run(['/bin/test', '-r', path]); },
+    editAccess: async (path: string) => { await run(['/bin/sh', '-c', 'test -r "$1" && test -w "$1"', 'sh', path]); },
+    writeFile: async (path: string, content: string) => { await run(['/bin/sh', '-c', 'cat > "$1"', 'sh', path], content); },
+    mkdir: async (dir: string) => { await run(['/bin/mkdir', '-p', '--', dir]); },
+    detectImageMimeType: detectImage && (async (path: string) => {
+      const head = await run(['/usr/bin/head', '-c', '4100', '--', path]);
+      const dir = mkdtempSync(join(tmpdir(), 'angelia-pi-'));
+      try { writeFileSync(join(dir, 'head'), head); return await detectImage(join(dir, 'head')); } finally { rmSync(dir, { recursive: true, force: true }); }
+    }),
+  };
+}
+
+/** pi's package, as its extension loader names it to an extension. In a variable, so Angelia's own
+ *  build does not look for it. */
+const PI_SDK = '@earendil-works/pi-coding-agent';
+
+/**
+ * pi's package, for the file tools. pi's loader gives an extension its package name, but only in a
+ * file it transforms, and it leaves files under node_modules alone: an installed Angelia's gate is
+ * one (measured 2026-09-27: "package did not load" in a chat). Then it is found from the pi running
+ * this file: its entry script lies inside the package.
+ */
+export async function loadPiSdk(argv1 = process.argv[1]): Promise<any> {
+  try { return await import(PI_SDK); } catch { /* not transformed: look from pi's own script */ }
+  let d: string;
+  try { d = dirname(realpathSync(argv1 ?? '')); } catch { return undefined; }
+  for (; dirname(d) !== d; d = dirname(d)) {
+    let pkg: any;
+    try { pkg = JSON.parse(readFileSync(join(d, 'package.json'), 'utf8')); } catch { continue; }
+    if (!/^@[\w-]+\/pi-coding-agent$/.test(pkg?.name ?? '')) continue;
+    const entry = pkg.exports?.['.']?.import ?? pkg.main;
+    return typeof entry === 'string' ? import(pathToFileURL(join(d, entry)).href).catch(() => undefined) : undefined;
   }
   return undefined;
+}
+
+/** Why commands cannot run sandboxed here, or '' when they can: the profile compiled and ran once. */
+export function sandboxProblem(profile: string): string {
+  if (process.platform !== 'darwin' || !existsSync(SANDBOX_EXEC)) return `this system has no ${SANDBOX_EXEC}, which Angelia runs every pi command in`;
+  const r = spawnSync(SANDBOX_EXEC, ['-p', profile, '/usr/bin/true'], { encoding: 'utf8', timeout: 15_000 });
+  return r.status === 0 ? '' : `the sandbox did not start (${(r.stderr || r.error?.message || `exit ${r.status}`).trim().slice(0, 200)})`;
 }
 
 /**
@@ -453,16 +575,47 @@ export function readOnly(cmd: string, inside: (word: string) => boolean = () => 
 }
 
 /** The policy Angelia passed, or undefined when it is missing or not one Angelia writes. */
-export function policyFromEnv(env: NodeJS.ProcessEnv = process.env): PiPolicy | undefined {
+function policyFromEnv(env: NodeJS.ProcessEnv = process.env): PiPolicy | undefined {
   try {
     const p = JSON.parse(env.ANGELIA_PI_POLICY ?? '') as Partial<PiPolicy>;
     const strings = (x: unknown) => Array.isArray(x) && x.every((v) => typeof v === 'string');
-    if (typeof p.cwd === 'string' && MODES.includes(p.mode as PiMode) && strings(p.dirs ?? []) && strings(p.deny ?? [])) return { mode: p.mode as PiMode, cwd: p.cwd, dirs: p.dirs ?? [], deny: p.deny ?? [] };
+    // A policy that does not say `sandbox: false` gets the sandbox.
+    if (typeof p.cwd === 'string' && MODES.includes(p.mode as PiMode) && strings(p.dirs ?? []) && strings(p.deny ?? []) && strings(p.sockets ?? []) && (p.cache === undefined || typeof p.cache === 'string'))
+      return { mode: p.mode as PiMode, cwd: p.cwd, dirs: p.dirs ?? [], deny: p.deny ?? [], sandbox: p.sandbox !== false, ...(p.sockets?.length ? { sockets: p.sockets } : {}), ...(p.cache ? { cache: p.cache } : {}) };
   } catch { /* fall through */ }
   return undefined;
 }
 
-export default function angeliaGate(pi: any): void {
+/**
+ * pi's read, write and edit tools with their disk access done by fileOps: the kernel then holds the
+ * deny rules at the open, where the gate's check alone could be raced. A write or edit the owner
+ * approved runs under the approved profile, any other under the unasked one. A pi whose package
+ * cannot be loaded here runs none of the three.
+ */
+async function sandboxFileTools(pi: any, planMode: boolean, sandboxFor: (kind: 'unasked' | 'approved') => { profile: string; problem: string }, approved: Set<string>): Promise<void> {
+  const sdk = await loadPiSdk();
+  const makers = { read: sdk?.createReadToolDefinition, write: sdk?.createWriteToolDefinition, edit: sdk?.createEditToolDefinition };
+  if (!makers.read || !makers.write || !makers.edit) {
+    pi.on('tool_call', async (e: any) => (e.toolName in makers ? { block: true, reason: "This pi's file tools cannot run in Angelia's sandbox (its package did not load). Tell the owner; the shell still works." } : undefined));
+    return;
+  }
+  const cwd = process.cwd();
+  const ops = (id: string) => {
+    const sb = sandboxFor(approved.delete(id) ? 'approved' : 'unasked');
+    if (sb.problem) throw new Error(`No file tool can run: ${sb.problem}`);
+    return fileOps(sb.profile, sdk.detectSupportedImageMimeTypeFromFile);
+  };
+  const wrap = (make: any, pick: (o: ReturnType<typeof fileOps>) => object) => {
+    pi.registerTool({ ...make(cwd), execute: (id: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => make(cwd, { operations: pick(ops(id)) }).execute(id, params, signal, onUpdate, ctx) });
+  };
+  wrap(makers.read, (o) => ({ readFile: o.readFile, access: o.access, detectImageMimeType: o.detectImageMimeType }));
+  // Plan mode names its tools on argv; a write tool registered here must not appear in it.
+  if (planMode) return;
+  wrap(makers.write, (o) => ({ writeFile: o.writeFile, mkdir: o.mkdir }));
+  wrap(makers.edit, (o) => ({ readFile: o.readFile, writeFile: o.writeFile, access: o.editAccess }));
+}
+
+export default async function angeliaGate(pi: any): Promise<void> {
   const policy = policyFromEnv();
   if (!policy) {
     // Loaded without a policy Angelia wrote: something is wrong, so nothing runs.
@@ -472,16 +625,43 @@ export default function angeliaGate(pi: any): void {
   // Plan mode already names its tools on argv (--tools); elsewhere the search tools are added to
   // whatever is active, so the owner's own extension tools stay as they are.
   if (policy.mode !== 'plan') pi.on('session_start', () => { try { pi.setActiveTools([...new Set([...pi.getActiveTools(), ...SEARCH_TOOLS])]); } catch { /* an older pi: the shell still works */ } });
+  // The sandbox profiles, made and tried at the first command and kept once they work: a machine
+  // without them refuses commands, and a try that failed (a slow machine timing out) is tried again. A command that runs unasked is confined to the profile's folders for writes; one the owner
+  // approved, having read it, may write elsewhere. The deny rules hold for both.
+  const profiles: Partial<Record<'unasked' | 'approved', { profile: string; problem: string }>> = {};
+  const sandboxFor = (kind: 'unasked' | 'approved') => {
+    let sb = profiles[kind];
+    if (!sb) {
+      const writable = kind === 'unasked' ? unaskedWritable(policy, homedir()) : undefined;
+      const profile = sandboxProfile(policy.deny, homedir(), { sockets: policy.sockets, writable, cache: policy.cache });
+      sb = { profile, problem: sandboxProblem(profile) };
+      if (!sb.problem) profiles[kind] = sb;
+    }
+    return sb;
+  };
+  const approved = new Set<string>();
   pi.on('tool_call', async (event: any, ctx: any) => {
     const input = (event.input ?? {}) as Record<string, unknown>;
+    const shell = event.toolName === 'bash';
+    const refuse = (problem: string) => ({ block: true, reason: `No command can run: ${problem}. Tell the owner; sandbox: false for this profile in the routing table runs commands without it.` });
+    if (shell && policy.sandbox && sandboxFor('unasked').problem) return refuse(sandboxFor('unasked').problem);
     const v = decide(policy, String(event.toolName), input);
     if (v.action === 'block') return { block: true, reason: v.reason };
     if (v.action === 'ask') {
       const ok = await ctx.ui.confirm(`${PERMISSION_TITLE} ${event.toolName}`, JSON.stringify(input), { signal: ctx.signal });
       if (!ok) return { block: true, reason: 'The owner did not approve this (denied, or no answer in time). It did not run; say so, do not report it as done.' };
+      if (!shell) approved.add(String(event.toolCallId));
     }
     // event.input is mutable and what the tool runs with (pi docs, tool_call).
-    if (event.toolName === 'bash') input.timeout = Math.min(typeof input.timeout === 'number' && input.timeout > 0 ? input.timeout : Infinity, BASH_TIMEOUT_S);
+    if (shell) {
+      input.timeout = Math.min(typeof input.timeout === 'number' && input.timeout > 0 ? input.timeout : Infinity, BASH_TIMEOUT_S);
+      if (policy.sandbox) {
+        const sb = sandboxFor(v.action === 'ask' ? 'approved' : 'unasked');
+        if (sb.problem) return refuse(sb.problem);
+        input.command = sandboxed(String(input.command ?? ''), sb.profile);
+      }
+    }
     return undefined;
   });
+  if (policy.sandbox && typeof pi.registerTool === 'function') await sandboxFileTools(pi, policy.mode === 'plan', sandboxFor, approved);
 }

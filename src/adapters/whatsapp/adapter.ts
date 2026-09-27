@@ -207,7 +207,7 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
         } catch (e) { this.log(`whatsapp: media download failed chat=${p.chat.slice(0, 8)}…: ${String((e as Error).message ?? e).slice(0, 160)}`); }
       }
       if (!head.text && !media.length) return;
-      // Not awaited: the chat's turn queue keeps the order from here, and a turn can run for an hour.
+      // Not awaited: the chat's turn queue keeps the order from here, and a turn can run for hours.
       void this.opts.onInbound({ ...head, media }).catch((e) => this.log(`whatsapp: handler error ${(e as Error).message}`));
     });
   }

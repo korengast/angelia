@@ -1,6 +1,7 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
@@ -9,6 +10,8 @@ import { profilePermissions } from '../capabilities/compile.js';
 import { BrainExited, PermissionBook, exitReason, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 import { PERMISSION_TITLE, type PiPolicy } from './pi-gate.js';
 import { LOST_SESSION_LINE } from './transcripts.js';
+import { tmuxSocketPath } from './tmux.js';
+import { cacheEnv, profileCacheDir } from './cache.js';
 
 type Msg = Record<string, any>;
 
@@ -21,12 +24,35 @@ export function gatePath(): string {
   return existsSync(js) ? js : fileURLToPath(new URL('./pi-gate.ts', import.meta.url));
 }
 
+/** pi's shell runs in macOS's sandbox unless the profile says `sandbox: false`. */
+export const piSandboxed = (p: Profile): boolean => p.sandbox !== false;
+
 /** The gate's policy: the mode, and from the profile's settings the deny rules (the launch guard has
  *  just checked the compiled ones) and extra folders (compile writes `_common/` and directory
- *  capabilities as additionalDirectories), the owner's settings.local.json merged in. */
-export function piPolicy(p: Profile): PiPolicy {
+ *  capabilities as additionalDirectories), the owner's settings.local.json merged in. With the
+ *  sandbox, Angelia's tmux server is closed to commands too: other profiles' agents run there. */
+export function piPolicy(p: Profile, cache?: string): PiPolicy {
   const s = profilePermissions(p.cwd);
-  return { mode: p.permission_mode as PiPolicy['mode'], cwd: p.cwd, dirs: [...new Set([...p.add_dirs, ...s.dirs])], deny: s.deny };
+  const sandbox = piSandboxed(p);
+  return { mode: p.permission_mode as PiPolicy['mode'], cwd: p.cwd, dirs: [...new Set([...p.add_dirs, ...s.dirs])], deny: s.deny, sandbox, ...(sandbox ? { sockets: [tmuxSocketPath()] } : {}), ...(cache ? { cache } : {}) };
+}
+
+/** What the agent is told about its shell, after Angelia's self prompt: a refusal is the rules, not a
+ *  fault to work around (the first probe's model reported a denied command as done). */
+export function piSandboxNote(p: Profile, writable: string[] = [], name = '<profile>', cache = false): string {
+  if (p.permission_mode === 'plan') return 'You are in plan mode: you read and search, you run no commands and change no files.';
+  if (!piSandboxed(p)) return 'Your shell commands run without a sandbox (sandbox: false in the routing table); the profile\'s deny rules hold only your file tools.';
+  const where = `${[p.cwd, ...writable].join(', ')}${cache ? ', your cache folder' : ''} and temp`;
+  const unasked = p.permission_mode === 'bypassPermissions'
+    ? `Nothing asks the owner, so your commands and file edits may write only in: ${where}.`
+    : p.permission_mode === 'acceptEdits'
+      ? 'Commands wait for the owner\'s yes in the chat, except plain read-only ones (ls, cat and the like); a command the owner approved may also write outside your folders.'
+      : 'Every command waits for the owner\'s yes in the chat; one the owner approved may also write outside your folders.';
+  return [
+    `Your shell commands run inside a macOS sandbox set by Angelia. ${unasked}`,
+    'Paths this profile may not read or change (credentials, Angelia\'s own state, other profiles\' folders) fail with "Operation not permitted", for every program you start too, so tools that keep their login there (gh, ssh keys, cloud CLIs) cannot use it.',
+    `When the sandbox stops something, say so plainly and do not try to get around it. For a folder you need to write in, suggest the lasting fix: add it to add_dirs for this profile in routing.yaml, then \`angelia compile ${name} --write\` and a restart.`,
+  ].join('\n');
 }
 
 /** The first pi with `agent_settled` (pi CHANGELOG, 0.80.4): on an older one no turn would ever end. */
@@ -93,8 +119,15 @@ export class PiBrain extends EventEmitter implements Brain {
   get alive(): boolean { return !!this.child && !this.exited; }
 
   start(): void {
-    const [bin, ...args] = piArgv(this.profile, this.session, this.opts.bin ?? 'pi', this.opts.system, gatePath());
-    const env = { ...childEnv(this.opts.env), ANGELIA_PI_POLICY: JSON.stringify(piPolicy(this.profile)) };
+    // The profile's own cache folder, next to the API socket in the state folder the daemon passes.
+    // Without one (a bare test) there is none: never the live instance by default.
+    const cache = piSandboxed(this.profile) && this.opts.apiSocket ? profileCacheDir(dirname(this.opts.apiSocket), 'pi', this.opts.profileName ?? this.profile.cwd) : undefined;
+    const policy = piPolicy(this.profile, cache);
+    const system = [this.opts.system, piSandboxNote(this.profile, policy.dirs, this.opts.profileName, !!cache)].filter(Boolean).join('\n\n');
+    const [bin, ...args] = piArgv(this.profile, this.session, this.opts.bin ?? 'pi', system, gatePath());
+    const env: NodeJS.ProcessEnv = { ...childEnv(this.opts.env), ANGELIA_PI_POLICY: JSON.stringify(policy), ...(cache ? cacheEnv(cache) : {}) };
+    // The ssh agent would sign as the owner for a sandboxed command that cannot read ~/.ssh.
+    if (policy.sandbox) delete env.SSH_AUTH_SOCK;
     this.versionCheck = piVersion(bin, env).then((v) => (this.version = v));
     const child = spawn(bin, args, { cwd: this.profile.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;

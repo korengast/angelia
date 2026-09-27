@@ -23,6 +23,7 @@ routes:
 whatsapp: { auth_dir: ~/.angelia/wa }
 telegram: { token_env: TELEGRAM_BOT_TOKEN }
 defaults: { unmatched: drop, max_out_per_min: 10, idle_exit_minutes: 30 }
+# handoff: <profile or platform:chat>  (under defaults) - where /angelia-handoff sends a terminal session from a folder no profile owns or reaches
 
 # To let a new chat get its own agent when you write in it, set unmatched: onboard above and add:
 # onboard:

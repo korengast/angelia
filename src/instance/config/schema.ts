@@ -63,7 +63,9 @@ export const Profile = z.object({
    *  OS then holds every command the agent runs to the deny rules and to its own folder for writes, so
    *  the deny floor stops a program, not only the file tools. Network from the shell is blocked except
    *  what `sandbox.network.allowedDomains` lists in the profile's settings.local.json.
-   *  Codex: its own sandbox is on unless this is `false` (then full access); see codex-config.ts. */
+   *  Codex: its own sandbox is on unless this is `false` (then full access); see codex-config.ts.
+   *  pi: every shell command runs in a macOS sandbox made from the deny rules unless this is `false`
+   *  (then the rules hold only pi's file tools); see pi-gate.ts. */
   sandbox: z.boolean().optional(),
   /** Cut off from the other profiles: it cannot message them and they cannot message it, and it does
    *  not get the shared co-working folder (workspace/_common). For a profile other people talk to. */
@@ -131,6 +133,10 @@ export const Config = z.object({
       capabilities: z.array(z.string()).default([]),
       /** Denied to every profile, unless it lists them under its own capabilities. */
       deny: z.array(z.string()).default([]),
+      /** Where `/angelia-handoff` sends a terminal session from a folder no profile owns or reaches
+       *  through add_dirs: a profile, or one chat (`whatsapp:<id>`), which then is also the pick when
+       *  that profile has several chats. The chat gets a brief and the project's path. Unset: refused. */
+      handoff: z.string().optional(),
     })
     .prefault({}),
 });

@@ -1,9 +1,19 @@
 import { execFile } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** Angelia's own tmux server. Sessions on this socket outlive the daemon, so a restart — or the
  *  crash the launchd unit is meant to catch — leaves every agent exactly where it was, and nothing
  *  else on the machine shares the socket. ANGELIA_TMUX_SOCKET moves it (tests). */
 export const TMUX_SOCKET = process.env.ANGELIA_TMUX_SOCKET ?? 'angelia';
+
+/** Where that server's socket is: tmux puts `-L <name>` in `$TMUX_TMPDIR` (or /tmp)/tmux-<uid>/. */
+export function tmuxSocketPath(env: NodeJS.ProcessEnv = process.env): string {
+  const dir = env.TMUX_TMPDIR || '/tmp';
+  let base = dir;
+  try { base = realpathSync(dir); } catch { /* not there: tmux makes it */ }
+  return join(base, `tmux-${process.getuid?.() ?? 0}`, TMUX_SOCKET);
+}
 
 export interface TmuxResult { code: number; out: string; err: string }
 

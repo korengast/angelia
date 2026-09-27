@@ -108,6 +108,37 @@ export class SessionMap {
     return row;
   }
 
+  /** Make a session that started outside Angelia (a terminal, `/angelia-handoff`) the chat's active one.
+   *  An id the chat knows already is switched to, with the new label. */
+  adopt(key: string, id: string, label: string, backend: string): SessionRow {
+    const c = this.chat(key);
+    const now = new Date().toISOString();
+    let row = c.history.find((r) => r.id === id);
+    if (row) { row.last_used_at = now; if (label) row.label = cleanLabel(label); }
+    else c.history.push(row = { id, created_at: now, last_used_at: now, turns: 0, started: true, label: cleanLabel(label), backend });
+    c.active = id;
+    this.write();
+    return row;
+  }
+
+  /** Mark or clear a session whose turn runs on in the background. */
+  setBackground(key: string, id: string, since: Date | null): void {
+    const row = this.data.chats[key]?.history.find((r) => r.id === id);
+    if (!row) return;
+    if (since) row.background_since = since.toISOString(); else delete row.background_since;
+    this.write();
+  }
+
+  /** Every session marked as running in the background, with its chat. */
+  background(): { key: string; row: SessionRow }[] {
+    return Object.entries(this.data.chats).flatMap(([key, c]) => c.history.filter((r) => r.background_since).map((row) => ({ key, row })));
+  }
+
+  /** 1-based place of a session in `list()`, what `/resume N` takes; 0 when it is not listed. */
+  position(key: string, id: string): number {
+    return this.list(key).findIndex((r) => r.id === id) + 1;
+  }
+
   keys(): string[] {
     return Object.keys(this.data.chats);
   }

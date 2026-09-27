@@ -9,7 +9,7 @@
 </p>
 <p align="center">
   <a href="https://useangelia.com"><img src="https://img.shields.io/badge/Website-useangelia.com-D06B6B?style=for-the-badge" alt="Website"></a>
-  <a href="https://github.com/korengast/angelia/releases/tag/v0.2.1"><img src="https://img.shields.io/badge/Release-v0.2.1%20signed-1A120D?style=for-the-badge" alt="Release v0.2.1, signed"></a>
+  <a href="https://github.com/korengast/angelia/releases/tag/v0.3.0"><img src="https://img.shields.io/badge/Release-v0.3.0%20signed-1A120D?style=for-the-badge" alt="Release v0.3.0, signed"></a>
   <a href="#backends"><img src="https://img.shields.io/badge/Platform-macOS-A8474B?style=for-the-badge&logo=apple&logoColor=white" alt="macOS"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
@@ -126,6 +126,15 @@ Answered by Angelia itself, without spending a token. Registered in Telegram's c
 
 Owners only, except `/help` and `/status`. Any other slash command goes to your CLI, so its own commands (`/compact`, a custom one) work from the chat too.
 
+### From the terminal to the chat
+
+Working in Claude Code at your desk and want to go on from your phone? Type `/angelia-handoff` in that terminal session. `angelia compile --write` installs the command for every terminal session on the machine. Where it goes depends on the folder:
+
+- **A profile's own folder:** the session itself moves. It becomes that chat's active session, the chat gets a one-line summary, and you go on where you left off. Type `/exit` in the terminal, so the two don't split.
+- **A folder inside a profile's `add_dirs`, or any other folder:** the session stays in the terminal. The chat of that profile, or of `defaults.handoff` for folders no profile reaches (a profile, or one chat such as `whatsapp:<id>` when that profile has several), starts a fresh session from a written brief and the project's path.
+
+If that chat is in the middle of a turn, the turn goes on in the background. `/status` shows it, a permission it asks for is told to the chat and waits for you, and `/resume` takes it back.
+
 ---
 
 ## WhatsApp
@@ -156,9 +165,10 @@ Found a hole? Report it privately: [SECURITY.md](SECURITY.md).
 | Claude Code | `claude-code` (default) | supported | 2.1.270 or newer, signed in to claude.ai |
 | Grok Build | `grok` | supported | 1.0.13 or newer, `grok login` |
 | Codex | `codex` | supported | 0.157 or newer, `codex login` |
-| pi, OpenCode | | coming soon | |
+| pi | `pi` | supported | 0.80.4 or newer (tested on 0.86 and 0.87), macOS, a login or key for a provider |
+| OpenCode | | coming soon | |
 
-Each chat keeps one warm process, so a message never waits for a CLI to start. Permission prompts reach the chat on all three. Codex runs inside its own sandbox, which the operating system enforces: Angelia hands it the profile's rules, so it writes only in its folders and cannot read your credentials or the other profiles, shell commands included. Every CLI plugs into the same small interface in `src/brain/`, and nothing else in Angelia knows which one is running.
+Each chat keeps one warm process, so a message never waits for a CLI to start. Permission prompts reach the chat on all four. Codex runs inside its own sandbox, which the operating system enforces: Angelia hands it the profile's rules, so it writes only in its folders and cannot read your credentials or the other profiles, shell commands included. pi has no sandbox of its own, so Angelia puts every pi shell command and every file read and write inside macOS's sandbox, made from the same rules. Every CLI plugs into the same small interface in `src/brain/`, and nothing else in Angelia knows which one is running.
 
 ---
 
@@ -197,7 +207,7 @@ Each chat keeps one warm process, so a message never waits for a CLI to start. P
 
 Angelia is not an agent and will not become one. No second model, no skills system, no memory framework, no scheduler in the daemon, no plugin marketplace. Knowledge belongs in the profile's instruction file; scheduled work belongs to the operating system, which `angelia jobs` only sets up. No payments: the agent sends you a checkout link and you pay on your phone.
 
-**Next:** pi and OpenCode backends. Linux with a systemd unit. `/profile` to switch which assistant answers a chat.
+**Next:** an OpenCode backend. Linux with a systemd unit. `/profile` to switch which assistant answers a chat.
 
 ---
 

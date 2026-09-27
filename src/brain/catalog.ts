@@ -7,8 +7,8 @@ import type { BackendName } from './brain.js';
 /**
  * What a backend offers for /model and /effort, asked of the CLI itself where it can say. Read-only,
  * no session and no turn: Codex answers `model/list` (models and each one's effort levels), grok
- * prints `grok models`. Claude Code has no such listing, so its aliases and its --effort levels are
- * written down here, from `claude --help` (2.1.x, 2026-09-25).
+ * prints `grok models`, pi `pi --list-models`. Claude Code has no such listing, so its aliases and
+ * its --effort levels are written down here, from `claude --help` (2.1.x, 2026-09-25).
  */
 export interface ModelInfo { id: string; name?: string; efforts?: string[]; defaultEffort?: string; isDefault?: boolean }
 export interface Catalog {
@@ -53,13 +53,26 @@ export function parseCodexModels(result: { data?: unknown[] }): ModelInfo[] {
   });
 }
 
-function grokModels(bin: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<ModelInfo[]> {
+/** A CLI's model list from one command it prints it with; an empty list is a failure. */
+function listModels(bin: string, args: string[], parse: (text: string) => ModelInfo[], env: NodeJS.ProcessEnv, timeoutMs: number, cwd?: string): Promise<ModelInfo[]> {
   return new Promise((resolve, reject) => {
-    execFile(bin, ['models'], { env, timeout: timeoutMs, encoding: 'utf8' }, (err, stdout) => {
-      const models = parseGrokModels(stdout ?? '');
-      if (models.length) resolve(models); else reject(err ?? new Error('grok models listed nothing'));
+    execFile(bin, args, { env, cwd, timeout: timeoutMs, encoding: 'utf8' }, (err, stdout) => {
+      const models = parse(stdout ?? '');
+      if (models.length) resolve(models); else reject(err ?? new Error(`${bin} ${args.join(' ')} listed nothing`));
     });
   });
+}
+
+/** `pi --list-models`: a header, then `provider  model  context  max-out  thinking  images` per model
+ *  pi has a login or key for (pi 0.86.1). Angelia names a pi model as provider/model. */
+export function parsePiModels(text: string): ModelInfo[] {
+  const out: ModelInfo[] = [];
+  for (const line of text.split('\n')) {
+    // The header's last columns are words, not yes/no, so it never matches.
+    const m = /^([a-z0-9][\w.-]*)\s+(\S+)\s+\S+\s+\S+\s+(yes|no)\s+(yes|no)\s*$/i.exec(line);
+    if (m) out.push({ id: `${m[1]}/${m[2]}` });
+  }
+  return out;
 }
 
 /** A short-lived `codex app-server` in an empty folder: initialize, model/list, gone. No thread is made. */
@@ -90,14 +103,16 @@ function codexModels(bin: string, env: NodeJS.ProcessEnv, timeoutMs: number): Pr
 export async function catalog(backend: BackendName, bin: string | undefined, env: NodeJS.ProcessEnv, timeoutMs = 15_000): Promise<Catalog> {
   if (backend === 'claude-code') return CLAUDE;
   if (backend === 'grok') {
-    const models = bin ? await grokModels(bin, env, timeoutMs).catch(() => []) : [];
+    const models = bin ? await listModels(bin, ['models'], parseGrokModels, env, timeoutMs).catch(() => []) : [];
     return { models, efforts: GROK_EFFORTS, anyModel: !models.length };
   }
   if (backend === 'codex') {
     const models = bin ? await codexModels(bin, env, timeoutMs).catch(() => []) : [];
     return { models, efforts: ['low', 'medium', 'high', 'xhigh'], anyModel: !models.length, ...(models.length ? {} : { note: 'Codex did not list its models just now.' }) };
   }
-  return { models: [], efforts: ['low', 'medium', 'high', 'xhigh', 'max'], anyModel: true };
+  // pi: every model it has a login for. Its own names are provider/model; any pattern pi takes still goes.
+  const models = bin ? await listModels(bin, ['--list-models'], parsePiModels, env, timeoutMs, tmpdir()).catch(() => []) : [];
+  return { models, efforts: ['low', 'medium', 'high', 'xhigh', 'max'], anyModel: true, note: models.length ? 'The models pi has a login for. A Claude subscription used through pi draws on extra usage, and fails without it.' : 'pi listed no models: sign in with pi (/login), or set a provider key.' };
 }
 
 /** The effort levels that fit a model: its own list when the catalog has one, else the backend's. */

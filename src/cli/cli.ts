@@ -64,6 +64,11 @@ try {
       await localCall(cmd, rest);
       break;
     }
+    case 'handoff': {
+      const { handoffCommand } = await import('./handoff-cli.js');
+      console.log(await handoffCommand(rest));
+      break;
+    }
     case 'export': {
       const all = rest.includes('--all'), tools = rest.includes('--tools');
       const at = rest.indexOf('--session');

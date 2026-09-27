@@ -42,16 +42,19 @@ By hand:
    shell, shell_timeout_seconds, chrome, tui (claude-code only), media_tags, bin (the CLI's full
    path when it is not found), unsafe_ok, agent_commands (CLI slash commands every group member
    may send, e.g. [compact]), sandbox (claude-code: the CLI's own sandbox on, no escape; shell
-   network only to sandbox.network.allowedDomains in settings.local.json; codex: on unless false),
+   network only to sandbox.network.allowedDomains in settings.local.json; codex and pi: on unless false),
    isolated (cut off from the other profiles and from _common/: for a profile other people talk
    to), and capabilities, except, deny (\`angelia guide capabilities\`).
    grok reads CLAUDE.md only in a folder it trusts: run \`grok --trust\` there once;
    \`grok inspect\` then says "Project trusted: yes".
    pi has no permission prompt of its own: Angelia loads a small extension into it that asks the
-   chat and holds the compiled deny rules; in acceptEdits pi's own read and search tools and plain
-   read-only commands run unasked, other shell commands ask. pi has no MCP and no sandbox. Its
-   login is its own (\`pi\`, then /login); set model: as provider/model (e.g. from
-   \`pi --list-models\`). A Claude subscription through pi draws on extra usage or fails.
+   chat and holds the compiled deny rules for pi's file tools; every shell command runs inside a
+   macOS sandbox made from the same rules (the OS refuses a denied path, for every program the
+   command starts; programs that keep their login under the floor, such as gh or ssh keys, fail
+   there). In acceptEdits pi's own read and search tools and plain read-only commands run unasked,
+   other shell commands ask; bypass asks nothing. \`sandbox: false\` runs commands without it. pi
+   has no MCP. Its login is its own (\`pi\`, then /login); set model: as provider/model (e.g. from
+   \`pi --list-models\`). A Claude subscription through pi draws on extra usage, and fails without it.
    pi loads a folder's .pi/ settings and extensions only once you trust the folder in pi; Angelia
    needs neither, and compile denies the agent writes to .pi/ and .agents/ in its folder.
    Codex runs inside its own sandbox (the OS enforces it, shell included): it writes only in its
@@ -232,7 +235,15 @@ was when installed: after editing the file, install again, or the timer refuses 
 
 In a chat the router itself answers /new /stop /resume /status /model /effort /backend /sh /restart /help;
 those never reach the agent. angelia restart from a terminal is owner only; in a chat the owner
-sends /restart.`;
+sends /restart.
+
+/angelia-handoff is for the owner's terminal, never a chat: a Claude Code skill that angelia compile
+--write installs in ~/.claude/skills, and that runs angelia handoff. In a Claude Code profile's own
+folder the terminal session becomes that chat's active one. From a folder in a profile's add_dirs, or
+any other folder (defaults.handoff names the profile for those, or one chat, which is then
+also the pick when that profile has several), the session stays put and the chat
+starts a fresh session from a brief. A turn running in that chat goes on in the background until it
+ends; /status shows it and /resume takes it back. angelia handoff refuses to run inside a chat's agent.`;
     },
   },
 };

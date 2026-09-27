@@ -59,6 +59,16 @@ export interface Brain extends EventEmitter {
   /** Let the session go without ending it. Backends whose session outlives the daemon (a tui pane)
    *  implement this, so an idle reap or a restart costs nothing; the rest are stopped instead. */
   release?(): Promise<void>;
+  /** A handoff while a turn runs: after `release`, keep reading the turn with nobody answering, until it
+   *  is over. Only a backend whose session outlives its reader has these (a tui pane). */
+  backgroundTurn?(): AsyncGenerator<BrainEvent>;
+  /** `/resume` of a session sent to the background: read its running turn in the foreground again.
+   *  The brain is alive again from the call on, before the first event is read. */
+  follow?(): AsyncGenerator<BrainEvent>;
+  /** A restarted daemon takes back a session it had sent to the background. False: it is gone. */
+  adopt?(turnSentAt: number): Promise<boolean>;
+  /** When the running turn was typed in, for a background row that must survive a restart. */
+  turnSentAt?: number;
   kill(): void;
 }
 

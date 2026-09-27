@@ -218,8 +218,7 @@ async function telegramToken(d: InitDeps, envPath: string): Promise<string> {
 
 /** One question when more than one supported CLI is installed; otherwise the one that is, or Claude Code. */
 async function backendQuestion(d: InitDeps, name: string): Promise<Backend> {
-  // pi is not released yet (load.ts refuses it): never offered, or the table written would not load.
-  const found = BACKENDS.filter((b) => d.hasBin(b.bin) && (b.key !== 'pi' || process.env.ANGELIA_UNRELEASED_PI === '1'));
+  const found = BACKENDS.filter((b) => d.hasBin(b.bin));
   if (found.length === 0) return 'claude-code';
   if (found.length === 1) return found[0].key;
   return d.ask.choose(`Which CLI answers "${name}"?`, found.map((b) => ({ key: b.key, label: b.label })), found[0].key);

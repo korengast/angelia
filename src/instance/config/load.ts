@@ -6,6 +6,7 @@ import { Config, Profile } from './schema.js';
 import { expandHome, isInside } from '../../core/paths.js';
 import { isGroupChat } from '../../core/types.js';
 import { EVERYONE } from '../../core/router/gate.js';
+import { handoffDefault } from '../../core/handoff.js';
 
 export class ConfigError extends Error {}
 
@@ -93,12 +94,12 @@ function removedKeys(raw: unknown): string[] {
   return out;
 }
 
-/** A folder that exists, or, inside Codex's sandbox, one this process may not look at: an agent that
- *  runs \`angelia profiles\` cannot stat the other profiles' folders, and that is not a broken table.
+/** A folder that exists, or, inside Codex's or pi's sandbox, one this process may not look at: an agent
+ *  that runs \`angelia profiles\` cannot stat the other profiles' folders, and that is not a broken table.
  *  Outside the sandbox an unreadable cwd stays an error (a typo under a locked folder, a macOS-protected one). */
 function folderOrHidden(path: string): boolean {
   try { return statSync(path).isDirectory(); }
-  catch (e) { const code = (e as NodeJS.ErrnoException).code; return !!process.env.CODEX_SANDBOX && (code === 'EPERM' || code === 'EACCES'); }
+  catch (e) { const code = (e as NodeJS.ErrnoException).code; return !!(process.env.CODEX_SANDBOX || process.env.ANGELIA_SANDBOX) && (code === 'EPERM' || code === 'EACCES'); }
 }
 
 export function loadConfig(path: string): Config {
@@ -116,8 +117,6 @@ export function loadConfig(path: string): Config {
   const cfg = parsed.data;
   removed.set(cfg, removedKeys(raw));
   for (const [name, p] of Object.entries(cfg.profiles)) {
-    // pi is built but paused (known gaps in its bypass mode): a release does not run it until it is done.
-    if (p.backend === 'pi' && process.env.ANGELIA_UNRELEASED_PI !== '1') throw new ConfigError(`profiles.${name}.backend: pi is not released yet; use claude-code, grok or codex`);
     p.cwd = resolve(expandHome(p.cwd));
     p.add_dirs = p.add_dirs.map((d) => resolve(expandHome(d)));
     if (!folderOrHidden(p.cwd)) throw new ConfigError(`profiles.${name}.cwd: not a directory: ${p.cwd}`);
@@ -142,12 +141,13 @@ export function loadConfig(path: string): Config {
     if (!t.success) { const f = t.error.issues[0]; throw new ConfigError(`onboard.profile.${f.path.join('.')}: ${f.message}`); }
     if ('cwd' in cfg.onboard.profile) throw new ConfigError('onboard.profile.cwd: each new profile gets its own folder; set onboard.folder for where they go');
   }
+  try { handoffDefault(cfg); } catch (e) { throw new ConfigError(`defaults.handoff: ${(e as Error).message.replace(/^defaults\.handoff names /, '')}`); }
   cfg.routes.forEach((r, i) => {
     if (!cfg.profiles[r.profile]) throw new ConfigError(`routes[${i}].profile: unknown profile "${r.profile}"`);
     // Every member of the group would run commands on this machine with no prompt and nothing around them.
     const p = cfg.profiles[r.profile];
     if (isGroupChat(r.platform, r.chat) && (p.permission_mode === 'bypassPermissions' || (p.backend === 'codex' && p.sandbox === false)) && r.allow_from.includes(EVERYONE) && !((p.sandbox && p.backend === 'claude-code') || (p.backend === 'codex' && p.sandbox !== false))) {
-      throw new ConfigError(`routes[${i}] (${r.platform} ${r.chat}): a group on the profile ${r.profile}, open to every member (allow_from: "*"), that runs anything without asking and without a sandbox (bypassPermissions, or Codex with sandbox: false). List who may in allow_from, or keep a sandbox: sandbox: true on Claude Code, Codex's own by default`);
+      throw new ConfigError(`routes[${i}] (${r.platform} ${r.chat}): a group on the profile ${r.profile}, open to every member (allow_from: "*"), that runs anything without asking and without a sandbox (bypassPermissions, or Codex with sandbox: false). List who may in allow_from, or keep a sandbox: sandbox: true on Claude Code, Codex's own by default (pi's does not stop a command from asking launchd or another app to act for it, so it does not count)`);
     }
     // A route for a platform the table does not set up passes the router and has nobody to reply
     // through: the daemon crashed in reply(), and the API answered with the raw TypeError.

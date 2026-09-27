@@ -39,7 +39,8 @@ So a good personal assistant is mostly a well set-up CLI, and Angelia helps with
 | Claude Code | `claude-code` (default) | one long-lived `claude -p` process per session over its streaming JSON protocol: warm prompt cache | relayed to the chat (a typed yes from an owner) | `--resume` with the id Angelia mints |
 | Grok Build | `grok` | one long-lived `grok agent stdio` process per session over ACP (JSON-RPC on stdio) | relayed to the chat (a typed yes from an owner) | `session/load` with the id grok mints |
 | Codex | `codex` | one long-lived `codex app-server` process per session over JSON-RPC on stdio, inside Codex's own OS sandbox with the profile's rules | asked in the chat only for more access than the sandbox gives, such as one more folder for that turn (never in bypass and plan) | `thread/resume` with the id Codex mints |
-| pi, OpenCode | coming soon | same `Brain` interface | | |
+| pi | `pi` | one long-lived `pi --mode rpc` process per session; Angelia's gate extension holds the profile's rules, and every shell command and file read or write runs in a macOS sandbox made from them (ADR 0011) | relayed to the chat (a typed yes from an owner) | `--session-id` with the id Angelia mints |
+| OpenCode | coming soon | same `Brain` interface | | |
 
 Antigravity CLI (`agy`) was a backend until 2026-09-21. It was removed because headless agy cannot deny a single tool and has no per-folder MCP setting, so a profile on it could be given nothing narrower than everything. An agent can still call `agy` as a tool.
 
@@ -49,7 +50,7 @@ The backend is a single interface in `src/brain/`: start in a directory, send a 
 
 `angelia init` asks which of two shapes you want. **Quick** is one chat and one folder. **Advanced** is several profiles, each with its own folder, permission mode and chats. Both end with a plain `routing.yaml` in `~/.angelia/workspace` that you can edit by hand later; `angelia check-config` validates it and warns about risky combinations.
 
-To install without the script: `git clone --branch v0.2.1 https://github.com/korengast/angelia && cd angelia && npm ci --ignore-scripts && npm run build && npm i -g --ignore-scripts "$(npm pack --ignore-scripts | tail -1)"`, then `angelia init`. Without the service, `angelia daemon` runs it in the terminal; it reads `~/.angelia/env` itself.
+To install without the script: `git clone --branch v0.3.0 https://github.com/korengast/angelia && cd angelia && npm ci --ignore-scripts && npm run build && npm i -g --ignore-scripts "$(npm pack --ignore-scripts | tail -1)"`, then `angelia init`. Without the service, `angelia daemon` runs it in the terminal; it reads `~/.angelia/env` itself.
 
 The wizard only writes files you can write yourself.
 

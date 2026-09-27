@@ -3,6 +3,8 @@ import { connect } from 'node:net';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { extractMediaTags, MediaError, type MediaRequest } from '../../core/deliver/media.js';
+import { HandoffError } from '../../core/handoff.js';
+import type { HandoffRequest, HandoffResult } from '../../core/orchestrator.js';
 
 export interface ApiDeps {
   /** Post a line into a chat. `fromKey`: another profile's agent posted it, and the line says so. */
@@ -16,6 +18,8 @@ export interface ApiDeps {
   routed(key: string): boolean;
   /** May the agent of chat `from` message chat `to`, another profile's? Undefined: yes; else why not. */
   reach?(from: string, to: string): string | undefined;
+  /** `/angelia-handoff` from a terminal. Rejects with a HandoffError whose message is for the terminal. */
+  handoff?(req: HandoffRequest): Promise<HandoffResult>;
 }
 
 /**
@@ -60,8 +64,23 @@ export class ApiServer {
     const url = new URL(req.url ?? '/', 'http://x');
     if (req.method === 'GET' && url.pathname === '/healthz') return json(res, { ok: true });
     const route = req.method === 'POST' ? url.pathname : '';
-    if (route !== '/send' && route !== '/turn' && route !== '/send-media') return json(res, { error: 'not found' }, 404);
+    if (route !== '/send' && route !== '/turn' && route !== '/send-media' && route !== '/handoff') return json(res, { error: 'not found' }, 404);
     const body = await readJson(req);
+    if (route === '/handoff') {
+      // The owner's token only: an agent that could hand a session to a chat could pick any chat.
+      if (!same(this.token, String(body.token ?? ''))) return json(res, { error: 'bad token: a handoff runs from a terminal session, with the owner\'s token' }, 403);
+      if (!this.d.handoff) return json(res, { error: 'this daemon cannot take a handoff' }, 404);
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+      try {
+        return json(res, { ok: true, ...(await this.d.handoff({
+          cwd: String(body.cwd ?? ''), summary: String(body.summary ?? ''),
+          session: str(body.session), brief: str(body.brief), project: str(body.project), chat: str(body.chat),
+        })) });
+      } catch (e) {
+        if (e instanceof HandoffError) return json(res, { error: e.message }, 400);
+        throw e;
+      }
+    }
     const key = String(body.key ?? '');
     const from = String(body.from ?? '');
     const who = this.who(String(body.token ?? ''), key, from);

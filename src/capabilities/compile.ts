@@ -7,6 +7,7 @@ import { SELF_END, SELF_START, upsertSelfBlock } from '../daemon/self.js';
 import { API_SOCKET, HOME_PRIVATE, INSTANCE_DIR, STATE_PRIVATE, commonDir, workspaceDir } from '../instance/instance.js';
 import { isInside } from '../core/paths.js';
 import { codexUserMcpServers } from '../brain/codex-config.js';
+import { fileURLToPath } from 'node:url';
 
 /**
  * `angelia compile`: turn a profile's capabilities into the profile's own files, the ones its CLI
@@ -66,6 +67,8 @@ export interface LaunchGuard {
   cwd: string; deny: string[]; sandbox?: boolean;
   /** Codex: the profile ran in Codex's sandbox at the last compile; `sandbox: false` since is a refusal. */
   codexSandbox?: boolean;
+  /** pi: its commands ran in Angelia's sandbox at the last compile; `sandbox: false` since is a refusal. */
+  piSandbox?: boolean;
   /** The backend compiled for: its rules differ per CLI, so another backend since is a refusal. */
   backend?: Profile['backend'];
 }
@@ -102,8 +105,9 @@ export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR):
     if (settings.sandbox?.enabled !== true || settings.sandbox?.allowUnsandboxedCommands !== false) out.push('sandbox off');
     if (local.sandbox?.enabled === false || local.sandbox?.allowUnsandboxedCommands === true) out.push('sandbox off in settings.local.json');
   }
-  // Codex's sandbox comes from the table, not a settings file: turning it off there needs a compile.
-  if (g.codexSandbox && (p.backend !== 'codex' || p.sandbox === false)) out.push('sandbox off: the table turned Codex\'s sandbox off since the last compile; compile again to accept it');
+  // Codex's and pi's sandboxes come from the table, not a settings file: turning one off there needs
+  // a compile. (A guard from another backend returned above.)
+  if ((g.codexSandbox || g.piSandbox) && p.sandbox === false) out.push(`sandbox off: the table turned ${g.codexSandbox ? 'Codex\'s sandbox' : 'the sandbox for pi\'s commands'} off since the last compile; compile again to accept it`);
   return out;
 }
 
@@ -141,8 +145,8 @@ export interface ProfilePlan {
 /** A path rule in the form this backend reads as absolute. For Claude a path under the home folder
  *  is written as `~/…` (measured: Claude 2.1.278 refuses the read), so the settings file carries no
  *  username and still holds after a move. grok keeps `/abs`: measured on grok 1.0.40, it ignores a `~` rule.
- *  pi has no rules of its own; Angelia's gate extension reads the same `/abs` form (pi-gate.ts), and
- *  Codex's sandbox gets them as absolute paths too (codex-config.ts). */
+ *  pi has no rules of its own; Angelia's gate extension and the sandbox it runs pi's commands in read
+ *  the same `/abs` form (pi-gate.ts), and Codex's sandbox gets them as absolute paths too (codex-config.ts). */
 export function pathRule(tool: 'Read' | 'Edit', path: string, backend: Profile['backend'], home = homedir()): string {
   const abs = resolve(path);
   if (backend !== 'claude-code') return `${tool}(${abs})`;
@@ -208,6 +212,16 @@ export const LAUNCH_FILES = [join('.claude', 'settings.json'), join('.claude', '
  *  skills) and `.agents/` (skills). pi loads them once the folder is trusted, as code in its own
  *  process, so an agent that writes there runs whatever it wrote on the next start. */
 export const PI_LAUNCH_DIRS = [join('.pi', '**'), join('.agents', '**')];
+
+/**
+ * pi's own folder in the home, for a pi profile: nothing in it is the agent's to change (its global
+ * extensions, settings, trust decisions and packages load into every pi start, so a write there could
+ * switch Angelia's gate or sandbox off next time), and its sessions are every folder's transcripts,
+ * the owner's own included. pi itself reads and writes there; the rules bind only its tools and the
+ * commands they run.
+ */
+export const piHomeRules = (home: string): string[] =>
+  [pathRule('Edit', join(home, '.pi', 'agent', '**'), 'pi', home), pathRule('Read', join(home, '.pi', 'agent', 'sessions', '**'), 'pi', home)];
 
 /** Codex's project inputs in the profile folder: `.codex/` (config, hooks, rules; loaded once the
  *  folder is trusted) and `.agents/` (skills). Its sandbox makes these read-only for the agent. */
@@ -394,6 +408,14 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     if (Object.keys(wantMcp).length) notes.push(`codex: allowed MCP servers are not written yet (${Object.keys(wantMcp).join(', ')}); add them with codex mcp add`);
   } else if (p.backend === 'pi') {
     if (Object.keys(wantMcp).length) notes.push(`pi has no MCP: the allowed servers (${Object.keys(wantMcp).join(', ')}) are not available to this profile`);
+    // Claude Code's sandbox also limits the shell's network; pi's holds files only.
+    if (p.sandbox === true) notes.push("pi's sandbox holds files, not the network: its commands reach any host (sandbox.network.allowedDomains is Claude Code's)");
+    // pi puts the prefix in front of the command Angelia's gate already wrapped: it runs unsandboxed.
+    if (p.sandbox !== false) for (const f of [join(home, '.pi', 'agent', 'settings.json'), join(p.cwd, '.pi', 'settings.json')]) {
+      let set: unknown;
+      try { set = JSON.parse(readFileSync(f, 'utf8'))?.shellCommandPrefix; } catch { continue; }
+      if (set) notes.push(`pi's shellCommandPrefix (${f}) runs before each command outside the sandbox, and what it sets does not reach the command; remove it`);
+    }
   } else {
     if (Object.keys(wantMcp).length) notes.push(`grok: allowed MCP servers are not written yet (${Object.keys(wantMcp).join(', ')}); add them with grok mcp add --scope project in ${p.cwd}`);
   }
@@ -403,6 +425,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   const settings = readJson(settingsPath);
   const perms: Record<string, any> = { ...(settings.permissions ?? {}) };
   const launch = [...LAUNCH_FILES, ...(p.backend === 'pi' ? PI_LAUNCH_DIRS : p.backend === 'codex' ? CODEX_LAUNCH_DIRS : [])].map((f) => pathRule('Edit', join(p.cwd, f), p.backend, home));
+  if (p.backend === 'pi') launch.push(...piHomeRules(home));
   const wantDeny = [...new Set([...profileFloor(cfg, name, stateDir, home), ...launch, ...[...denied].flatMap(([n, c]) => denyEntries(n, c, p.backend, home))])];
   // grok has no strict mode: servers set up for the whole user reach every folder, so each one this
   // profile was not given is denied by name. (Claude leaves them out through --strict-mcp-config.)
@@ -437,7 +460,8 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   for (const x of rec?.sockets ?? []) if (!wantSockets.includes(x) && sockets.includes(x)) { sockets.splice(sockets.indexOf(x), 1); changes.push(`- sandbox socket ${x}`); sandboxChanged = true; }
   for (const x of wantSockets) if (!sockets.includes(x)) { sockets.push(x); changes.push(`+ sandbox socket ${x}`); sandboxChanged = true; }
   const wantSandbox = p.backend === 'claude-code' && p.sandbox;
-  if (p.sandbox && (p.backend === 'grok' || p.backend === 'pi')) notes.push(`sandbox: true is for Claude Code and Codex; ${p.backend} has no such setting here, so it is ignored`);
+  if (p.sandbox && p.backend === 'grok') notes.push('sandbox: true is for Claude Code, Codex and pi; grok has no such setting here, so it is ignored');
+  if (p.backend === 'pi') notes.push(p.sandbox === false ? 'pi: sandbox: false, so shell commands run outside the sandbox: the deny rules hold only pi\'s file tools' : 'pi: the deny rules hold pi\'s file tools (Angelia\'s gate) and every shell command (each runs in a macOS sandbox made from them)');
   if (p.backend === 'codex') notes.push(p.sandbox === false ? 'codex: sandbox: false, so the agent runs with full access: the deny rules bind nothing, and in every mode it runs commands without asking' : 'codex: the deny rules and the writable folders are held by Codex\'s own sandbox (the OS), shell commands included');
   if (p.backend === 'codex' && existsSync(join(p.cwd, 'AGENTS.md'))) notes.push('codex: this folder has an AGENTS.md, which Codex reads instead of CLAUDE.md, so the instructions and the capability block in CLAUDE.md do not reach it; merge them and remove AGENTS.md');
   if (wantSandbox) {
@@ -483,8 +507,8 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     const tilde = ['deny', 'allow', 'ask'].flatMap((k) => ((perms[k] ?? []) as string[]).filter((r) => /\(~\//.test(r)).map((r) => `${k} ${r}`));
     if (tilde.length) notes.push(`grok ignores rules written with ~ (write the full path instead): ${tilde.join(', ')}`);
   }
-  if (p.permission_mode === 'bypassPermissions' && !wantSandbox && !(p.backend === 'codex' && p.sandbox !== false)) notes.push('bypassPermissions: deny rules stop the file tools, not the shell; a program the agent runs can still read a denied path (sandbox: true closes that for Claude Code)');
-  const userSkills = userSkillDirs(p.backend, home).flatMap((d) => safeList(d));
+  if (p.permission_mode === 'bypassPermissions' && !wantSandbox && !((p.backend === 'codex' || p.backend === 'pi') && p.sandbox !== false)) notes.push('bypassPermissions: deny rules stop the file tools, not the shell; a program the agent runs can still read a denied path (sandbox: true closes that for Claude Code)');
+  const userSkills = userSkillDirs(p.backend, home).flatMap((d) => safeList(d)).filter((n) => n !== HANDOFF_NAME);
   if (p.backend === 'pi') {
     // pi's global settings can add skill folders and packages for every folder; compile cannot filter those.
     let global: Record<string, unknown> = {};
@@ -518,7 +542,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
       if (wantDirs.includes(common)) mkdirSync(common, { recursive: true });
       mkdirSync(join(p.cwd, '.claude'), { recursive: true });
       writeFileSync(join(p.cwd, RECORD), JSON.stringify(record, null, 2) + '\n');
-      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}) });
+      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}), ...(p.backend === 'pi' && p.sandbox !== false ? { piSandbox: true } : {}) });
     },
   };
 }
@@ -566,4 +590,28 @@ export function planText(pl: ProfilePlan): string {
   for (const d of pl.duplicates) out.push(`  duplicate: ${d}`);
   for (const n of pl.notes) out.push(`  note: ${n}`);
   return out.join('\n');
+}
+
+const HANDOFF_NAME = 'angelia-handoff';
+/** The skill as shipped, beside dist/ and src/. */
+export const HANDOFF_SKILL = fileURLToPath(new URL('../../capabilities/builtin/angelia-handoff/SKILL.md', import.meta.url));
+const HANDOFF_MARK = '<!-- Written by angelia compile, and replaced on the next one: change it in Angelia, not here. -->';
+
+/**
+ * `/angelia-handoff` for every terminal Claude Code session on this machine: a copy in the user's own
+ * skills folder, since a terminal can hand off from any folder. It carries a mark; a file there
+ * without the mark belongs to someone else and is left alone. Not in any profile's filter: the skill
+ * refuses to run inside a chat's agent (angelia handoff checks for the agent's token).
+ */
+export function planHandoffSkill(home = homedir(), source = HANDOFF_SKILL): { change?: string; conflict?: string; apply(): void } {
+  const at = join(home, '.claude', 'skills', HANDOFF_NAME, 'SKILL.md');
+  const want = readFileSync(source, 'utf8').replace(/^(---\n[\s\S]*?\n---\n)/, `$1${HANDOFF_MARK}\n`);
+  let cur: string | undefined;
+  try { cur = readFileSync(at, 'utf8'); } catch { /* not there yet */ }
+  if (cur === want) return { apply() {} };
+  if (cur !== undefined && !cur.includes(HANDOFF_MARK)) return { conflict: `${at} exists and is not Angelia's; move it aside to get /angelia-handoff`, apply() {} };
+  return {
+    change: `${cur === undefined ? '+' : '~'} ${at} (/angelia-handoff, for terminal sessions)`,
+    apply: () => { mkdirSync(dirname(at), { recursive: true }); writeFileSync(at, want); },
+  };
 }

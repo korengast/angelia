@@ -17,6 +17,13 @@ function token(): string {
   return t;
 }
 
+/** The owner's token alone, never an agent's: for what only the owner may do (a handoff). */
+export function ownerToken(): string {
+  const t = readApiToken(join(STATE_DIR, 'api.token'));
+  if (!t) throw new Error('no api token: is the daemon running?');
+  return t;
+}
+
 /** One POST to the running daemon over its socket. Throws with the daemon's own error text. */
 export function post(path: string, body: Record<string, unknown>, socket = apiSocket()): Promise<Record<string, unknown>> {
   return new Promise((resolvePost, reject) => {

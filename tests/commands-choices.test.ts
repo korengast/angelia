@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
 import { parseCommand } from '../src/core/commands.js';
-import { parseCodexModels, parseGrokModels, effortsFor, type Catalog } from '../src/brain/catalog.js';
+import { parseCodexModels, parseGrokModels, parsePiModels, effortsFor, type Catalog } from '../src/brain/catalog.js';
+import { limitHint } from '../src/core/deliver/text.js';
 import { switchBackend } from '../src/instance/switch-backend.js';
 import type { Inbound } from '../src/core/types.js';
 
@@ -23,6 +24,11 @@ test('the CLIs\' own model lists read as a catalog', () => {
     { id: 'gpt-5.5', supportedReasoningEfforts: ['low', 'high'] },
   ] });
   assert.deepEqual(codex.map((m) => m.id), ['gpt-6-luna', 'gpt-5.5']);
+  // Shape of pi 0.86.1 --list-models: only models it has a login or key for; named provider/model.
+  assert.deepEqual(parsePiModels('provider      model                       context  max-out  thinking  images\nxai           grok-4.7                    500K     500K     yes       yes   \nopenai-codex  gpt-5.3-codex-spark         128K     128K     yes       no    \n'),
+    [{ id: 'xai/grok-4.7' }, { id: 'openai-codex/gpt-5.3-codex-spark' }]);
+  assert.deepEqual(parsePiModels('No models available. Use /login or set an API key environment variable.\n'), []);
+  assert.match(limitHint('pi'), /\/model provider\/model/);
   const c: Catalog = { models: codex, efforts: ['low'], anyModel: false };
   assert.deepEqual(effortsFor(c, undefined), { levels: ['low', 'medium', 'max'], defaultLevel: 'medium' });
   assert.deepEqual(effortsFor(c, 'gpt-5.5'), { levels: ['low', 'high'] });
@@ -42,7 +48,7 @@ function setup(profile: Record<string, unknown>, extra: Record<string, unknown> 
   const sent: string[] = [];
   const asked: string[] = [];
   const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } }, {
-    stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs'), codex: join(here, 'fake-codex.mjs'), grok: join(here, 'fake-grok.mjs') },
+    stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs'), codex: join(here, 'fake-codex.mjs'), grok: join(here, 'fake-grok.mjs'), pi: join(here, 'fake-pi.mjs') },
     catalog: async (b) => { asked.push(b); return b === 'codex' ? codexCatalog : { models: [], efforts: ['low'], anyModel: true }; },
     ...extra,
   });
@@ -79,9 +85,9 @@ test('/backend shows the CLIs, switches the profile for every chat on it, and is
   });
   t.after(() => o.shutdown());
   await o.handle(dm('/backend'));
-  assert.equal(sent.at(-1), 'Backend of profile a: claude-code (Claude Code)\n\n• claude-code (Claude Code) — now\n• grok (Grok Build)\n• codex (Codex)\n\nSwitch: /backend <name>. It changes the profile for all 2 chats that use it and starts a fresh session.');
-  await o.handle(dm('/backend pi'));
-  assert.equal(sent.at(-1), 'No backend pi. Choose one of: claude-code, grok, codex.');
+  assert.equal(sent.at(-1), 'Backend of profile a: claude-code (Claude Code)\n\n• claude-code (Claude Code) — now\n• grok (Grok Build)\n• codex (Codex)\n• pi (pi)\n\nSwitch: /backend <name>. It changes the profile for all 2 chats that use it and starts a fresh session.');
+  await o.handle(dm('/backend gemini'));
+  assert.equal(sent.at(-1), 'No backend gemini. Choose one of: claude-code, grok, codex, pi.');
   await o.handle(dm('/backend claude-code'));
   assert.equal(sent.at(-1), 'Profile a already runs on Claude Code.');
   await o.handle(dm('hi'));
@@ -93,6 +99,14 @@ test('/backend shows the CLIs, switches the profile for every chat on it, and is
   await o.handle(dm('hi'));
   assert.match(sent.at(-1)!, /echo: /, 'the next message runs on the new CLI');
   assert.equal(o.map.getActive('telegram:1')!.backend, 'codex');
+  // The other chat chose a model for a session it has not used yet: that choice was for Codex.
+  o.map.ensureActive('telegram:2');
+  o.map.setOverride('telegram:2', { model: 'gpt-5.5', effort: 'xhigh' });
+  await o.handle(dm('/backend pi'));
+  assert.deepEqual(calls, ['a->codex', 'a->pi']);
+  assert.equal(o.map.getActive('telegram:2')?.model, undefined);
+  assert.equal(o.map.getActive('telegram:2')?.effort, undefined);
+  assert.match(sent.at(-1)!, /^Profile a now runs on pi\. New session [0-9a-f]{8} started\.\n.*Pick a model with \/model: pi's own default/s);
 });
 
 test('/backend: a daemon that cannot write the table says so and changes nothing; a non-owner is refused', async (t) => {
@@ -124,9 +138,11 @@ test('switchBackend: the table keeps its layout, loses what belonged to the old 
   assert.equal(cfg.profiles.a.backend, 'codex');
   assert.ok(readdirSync(dir).some((f) => f.startsWith('routing.yaml.') && f.endsWith('.bak')), 'a backup is made');
   assert.ok(readdirSync(join(dir, 'compiled')).length, 'the profile is compiled for the new CLI');
-  // pi is not released: the table that would not load is put back as it was.
-  delete process.env.ANGELIA_UNRELEASED_PI;
-  assert.throws(() => switchBackend({ table, cfg, profile: 'a', backend: 'pi', instance: dir }), /pi is not released yet/);
-  assert.equal(readFileSync(table, 'utf8'), now);
+  // A table that would not load after the switch (bypass on a folder with a .env) is put back as it was.
+  writeFileSync(join(cwd, '.env'), 'X=1\n');
+  writeFileSync(table, now.replace('permission_mode: acceptEdits', 'permission_mode: bypassPermissions'));
+  const before = readFileSync(table, 'utf8');
+  assert.throws(() => switchBackend({ table, cfg, profile: 'a', backend: 'pi', instance: dir }), /bypassPermissions on a directory containing \.env/);
+  assert.equal(readFileSync(table, 'utf8'), before);
   assert.equal(cfg.profiles.a.backend, 'codex');
 });

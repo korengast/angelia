@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -95,16 +94,6 @@ export function codexConfigConflict(read: { config?: Record<string, any>; layers
 /** A profile's own cache folder, under Angelia's state: not temp, which every sandboxed profile may
  *  write (a review planted code in another profile's npx cache that way). Named by a hash, so no two
  *  profile names meet in one folder. */
-export function codexCacheDir(stateDir: string, profileName: string): string {
-  return join(stateDir, 'cache', 'codex', createHash('sha256').update(profileName).digest('hex').slice(0, 16));
-}
-
-/** Caches the common tools write into the home folder, moved into the profile's own cache folder
- *  (npm's error would otherwise advise `sudo chown`; ~/.npm/_npx holds code run later outside). */
-export function codexCacheEnv(dir: string): NodeJS.ProcessEnv {
-  return { npm_config_cache: join(dir, 'npm'), UV_CACHE_DIR: join(dir, 'uv'), PIP_CACHE_DIR: join(dir, 'pip'), XDG_CACHE_HOME: join(dir, 'xdg') };
-}
-
 export interface CodexLaunch {
   deny: string[];
   /** Folders besides cwd the agent may write: add_dirs, _common/, directory capabilities. */

@@ -41,6 +41,7 @@ export function statusText(map: SessionMap, key: string, profile: string, alive:
     `angelia · profile ${profile} · session ${a.id.slice(0, 8)} · ${a.turns} turns${a.backend && a.backend !== 'claude-code' ? ` · ${a.backend}` : ''}${a.model ? ` · model ${a.model}` : ''}${a.effort ? ` · effort ${a.effort}` : ''}`,
     `last used ${a.last_used_at.slice(0, 16).replace('T', ' ')} · ${alive ? 'warm' : 'cold'} · ${queued} queued`,
     `${map.list(key, 100).length} sessions in history`,
+    ...map.background().filter((b) => b.key === key).map((b) => `session ${b.row.id.slice(0, 8)} is still working in the background: /resume ${map.position(key, b.row.id) || b.row.id.slice(0, 8)}`),
   ].join('\n');
 }
 

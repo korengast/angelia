@@ -1,5 +1,4 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -7,7 +6,8 @@ import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { childEnv, versionAtLeast } from './argv.js';
 import { BrainExited, PermissionBook, exitReason, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
-import { CODEX_PROFILE, codexApproval, codexCacheDir, codexCacheEnv, codexConfigConflict, codexOverrides, codexSandboxNote, codexSandboxed } from './codex-config.js';
+import { cacheEnv, profileCacheDir } from './cache.js';
+import { CODEX_PROFILE, codexApproval, codexConfigConflict, codexOverrides, codexSandboxNote, codexSandboxed } from './codex-config.js';
 import { profilePermissions, readRecord } from '../capabilities/compile.js';
 import { LOST_SESSION_LINE } from './transcripts.js';
 
@@ -84,9 +84,9 @@ export class CodexBrain extends EventEmitter implements Brain {
   start(): void {
     const perms = profilePermissions(this.profile.cwd);
     const sandboxed = codexSandboxed(this.profile);
-    // The profile's own cache folder, writable to it alone (codexCacheDir), next to the API socket in the
+    // The profile's own cache folder, writable to it alone (profileCacheDir), next to the API socket in the
     // state folder the daemon passes. Without one (a bare test) there is no cache: never the live instance by default.
-    const cache = sandboxed && this.opts.apiSocket ? codexCacheDir(dirname(this.opts.apiSocket), this.opts.profileName ?? this.profile.cwd) : undefined;
+    const cache = sandboxed && this.opts.apiSocket ? profileCacheDir(dirname(this.opts.apiSocket), 'codex', this.opts.profileName ?? this.profile.cwd) : undefined;
     const writable = [...new Set([...this.profile.add_dirs, ...perms.dirs, ...(cache ? [cache] : [])])];
     this.allowed = readRecord(this.profile.cwd)?.mcpServers ?? [];
     let launch: ReturnType<typeof codexOverrides>;
@@ -96,12 +96,7 @@ export class CodexBrain extends EventEmitter implements Brain {
     catch (e) { launch = { args: [], skipped: [], refuse: `your Codex config cannot be read (${(e as Error).message})` }; }
     this.refused = launch.refuse;
     if (launch.skipped.length) this.emit('log', `codex: rules the sandbox cannot hold as written are not passed to it: ${launch.skipped.join(', ')}`);
-    let env = childEnv(this.opts.env);
-    if (cache) {
-      const caches = codexCacheEnv(cache);
-      for (const d of Object.values(caches)) { try { mkdirSync(String(d), { recursive: true, mode: 0o700 }); } catch { /* the tool makes it */ } }
-      env = { ...env, ...caches };
-    }
+    const env = { ...childEnv(this.opts.env), ...(cache ? cacheEnv(cache) : {}) };
     const child = spawn(this.opts.bin ?? 'codex', [...launch.args, 'app-server'], { cwd: this.profile.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     const done = (code: number | null, signal: NodeJS.Signals | null) => {

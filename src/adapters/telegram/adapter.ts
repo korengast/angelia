@@ -14,7 +14,7 @@ export interface TelegramAdapterOptions {
   /** Profile cwd for a message that would pass routing and gating, else undefined: nothing is downloaded for anyone else. */
   inboxFor: (i: Omit<Inbound, 'media'>) => string | undefined;
   /** Called once per message and never awaited. grammY handles updates one at a time, and a turn can
-   *  run for an hour: waiting here would hold every later update behind it, including the owner's
+   *  run for hours: waiting here would hold every later update behind it, including the owner's
    *  `yes <id>` to that turn's own permission prompt, and `/stop`. The call is synchronous up to its
    *  first await, so the order of messages within a chat is kept. */
   onInbound: (i: Inbound) => Promise<void> | void;

@@ -424,17 +424,14 @@ test('the co-working folder: every profile that is not isolated gets it as an ex
   assert.ok(!settings('open').deny.some((r: string) => r.includes('_common')));
 });
 
-test('a release refuses backend pi until it is done', () => {
+test('a table with backend pi loads (released 2026-09-27)', () => {
   const d = tmp();
   const path = join(d, 'routing.yaml');
   writeFileSync(path, stringify({ profiles: { p: { cwd: d, backend: 'pi' } }, routes: [] }));
-  const before = process.env.ANGELIA_UNRELEASED_PI;
-  delete process.env.ANGELIA_UNRELEASED_PI;
-  try { assert.throws(() => loadConfig(path), /profiles\.p\.backend: pi is not released yet/); } finally { if (before !== undefined) process.env.ANGELIA_UNRELEASED_PI = before; }
+  assert.equal(loadConfig(path).profiles.p.backend, 'pi');
 });
 
 test('compile (pi): /abs rules, no Skill() entry, no MCP file, a note for MCP; the compiled skills reach pi on argv; its user skill folders are checked', () => {
-  process.env.ANGELIA_UNRELEASED_PI = '1';
   const r = rig();
   writeTable(r.path, (t) => { t.profiles.home.backend = 'pi'; });
   mkdirSync(join(r.home, '.pi', 'agent', 'skills', 'ledger'), { recursive: true });
@@ -444,6 +441,14 @@ test('compile (pi): /abs rules, no Skill() entry, no MCP file, a note for MCP; t
   const ok = planProfile(r.cfg(), 'home', { home: r.home });
   assert.deepEqual(ok.conflicts, []);
   assert.ok(ok.notes.some((n) => /pi has no MCP: the allowed servers \(fx-rates\)/.test(n)));
+  assert.ok(!ok.notes.some((n) => /not the network/.test(n)), 'said only where the owner asked for a sandbox');
+  writeTable(r.path, (t) => { t.profiles.home.sandbox = true; });
+  assert.ok(planProfile(r.cfg(), 'home', { home: r.home }).notes.some((n) => /pi's sandbox holds files, not the network/.test(n)));
+  writeTable(r.path, (t) => { delete t.profiles.home.sandbox; });
+  mkdirSync(join(r.home, '.pi', 'agent'), { recursive: true });
+  writeFileSync(join(r.home, '.pi', 'agent', 'settings.json'), JSON.stringify({ shellCommandPrefix: 'shopt -s expand_aliases' }));
+  assert.ok(planProfile(r.cfg(), 'home', { home: r.home }).notes.some((n) => /shellCommandPrefix .* runs before each command outside the sandbox/.test(n)));
+  rmSync(join(r.home, '.pi', 'agent', 'settings.json'));
   ok.apply();
   assert.ok(!existsSync(join(r.cwd, '.mcp.json')));
   const deny: string[] = JSON.parse(readFileSync(join(r.cwd, '.claude', 'settings.json'), 'utf8')).permissions.deny;

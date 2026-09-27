@@ -8,7 +8,8 @@ import { Config } from '../src/instance/config/schema.js';
 import { loadConfig, ConfigError } from '../src/instance/config/load.js';
 import { createBrain, type Brain } from '../src/brain/index.js';
 import { CodexBrain, describeGrant } from '../src/brain/codex.js';
-import { codexApproval, codexCacheDir, codexConfigConflict, codexFilesystem, codexOverrides, codexSandboxNote, tomlTable } from '../src/brain/codex-config.js';
+import { profileCacheDir } from '../src/brain/cache.js';
+import { codexApproval, codexConfigConflict, codexFilesystem, codexOverrides, codexSandboxNote, tomlTable } from '../src/brain/codex-config.js';
 import { CODEX_LAUNCH_DIRS, launchCheck, pathRule, planProfile, profileFloor } from '../src/capabilities/compile.js';
 import { codexRows, codexSessionFile, exportChat } from '../src/instance/export.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
@@ -86,7 +87,7 @@ test('codex: factory, config, the sandbox overrides on argv', () => {
   // Any server Codex would load that the profile was not given refuses, in whatever form it was written.
   assert.match(codexConfigConflict({ layers: [], config: { mcp_servers: { bank: { enabled: true }, maps: {} } } }, ['maps']) ?? '', /not given would load: bank;/);
   assert.equal(codexConfigConflict({ layers: [], config: { mcp_servers: { bank: { enabled: false }, maps: {} } } }, ['maps']), undefined);
-  assert.notEqual(codexCacheDir('/s', 'שלום'), codexCacheDir('/s', 'שלוה'), 'names that differ get different folders');
+  assert.notEqual(profileCacheDir('/s', 'codex', 'שלום'), profileCacheDir('/s', 'codex', 'שלוה'), 'names that differ get different folders');
 });
 
 test('codex: a turn, progress before an action, the id Codex mints, the default model, the self prompt and the sandbox note', async () => {
