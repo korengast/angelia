@@ -9,7 +9,7 @@
 </p>
 <p align="center">
   <a href="https://useangelia.com"><img src="https://img.shields.io/badge/Website-useangelia.com-D06B6B?style=for-the-badge" alt="Website"></a>
-  <a href="https://github.com/korengast/angelia/releases/tag/v0.3.0"><img src="https://img.shields.io/badge/Release-v0.3.0%20signed-1A120D?style=for-the-badge" alt="Release v0.3.0, signed"></a>
+  <a href="https://github.com/korengast/angelia/releases/tag/v0.3.1"><img src="https://img.shields.io/badge/Release-v0.3.1%20signed-1A120D?style=for-the-badge" alt="Release v0.3.1, signed"></a>
   <a href="#backends"><img src="https://img.shields.io/badge/Platform-macOS-A8474B?style=for-the-badge&logo=apple&logoColor=white" alt="macOS"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
