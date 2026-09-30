@@ -12,8 +12,9 @@ export interface ApiDeps {
   /** Type a prompt into a chat's session. `fromAgent`: an agent asked, with its own chat's token, so
    *  the prompt is plain text and never a CLI command; otherwise it runs as if an owner had sent it. */
   turn(key: string, text: string, fromAgent: boolean, fromKey?: string): Promise<void>;
-  /** Attach a file to a chat. Rejects with a MediaError whose message is safe to show. */
-  sendMedia(key: string, req: MediaRequest): Promise<void>;
+  /** Attach a file to a chat. `byOwner`: the owner's token asked; otherwise an agent did, and the file
+   *  must be one its profile may read. Rejects with a MediaError whose message is safe to show. */
+  sendMedia(key: string, req: MediaRequest, byOwner: boolean): Promise<void>;
   /** Is `key` a routed chat? */
   routed(key: string): boolean;
   /** May the agent of chat `from` message chat `to`, another profile's? Undefined: yes; else why not. */
@@ -96,7 +97,7 @@ export class ApiServer {
       if (!key || !path) return json(res, { error: 'key and path required' }, 400);
       if (!this.d.routed(key)) return json(res, { error: 'not a routed chat' }, 404);
       try {
-        await this.d.sendMedia(key, { path, caption: body.caption ? String(body.caption) : undefined, voice: body.voice === undefined ? undefined : body.voice !== false, fileName: body.file_name ? String(body.file_name) : undefined });
+        await this.d.sendMedia(key, { path, caption: body.caption ? String(body.caption) : undefined, voice: body.voice === undefined ? undefined : body.voice !== false, fileName: body.file_name ? String(body.file_name) : undefined }, who === 'owner');
       } catch (e) {
         if (e instanceof MediaError) return json(res, { error: e.message }, 400);
         throw e;
@@ -111,7 +112,7 @@ export class ApiServer {
       // can post text and files in one call.
       const { text: rest, media } = who === 'peer' ? { text, media: [] } : extractMediaTags(text);
       if (rest) await this.d.send(key, rest, who === 'peer' ? from : undefined);
-      try { for (const item of media) await this.d.sendMedia(key, item); }
+      try { for (const item of media) await this.d.sendMedia(key, item, who === 'owner'); }
       catch (e) { if (e instanceof MediaError) return json(res, { error: e.message }, 400); throw e; }
       return json(res, { ok: true, ...(media.length ? { media: media.length } : {}) });
     }

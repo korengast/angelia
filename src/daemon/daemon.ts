@@ -124,7 +124,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   const api = new ApiServer({
     send: (key, text, fromKey) => orch.notify(key, text, fromKey), turn: (key, text, fromAgent, fromKey) => orch.injectTurn(key, text, fromAgent, fromKey), routed: (key) => orch.routed(key), handoff: (req) => orch.handoff(req),
     reach: (from, to) => orch.reach(from, to),
-    sendMedia: (key, m) => orch.sendMediaTo(key, m),
+    sendMedia: (key, m, byOwner) => orch.sendMediaTo(key, m, byOwner),
   }, apiToken);
   const socket = join(STATE_DIR, API_SOCKET);
   await claimSocket(socket);

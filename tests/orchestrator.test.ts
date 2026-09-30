@@ -190,8 +190,10 @@ test('media_tags: off, a MEDIA: line stays text; on, the file is attached and th
   const dir = mkdtempSync(join(tmpdir(), 'angelia-tags-'));
   const png = join(dir, 'chart.png'); writeFileSync(png, Buffer.alloc(64, 1));
   const real = realpathSync(png);
+  const money = join(dir, 'money'); mkdirSync(money);
+  const theirs = join(money, 'notes.pdf'); writeFileSync(theirs, Buffer.alloc(64, 1));
   const cfg = Config.parse({
-    profiles: { plain: { cwd: here }, tagged: { cwd: here, media_tags: true } },
+    profiles: { plain: { cwd: here }, tagged: { cwd: here, media_tags: true }, money: { cwd: money } },
     routes: [{ platform: 'telegram', chat: 1, profile: 'plain' }, { platform: 'telegram', chat: 2, profile: 'tagged' }],
     defaults: { max_out_per_min: 1000 },
   });
@@ -219,6 +221,11 @@ test('media_tags: off, a MEDIA: line stays text; on, the file is attached and th
   // A path the guard refuses is reported in the chat, never sent and never silent.
   await o.handle(dm('2', 'MEDIA:/etc/passwd.png'));
   assert.match(sent.at(-1)!, /Could not attach that file/);
+  assert.equal(files.length, 1);
+
+  // Another profile's file: the agent's own file tools may not read it, so neither may its tag.
+  await o.handle(dm('2', `MEDIA:${theirs}`));
+  assert.match(sent.at(-1)!, /Could not attach that file: this profile may not read that file/);
   assert.equal(files.length, 1);
 });
 

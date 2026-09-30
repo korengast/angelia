@@ -1,12 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, truncateSync } from 'node:fs';
+import { existsSync, linkSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, truncateSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { extractMediaTags, kindOf, mimeOf, resolveMedia, MediaError, MAX_MEDIA_BYTES } from '../src/core/deliver/media.js';
+import { pathRule } from '../src/capabilities/compile.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'angelia-media-'));
 const file = (name: string, bytes = 8) => { const p = join(dir, name); writeFileSync(p, Buffer.alloc(bytes, 1)); return p; };
+const caseInsensitive = existsSync(file('Case.txt').replace('Case.txt', 'CASE.TXT'));
+const homeWith = (label: string) => {
+  const home = mkdtempSync(join(tmpdir(), `angelia-media-${label}-`));
+  const put = (rel: string) => { const p = join(home, rel); mkdirSync(join(p, '..'), { recursive: true }); writeFileSync(p, Buffer.alloc(8, 1)); return p; };
+  return { home, put };
+};
 
 test('media: kind and mime come from the extension, unknown falls back to a document', () => {
   assert.equal(kindOf('/a/b.PNG'), 'image');
@@ -94,6 +101,31 @@ test('media guard: a profile\'s own files in the instance\'s workspace pass; the
   const moved = mkdtempSync(join(tmpdir(), 'angelia-media-state-'));
   writeFileSync(join(moved, 'env'), 'x=1');
   assert.throws(() => resolveMedia({ path: join(moved, 'env') }, 'whatsapp', { home, stateDir: moved }), /refusing to send/);
+});
+
+test('media guard: another case of a denied path, or a hard link to a denied file, is the same file and refused', () => {
+  const { home, put } = homeWith('case');
+  for (const rel of ['.angelia/env', '.angelia/api.token', '.angelia/wa/creds.json', '.config/gh/hosts.yml']) put(rel);
+  const no = (p: string) => assert.throws(() => resolveMedia({ path: p }, 'whatsapp', { home }), /refusing to send/, p);
+  if (caseInsensitive) for (const rel of ['.ANGELIA/ENV', '.angelia/Env', '.angelia/API.TOKEN', '.Angelia/WA/creds.json', '.CONFIG/GH/hosts.yml']) no(join(home, rel));
+  const planted = join(home, '.angelia', 'workspace', 'profiles', 'a', 'notes.txt');
+  mkdirSync(join(planted, '..'), { recursive: true });
+  linkSync(join(home, '.angelia', 'env'), planted);
+  no(planted);
+});
+
+test('media guard: an agent is held to its own profile\'s read rules, in any spelling; the owner is not', () => {
+  const { home, put } = homeWith('rules');
+  const theirs = put('.angelia/workspace/profiles/money/memory/notes.md');
+  const mine = put('.angelia/workspace/profiles/family/report.pdf');
+  const deny = [pathRule('Read', join(home, '.angelia/workspace/profiles/money/**'), 'claude-code', home), pathRule('Edit', mine, 'claude-code', home)];
+  assert.equal(resolveMedia({ path: theirs }, 'telegram', { home }).bytes, 8, 'the owner may');
+  assert.throws(() => resolveMedia({ path: theirs }, 'telegram', { home, deny }), /this profile may not read that file/);
+  if (caseInsensitive) assert.throws(() => resolveMedia({ path: theirs.replace('/money/', '/MONEY/') }, 'telegram', { home, deny }), /may not read/);
+  const via = join(home, '.angelia/workspace/profiles/family/innocent.md');
+  symlinkSync(theirs, via);
+  assert.throws(() => resolveMedia({ path: via }, 'telegram', { home, deny }), /may not read/, 'a link is followed first');
+  assert.equal(resolveMedia({ path: mine }, 'telegram', { home, deny }).bytes, 8, 'an Edit rule does not stop a send');
 });
 
 test('the file sent is a copy taken at once: a swap under the checked name after that changes nothing, a swap before is refused', async () => {

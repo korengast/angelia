@@ -278,6 +278,25 @@ test('every profile gets the deny floor on the instance\'s own secrets, with no 
   assert.deepEqual(planProfile(cfg, 'plain', { home }).changes, []);
 });
 
+test('agentDenyRules: the guard\'s rules, the settings\' and today\'s floor, compiled or not', async () => {
+  const { agentDenyRules } = await import('../src/capabilities/compile.js');
+  const { Config } = await import('../src/instance/config/schema.js');
+  const home = mkdtempSync(join(tmpdir(), 'angelia-agentdeny-home-'));
+  const state = join(home, '.angelia');
+  const a = join(state, 'workspace', 'profiles', 'a'), b = join(state, 'workspace', 'profiles', 'b');
+  mkdirSync(a, { recursive: true }); mkdirSync(b, { recursive: true });
+  const cfg = Config.parse({ profiles: { a: { cwd: a }, b: { cwd: b } }, routes: [] });
+  const never = agentDenyRules(cfg, 'a', state, home);
+  for (const r of ['Read(~/.angelia/env)', 'Read(~/.angelia/api.token)', 'Read(~/.angelia/workspace/profiles/b/**)', 'Read(~/.ssh/**)']) assert.ok(never.includes(r), `never compiled, still: ${r}`);
+  assert.ok(!never.some((r) => r.includes('/profiles/a')), 'not its own folder');
+  mkdirSync(join(state, 'compiled'), { recursive: true });
+  writeFileSync(join(state, 'compiled', 'a.json'), JSON.stringify({ cwd: a, deny: ['Read(/from/the/guard)'] }));
+  mkdirSync(join(a, '.claude'), { recursive: true });
+  writeFileSync(join(a, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { deny: ['Read(/from/settings)'] } }));
+  const rules = agentDenyRules(cfg, 'a', state, home);
+  for (const r of ['Read(/from/the/guard)', 'Read(/from/settings)', 'Read(~/.angelia/env)']) assert.ok(rules.includes(r), r);
+});
+
 test('the files that decide the next launch are edit-denied; the instruction file and skills stay writable', async () => {
   const { Config } = await import('../src/instance/config/schema.js');
   const home = mkdtempSync(join(tmpdir(), 'angelia-launch-home-'));

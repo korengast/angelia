@@ -112,6 +112,18 @@ export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR):
 }
 
 /**
+ * Every deny rule that holds a profile's file tools, for the daemon to hold itself to when it reads a
+ * file for that profile's agent: what the last compile wrote (the guard, where the agent cannot change
+ * it), what the profile's settings say now, and the floor as the table has it today, which still
+ * holds for a profile never compiled or compiled before the floor grew. A rule in any of them counts.
+ */
+export function agentDenyRules(cfg: Config, name: string, stateDir = INSTANCE_DIR, home = homedir()): string[] {
+  let guard: string[] = [];
+  try { guard = (JSON.parse(readFileSync(guardFile(stateDir, name), 'utf8')) as LaunchGuard).deny ?? []; } catch { /* never compiled: the floor still holds */ }
+  return [...new Set([...guard, ...profilePermissions(cfg.profiles[name].cwd).deny, ...profileFloor(cfg, name, stateDir, home)])];
+}
+
+/**
  * Once, on the first start of a version with the state-side guard: each compiled profile that has no
  * guard yet takes its own record as what its last compile wrote, so an instance compiled before keeps
  * running, even when some profiles were compiled again before that start. A marker in the folder

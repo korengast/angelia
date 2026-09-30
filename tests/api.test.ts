@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -133,6 +133,33 @@ test('api: send-media checks the path once for every caller, and a MEDIA: line i
   assert.equal(tagged.body.media, 1);
   assert.deepEqual(sent, ['the chart']);
   assert.equal(files.length, 2);
+});
+
+test('api: a file an agent asks for must be one its own profile may read; the owner is not held to that', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-media-agent-'));
+  const a = join(dir, 'a'), b = join(dir, 'b');
+  mkdirSync(a); mkdirSync(b);
+  const cfg = Config.parse({ profiles: { a: { cwd: a }, b: { cwd: b } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }, { platform: 'telegram', chat: 2, profile: 'b' }], defaults: { max_out_per_min: 1000 } });
+  const files: string[] = [];
+  const tg = { send: async () => {}, sendMedia: async (_c: string, m: { fileName: string }) => { files.push(m.fileName); } };
+  const o = new Orchestrator(cfg, { telegram: tg, whatsapp: { send: async () => {} } }, { stateDir: dir });
+  t.after(() => o.shutdown());
+  const token = loadOrMintToken(join(dir, 'api.token'));
+  const api = new ApiServer({ send: (k, x) => o.notify(k, x), turn: (k, x, a) => o.injectTurn(k, x, a), sendMedia: (k, m, owner) => o.sendMediaTo(k, m, owner), routed: (k) => o.routed(k) }, token);
+  const socket = join(dir, API_SOCKET);
+  await api.listen(socket); t.after(() => api.close());
+  const call = caller(socket);
+  const mine = sessionToken(token, 'telegram:1');
+  const own = join(a, 'chart.png'), theirs = join(b, 'notes.pdf');
+  writeFileSync(own, Buffer.alloc(64, 1)); writeFileSync(theirs, Buffer.alloc(64, 1));
+
+  assert.equal((await call('/send-media', { token: mine, key: 'telegram:1', path: own })).status, 200);
+  const refused = await call('/send-media', { token: mine, key: 'telegram:1', path: theirs });
+  assert.equal(refused.status, 400);
+  assert.match(String(refused.body.error), /this profile may not read that file/);
+  assert.equal((await call('/send', { token: mine, key: 'telegram:1', text: `MEDIA:${theirs}` })).status, 400, 'nor through a MEDIA: line');
+  assert.equal((await call('/send-media', { token, key: 'telegram:1', path: theirs })).status, 200, 'the owner may');
+  assert.deepEqual(files, ['chart.png', 'notes.pdf']);
 });
 
 test('/model and /effort: session-only overrides reach the next spawn, /status shows them, /new clears them', async (t) => {

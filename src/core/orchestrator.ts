@@ -21,6 +21,7 @@ import { runShell } from './shell.js';
 import { catalog as askCatalog, effortsFor, LABELS, type Catalog } from '../brain/catalog.js';
 import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
+import { agentDenyRules } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
 
 export interface Sender {
@@ -639,13 +640,20 @@ export class Orchestrator {
 
   /**
    * Attach a file to the chat behind a session key: `angelia send-media`, a cron launcher, or a
-   * `MEDIA:` tag. The path is checked here, once, for every caller.
+   * `MEDIA:` tag. The path is checked here, once, for every caller. Unless the owner's token asked
+   * (`byOwner`), the request is the agent's, and is held to its profile's deny rules as well.
    */
-  async sendMediaTo(key: string, req: MediaRequest): Promise<void> {
+  async sendMediaTo(key: string, req: MediaRequest, byOwner = false): Promise<void> {
     const { platform: p, chat, thread } = parseSessionKey(key);
     const sender = this.senders[p];
     if (!sender?.sendMedia) throw new MediaError(`${p}: this adapter cannot send files`);
-    const m = resolveMedia(req, p, { stateDir: this.opts.stateDir });
+    let deny: string[] | undefined;
+    if (!byOwner) {
+      const name = this.profileName(key);
+      if (!name) throw new MediaError('not a routed chat');
+      deny = agentDenyRules(this.cfg, name, this.opts.stateDir ?? join(homedir(), '.angelia'));
+    }
+    const m = resolveMedia(req, p, { stateDir: this.opts.stateDir, deny });
     const snap = snapshotMedia(m);
     try {
       await this.rateFor(p).acquire(true);

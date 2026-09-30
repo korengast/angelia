@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep, basename } from 'node:path';
 import type { Platform } from '../types.js';
 import { HOME_PRIVATE, STATE_LOGS, STATE_PRIVATE } from '../../instance/instance.js';
+import { fold, parseRules, under } from '../../brain/pi-gate.js';
 
 export type MediaKind = 'image' | 'video' | 'audio' | 'document';
 
@@ -78,6 +79,10 @@ export function isOpus(path: string): boolean {
  * A denylist and not an allowlist on purpose: "send me the PDF in my Downloads" is the job of a
  * personal assistant. The instance's own folder is not denied as a whole, since every profile lives
  * in its workspace; its private state files are (STATE_PRIVATE).
+ *
+ * The daemon reads the file, outside every agent's sandbox and deny rules. So a request an agent made
+ * also carries that profile's own deny rules (`deny`), and the file must be one its file tools may
+ * read: another profile's folder stays out of reach, as it is for the agent itself.
  */
 const DENY_DIRS = ['/etc', '/proc', '/sys', '/dev', '/var/db', '/private/etc', '/private/var/db'];
 const DENY_HOME_DIRS = [...HOME_PRIVATE.dirs, '.claude', '.grok', '.pi', '.codex', '.config/git', 'Library/Application Support', 'Library/Containers', 'Library/Group Containers'];
@@ -86,20 +91,32 @@ const DENY_NAMES = /^(\.env(\..+)?|\.netrc|\.npmrc|\.pypirc|\.pgpass|\.vault-tok
 
 export class MediaError extends Error {}
 
+export interface MediaWhere {
+  home?: string;
+  stateDir?: string;
+  /** The asking agent's deny rules (compile.ts, agentDenyRules); its `Read(...)` rules bind the send too.
+   *  Absent when the owner asked. */
+  deny?: string[];
+}
+
 /**
  * Check a path a caller (agent, script, cron launcher) asked to send. Absolute only, symlinks
- * resolved, a real file, inside the platform's size limit, and not from a credential location.
+ * resolved, a real file, inside the platform's size limit, not from a credential location, and not
+ * from where the asking agent's deny rules keep its file tools out.
  * Throws `MediaError` with a line that is safe to show in the chat.
  */
-export function resolveMedia(req: MediaRequest, platform: Platform, where: { home?: string; stateDir?: string } = {}): Media {
+export function resolveMedia(req: MediaRequest, platform: Platform, where: MediaWhere = {}): Media {
   const home = where.home ?? homedir();
   const raw = (req.path ?? '').trim().replace(/^[`"']|[`"',.;:)\]}]+$/g, '').trim();
   if (!raw) throw new MediaError('no file path');
   const expanded = raw.startsWith('~/') ? join(home, raw.slice(2)) : raw;
   if (!isAbsolute(expanded)) throw new MediaError(`not an absolute path: ${short(raw)}`);
   let path: string;
-  try { path = realpathSync(resolve(expanded)); } catch { throw new MediaError(`no such file: ${short(raw)}`); }
+  // The name as the disk holds it. The JavaScript realpath keeps the caller's spelling, and on a
+  // case-insensitive disk `~/.ANGELIA/ENV` is the env file.
+  try { path = realpathSync.native(resolve(expanded)); } catch { throw new MediaError(`no such file: ${short(raw)}`); }
   if (denied(path, home, where.stateDir)) throw new MediaError(`refusing to send from that location: ${short(raw)}`);
+  if (where.deny && parseRules(where.deny, home).some((r) => r.tool === 'Read' && r.test(path))) throw new MediaError(`this profile may not read that file: ${short(raw)}`);
   let st;
   try { st = statSync(path); } catch { throw new MediaError(`no such file: ${short(raw)}`); }
   if (!st.isFile()) throw new MediaError(`not a file: ${short(raw)}`);
@@ -129,7 +146,7 @@ export function snapshotMedia(m: Media): { media: Media; cleanup(): void } {
   const cleanup = () => rmSync(dir, { recursive: true, force: true });
   try {
     const st = fstatSync(fd);
-    if (!st.isFile() || st.size !== m.bytes || realpathSync(m.path) !== m.path) throw new MediaError(`the file changed before it could be sent: ${short(m.path)}`);
+    if (!st.isFile() || st.size !== m.bytes || realpathSync.native(m.path) !== m.path) throw new MediaError(`the file changed before it could be sent: ${short(m.path)}`);
     const copy = join(dir, basename(m.path));
     const out = openSync(copy, 'wx', 0o600);
     try {
@@ -145,17 +162,19 @@ export function snapshotMedia(m: Media): { media: Media; cleanup(): void } {
 
 /** A folder as the file system names it, so a check against a realpath'd file cannot be sidestepped
  *  by a symlink in the folder's own path (/tmp is /private/tmp on macOS). */
-const real = (p: string): string => { try { return realpathSync(p); } catch { return resolve(p); } };
+const real = (p: string): string => { try { return realpathSync.native(p); } catch { return resolve(p); } };
 
+/** By file identity (`under`), so a hard link to the env file counts as the env file, and by folded
+ *  text, so another case or normalisation of a name does not get past. */
 function denied(path: string, home: string, stateDir?: string): boolean {
   // The state folder at its default place and wherever ANGELIA_STATE_DIR moved it.
   const states = [...new Set([join(home, '.angelia'), ...(stateDir ? [stateDir] : []), ...(process.env.ANGELIA_STATE_DIR ? [process.env.ANGELIA_STATE_DIR] : [])].map(real))];
   const privateState = states.flatMap((s) => [...STATE_PRIVATE.files, ...STATE_PRIVATE.dirs, ...STATE_LOGS].map((f) => join(s, f)));
   const all = [...DENY_DIRS, ...DENY_HOME_DIRS.map((d) => real(join(home, d))), ...privateState];
-  if (all.some((d) => path === d || path.startsWith(d + sep))) return true;
+  if (all.some((d) => under(path, d))) return true;
   const parts = path.split(sep);
-  if (parts.slice(0, -1).some((p) => DENY_SEGMENTS.includes(p.toLowerCase()))) return true;
-  return DENY_NAMES.test(parts[parts.length - 1]);
+  if (parts.slice(0, -1).some((p) => DENY_SEGMENTS.includes(fold(p).toLowerCase()))) return true;
+  return DENY_NAMES.test(fold(parts[parts.length - 1]));
 }
 
 function short(p: string): string {
