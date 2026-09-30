@@ -9,13 +9,18 @@ import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent } from '../core/types.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession } from './brain.js';
-import { importsAccepted, importsDialogOpen, paneIdle, pasteLanded, permissionDialog, tmux, trustAccepted, trustDialogOpen } from './tmux.js';
+import { importsAccepted, importsDialogOpen, paneIdle, pasteLanded, permissionDialog, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { PermissionRelay, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { readRecord } from '../capabilities/compile.js';
 
 export { transcriptPath } from './transcripts.js';
 
 const HOOK = fileURLToPath(new URL('../../scripts/tui-stop-hook.mjs', import.meta.url));
+const PERMISSION_HOOK = fileURLToPath(new URL('../../scripts/tui-permission-hook.mjs', import.meta.url));
+/** Claude's limit for the permission hook, in seconds: past the hook's own give-up, which is past the
+ *  daemon's ten-minute deny. */
+const PERMISSION_HOOK_TIMEOUT_S = 900;
 const POLL_MS = 700;
 const START_TIMEOUT_MS = 90_000;
 const PROMPT_TIMEOUT_MS = 10 * 60_000;
@@ -123,11 +128,22 @@ export async function tuiLaunchProblem(bin: string, cwd: string, env: NodeJS.Pro
 /** A value for a POSIX shell, in single quotes. */
 const shq = (v: string): string => `'${v.replace(/'/g, `'\\''`)}'`;
 
-/** Settings handed to the session: the Stop hook that reports the turn's answer. `--settings` is
+/** Settings handed to the session: the Stop hook that reports the turn's answer, and the
+ *  PermissionRequest hook that carries each request to the chat (tui-permissions.ts). `--settings` is
  *  merged with the user's and the project's settings, not a replacement for them (claude-code#11392):
  *  a Stop hook of their own also runs on every Angelia turn. `otherStopHooks` names those files. */
-export function hookSettings(hook = HOOK): unknown {
-  return { hooks: { Stop: [{ hooks: [{ type: 'command', command: `node ${JSON.stringify(hook)}`, timeout: 150 }] }] } };
+export function hookSettings(hook = HOOK, permission = PERMISSION_HOOK): unknown {
+  return {
+    hooks: {
+      Stop: [{ hooks: [{ type: 'command', command: `node ${JSON.stringify(hook)}`, timeout: 150 }] }],
+      PermissionRequest: [{ hooks: [{ type: 'command', command: `node ${JSON.stringify(permission)}`, timeout: PERMISSION_HOOK_TIMEOUT_S }] }],
+    },
+  };
+}
+
+/** For a dialog on the pane that did not come through the hook (tui-permissions.ts, ScreenDialogs). */
+export function screenOnlyLine(pane: string): string {
+  return `A permission dialog is open that did not come through Angelia, so only the screen says what it asks and it cannot be answered from here. Answer it in the Claude app, or in the pane (tmux -L ${TMUX_SOCKET} attach -t ${pane}); /stop ends the turn.`;
 }
 
 /**
@@ -143,6 +159,9 @@ export function hookSettings(hook = HOOK): unknown {
  */
 export class TuiBrain extends EventEmitter implements Brain {
   private permissions: PermissionBook;
+  private relay: PermissionRelay;
+  /** When a relayed request last came, was answered or went: a dialog on the pane just then is its own. */
+  private relayedAt = 0;
   private ready?: Promise<string | null>;
   private up = false;
   private transcript: string;
@@ -168,6 +187,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     super();
     this.name = remoteControlName(profile, session);
     this.transcript = transcriptPath(profile.cwd, session.id);
+    this.relay = new PermissionRelay(join(this.dir, 'permissions'));
     this.permissions = new PermissionBook(opts.permissionTimeoutMs ?? 10 * 60_000, (id) => { if (this.answerPermission(id, false)) this.emit('permission-timeout', id); });
   }
 
@@ -194,7 +214,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const rec = readRecord(this.profile.cwd);
     // The sandbox flag only when set, so records from before it existed keep their fingerprint.
     const compiled = rec ? JSON.stringify([rec.deny, rec.additionalDirectories, rec.mcpServers, rec.mcpStrict, ...(rec.sandbox ? ['sandbox'] : [])]) : 'none';
-    return launchFingerprint(this.argv(resume), HOOK, [`granted=${(this.opts.granted ?? []).join(',')}`, `withheld=${(this.opts.withheld ?? []).join(',')}`, `compiled=${compiled}`, `env=${Object.entries(CLAUDE_ENV).map(([k, v]) => `${k}=${v}`).join(',')}`]);
+    return launchFingerprint(this.argv(resume), HOOK, [`granted=${(this.opts.granted ?? []).join(',')}`, `withheld=${(this.opts.withheld ?? []).join(',')}`, `compiled=${compiled}`, `env=${Object.entries(CLAUDE_ENV).map(([k, v]) => `${k}=${v}`).join(',')}`, `permission-hook=${PERMISSION_HOOK}`]);
   }
 
   start(): void { this.ready = this.ensure(); }
@@ -220,6 +240,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (refused) return refused;
     mkdirSync(this.dir, { recursive: true });
     writeFileSync(this.settingsPath, JSON.stringify(hookSettings(), null, 2));
+    this.relay.reset();
     const pinned: string[] = [];
     for (const k of ['PATH', 'HOME', 'LANG', 'SHELL', 'ANGELIA_SESSION_KEY']) {
       if (env[k]) pinned.push('-e', `${k}=${env[k]}`);
@@ -364,6 +385,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   backgroundTurn(): AsyncGenerator<BrainEvent> {
     const gen = ++this.gen;
     this.permissions.clear();
+    this.relay.quiet();
     this.up = false;
     return this.watch(this.turnSentAt ?? Date.now(), true, gen);
   }
@@ -389,18 +411,22 @@ export class TuiBrain extends EventEmitter implements Brain {
     return true;
   }
 
-  /** The polling half of a turn. `background`: no permission book (nobody in the chat answers) and no
-   *  hourly line. Ends early, as a failed result, once another reader takes the pane (`gen` moved). */
+  /** The polling half of a turn. `background`: no permission book and no relay (nobody in the chat
+   *  answers), and no hourly line. Ends early, as a failed result, once another reader takes the pane
+   *  (`gen` moved). */
   private async *watch(sentAt: number, background: boolean, gen: number): AsyncGenerator<BrainEvent> {
     let pending: string | null = null;
     const dialogs = new DialogWatch();
+    const screen = new ScreenDialogs();
     let quietSince = 0;
     let hours = 0, lastPane = '', movedAt = Date.now();
     // A dialog still open when the turn ends can no longer be answered from the chat: its timer goes too.
-    const over = (): void => { this.turnSentAt = undefined; this.lastUsedAt = Date.now(); this.permissions.clear(); };
+    const over = (): void => { this.turnSentAt = undefined; this.lastUsedAt = Date.now(); this.permissions.clear(); if (!background) this.relay.quiet(); };
+    if (!background) this.relay.beat();
     for (;;) {
       await sleep(POLL_MS);
       if (gen !== this.gen) { yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
+      if (!background) this.relay.beat();
       const h = Math.floor((Date.now() - sentAt) / TURN_NOTICE_MS);
       if (!background && h > hours) {
         hours = h;
@@ -422,14 +448,24 @@ export class TuiBrain extends EventEmitter implements Brain {
         yield { kind: 'result', text: done, isError: false };
         return;
       }
+      // After the progress lines, so the chat reads what the agent said before what it asks to run.
+      if (!background) {
+        for (const r of this.relay.take()) {
+          this.relayedAt = Date.now();
+          this.permissions.add(r.id);
+          yield relayedPermission(r);
+        }
+        for (const id of this.relay.gone()) { this.relayedAt = Date.now(); this.permissions.take(id); } // answered in the app or in the terminal
+      }
       const pane = await this.capture(30);
       if (pane !== lastPane) { lastPane = pane; movedAt = Date.now(); }
       const open = permissionDialog(pane);
-      const seen = dialogs.see(open, (id) => background || this.permissions.has(id));
-      if (seen.gone && !background) this.permissions.take(seen.gone); // answered in the app or in the terminal
-      if (seen.announce && open) {
-        if (!background) this.permissions.add(seen.announce);
-        yield { kind: 'permission', id: seen.announce, tool: open.tool, preview: open.preview };
+      if (background) {
+        // Told to the chat once, and answered in the app or the pane: nobody answers from the chat.
+        const seen = dialogs.see(open, () => true);
+        if (seen.announce && open) yield { kind: 'permission', id: seen.announce, tool: open.tool, preview: open.preview };
+      } else if (screen.see(open ? `${open.tool}\n${open.preview}` : null, this.permissions.size > 0 || Date.now() - this.relayedAt < REASK_MS)) {
+        yield { kind: 'notice', text: screenOnlyLine(this.name) };
       }
       if (!pane && (await this.tm(['has-session', '-t', this.name])).code !== 0) {
         if (!background) this.up = false;
@@ -437,7 +473,8 @@ export class TuiBrain extends EventEmitter implements Brain {
         yield { kind: 'result', text: '', isError: true, reason: 'exit' };
         return;
       }
-      if (paneIdle(pane) && !dialogs.open) {
+      // A relayed request waits on the hook, and the pane may look idle while it does.
+      if (paneIdle(pane) && !dialogs.open && !open && !this.permissions.size) {
         if (!quietSince) quietSince = Date.now();
         else if (Date.now() - quietSince > QUIET_MS) {
           // No Stop event is coming: either the CLI answered the message itself, or the hook failed
@@ -488,12 +525,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     return String(row.text ?? '');
   }
 
-  /** Chat approvals press the key a person would press. A prompt answered in the Claude app or in
-   *  the terminal simply disappears from the pane, and the turn goes on. */
+  /** A chat answer goes to the hook waiting on that request, and to no other; no key is pressed. */
   answerPermission(id: string, allow: boolean): boolean {
     const full = this.permissions.take(id);
     if (!full) return false;
-    void this.tm(['send-keys', '-t', this.name, allow ? '1' : 'Escape']);
+    this.relayedAt = Date.now();
+    this.relay.answer(full, allow);
     return true;
   }
 
@@ -509,12 +546,14 @@ export class TuiBrain extends EventEmitter implements Brain {
   async release(): Promise<void> {
     this.gen++; // a turn being read stops being read; the pane goes on with it
     this.permissions.clear();
+    this.relay.quiet();
     this.up = false;
   }
 
   async stop(): Promise<void> {
     this.gen++;
     this.permissions.clear();
+    this.relay.quiet();
     await this.tm(['kill-session', '-t', this.name]);
     this.up = false;
     this.emit('exit', { code: 0, signal: null });
@@ -544,9 +583,10 @@ export async function sweepPanes(keep: Set<string>, prefixes: string[], env: Nod
 }
 
 /**
- * Which permission dialog on the pane is new, one poll at a time. A dialog answered from the chat can
- * be followed by the next one before any poll sees the pane without a dialog: that one is announced
- * when it asks something else, or when the same question is still up once the key had time to land.
+ * Which permission dialog on the pane is new, one poll at a time, for a turn read in the background:
+ * the chat hears of each once. A dialog that was answered can be followed by the next one before any
+ * poll sees the pane without a dialog: that one is announced when it asks something else, or when the
+ * same question is still up once the answer had time to land.
  */
 export class DialogWatch {
   private id: string | null = null;

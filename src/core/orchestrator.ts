@@ -579,9 +579,9 @@ export class Orchestrator {
       for await (const ev of e.brain.backgroundTurn()) {
         if (ev.kind === 'result') result = ev;
         else if (ev.kind === 'permission') {
-          const n = this.map.position(e.key, id);
           this.log(`background permission key=${e.key} session=${id.slice(0, 8)} tool=${ev.tool}`);
-          await this.notify(e.key, `The background turn of session ${id.slice(0, 8)} is waiting for a permission: ${ev.tool}${ev.preview ? `: ${ev.preview}` : ''}. ${n ? `/resume ${n} to answer it here, or answer it` : 'Answer it'} in the Claude app.`)
+          // Read off the screen, where a command can draw anything: nothing of it is quoted, and the chat is not asked.
+          await this.notify(e.key, `The background turn of session ${id.slice(0, 8)} is waiting for a permission. Answer it in the Claude app or in its pane; the chat cannot, since only the screen says what it asks.`)
             .catch((err) => this.log(`background note failed key=${e.key} ${(err as Error).message}`));
         }
       }

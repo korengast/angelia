@@ -175,7 +175,8 @@ test('mid-turn on a tui pane: the turn goes on in the background, a waiting perm
 
   p.emit({ kind: 'permission', id: 'abcd1234', tool: 'Bash command', preview: 'rm -rf build' });
   await until(() => sent.some((s) => s.text.startsWith('The background turn')));
-  assert.equal(sent.at(-1)!.text, `The background turn of session ${oldId.slice(0, 8)} is waiting for a permission: Bash command: rm -rf build. /resume 2 to answer it here, or answer it in the Claude app.`);
+  assert.equal(sent.at(-1)!.text, `The background turn of session ${oldId.slice(0, 8)} is waiting for a permission. Answer it in the Claude app or in its pane; the chat cannot, since only the screen says what it asks.`);
+  assert.ok(!sent.at(-1)!.text.includes('rm -rf build'), 'nothing read off the screen is quoted');
   p.emit({ kind: 'result', text: 'done in the dark', isError: false });
   await until(() => p.events.includes('stop'));
   assert.equal(o.map.list('telegram:1').find((x) => x.id === oldId)!.background_since, undefined);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -109,10 +109,17 @@ test('the stop hook keeps out of a session nobody routed', () => {
   assert.equal(out, ''); // a session the user started themselves is left alone, and nothing is delivered
 });
 
-test('the settings file registers exactly one Stop hook', () => {
-  const s = hookSettings('/x/hook.mjs') as { hooks: { Stop: { hooks: { command: string }[] }[] } };
+test('the settings file registers one Stop hook and one PermissionRequest hook, which has time to wait for the chat', () => {
+  type Hooks = { hooks: Record<string, { hooks: { command: string; timeout: number }[] }[]> };
+  const s = hookSettings('/x/hook.mjs', '/x/ask.mjs') as Hooks;
+  assert.deepEqual(Object.keys(s.hooks).sort(), ['PermissionRequest', 'Stop']);
   assert.equal(s.hooks.Stop.length, 1);
   assert.match(s.hooks.Stop[0].hooks[0].command, /node "\/x\/hook\.mjs"/);
+  assert.equal(s.hooks.PermissionRequest.length, 1);
+  assert.match(s.hooks.PermissionRequest[0].hooks[0].command, /node "\/x\/ask\.mjs"/);
+  assert.ok(s.hooks.PermissionRequest[0].hooks[0].timeout * 1000 > 11 * 60_000, 'longer than the hook waits for an answer');
+  const shipped = hookSettings() as Hooks;
+  for (const h of [shipped.hooks.Stop[0], shipped.hooks.PermissionRequest[0]]) assert.ok(existsSync(JSON.parse(h.hooks[0].command.slice('node '.length))), h.hooks[0].command);
 });
 
 test('a Stop hook in the user or project settings is named, since --settings merges it with ours', async () => {

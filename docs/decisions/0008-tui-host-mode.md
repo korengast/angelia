@@ -39,11 +39,14 @@ warm between turns, background tasks outlive a turn, and slash commands behave a
 - **Pasting into the wrong thing.** Mitigation: paste only at an idle prompt (no spinner, no
   dialog), then confirm the text is in the box before pressing Enter, and clear the box rather than
   submit blind.
-- **Permission prompts are read from the box.** The dialog is parsed from the rule above it, not
-  from the transcript, and a chat "yes" presses `1` while "no" presses Esc — verified live: a
-  command outside the working directory was refused from the chat and never ran. This is the
-  weakest seam in TUI mode; print mode's channel remains the stronger one, which is why it stays
-  the default.
+- **Permission prompts.** At first the dialog was parsed from the rule above it and a chat "yes"
+  pressed `1`. A review found both weak: a command can draw a rule of its own, so the chat saw a
+  harmless tail of it, and a key answers whichever dialog is open when it lands. Since 0.3.1 a
+  PermissionRequest hook carries each request to the chat as the tool and its exact input, as print
+  mode relays it, waits, and hands the owner's answer back to Claude as its decision, keyed to that
+  request; no key is pressed. It relays only while a turn from the chat is being read, and steps
+  aside otherwise, so the Claude app and the pane ask as they always did. A dialog the hook did not
+  relay (one left open while nobody read the chat) is announced, and never answered from the chat.
 - **No Stop event for a CLI-handled message.** `/compact` ends without one. Mitigation: an idle
   pane with nothing new in the transcript for 12 s ends the turn with whatever text the transcript
   holds (empty for `/compact`, which the router confirms itself).

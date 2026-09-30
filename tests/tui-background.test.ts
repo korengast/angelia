@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +40,8 @@ test('a pane sent to the background: its dialog is seen once, nobody answers it,
   assert.equal(asked?.kind === 'permission' && asked.tool, 'Bash command');
   assert.equal(brain.pendingPermissionCount, 0, 'no chat answers it, and no timeout denies it');
   assert.equal(brain.alive, false, 'not the chat\'s brain while in the background');
+  const relaying = join(state, 'tui', brain.name, 'permissions', 'relay.json');
+  assert.equal(existsSync(relaying), false, 'no hook relays to a chat that is not reading');
 
   // /resume: the pane is read in the foreground again; the background reader stops without ending it.
   const fg = brain.follow();
@@ -47,8 +49,10 @@ test('a pane sent to the background: its dialog is seen once, nobody answers it,
   const stopped = (await bg.next()).value;
   assert.deepEqual(stopped, { kind: 'result', text: '', isError: true, reason: 'released' });
   const again = (await fg.next()).value;
-  assert.equal(again?.kind, 'permission', 'the waiting dialog is announced to the chat now');
-  assert.equal(brain.pendingPermissionCount, 1);
+  assert.equal(again?.kind, 'notice', 'the waiting dialog did not come through the hook: the chat hears where to answer it');
+  assert.match(again?.kind === 'notice' ? again.text : '', /cannot be answered from here/);
+  assert.equal(brain.pendingPermissionCount, 0, 'and is not asked to');
+  assert.equal(existsSync(relaying), true, 'read from the chat again: the hook relays what it asks next');
   marker('the answer');
   assert.deepEqual((await fg.next()).value, { kind: 'result', text: 'the answer', isError: false });
   assert.equal(brain.turnSentAt, undefined, 'the turn is over');
