@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent } from '../core/types.js';
-import { childEnv, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
+import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 import { importsAccepted, importsDialogOpen, paneIdle, pasteLanded, permissionDialog, tmux, trustAccepted, trustDialogOpen } from './tmux.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
@@ -194,7 +194,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const rec = readRecord(this.profile.cwd);
     // The sandbox flag only when set, so records from before it existed keep their fingerprint.
     const compiled = rec ? JSON.stringify([rec.deny, rec.additionalDirectories, rec.mcpServers, rec.mcpStrict, ...(rec.sandbox ? ['sandbox'] : [])]) : 'none';
-    return launchFingerprint(this.argv(resume), HOOK, [`granted=${(this.opts.granted ?? []).join(',')}`, `withheld=${(this.opts.withheld ?? []).join(',')}`, `compiled=${compiled}`]);
+    return launchFingerprint(this.argv(resume), HOOK, [`granted=${(this.opts.granted ?? []).join(',')}`, `withheld=${(this.opts.withheld ?? []).join(',')}`, `compiled=${compiled}`, `env=${Object.entries(CLAUDE_ENV).map(([k, v]) => `${k}=${v}`).join(',')}`]);
   }
 
   start(): void { this.ready = this.ensure(); }
@@ -225,6 +225,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       if (env[k]) pinned.push('-e', `${k}=${env[k]}`);
     }
     pinned.push('-e', `ANGELIA_TUI_MARKER=${this.markerPath}`);
+    for (const [k, v] of Object.entries(CLAUDE_ENV)) pinned.push('-e', `${k}=${v}`);
     // The tmux server is long-lived and carries whatever environment started it, so the billing
     // variables and every secret this profile was not given are unset for the child itself, rather
     // than merely left out of ours.

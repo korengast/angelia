@@ -12,7 +12,7 @@ import { createBrain, type Brain } from '../src/brain/index.js';
 import { PiBrain, piSandboxNote } from '../src/brain/pi.js';
 import { Config } from '../src/instance/config/schema.js';
 import { loadConfig } from '../src/instance/config/load.js';
-import { launchCheck, planProfile } from '../src/capabilities/compile.js';
+import { credentialRules, launchCheck, planProfile } from '../src/capabilities/compile.js';
 import type { BrainEvent } from '../src/core/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +67,28 @@ test('pi sandbox: the file tools open through the kernel, so a checked file swap
   const typed = fileOps(sandboxProfile(r.deny, r.home), async (f) => { seen.push(readFileSync(f)); return 'image/png'; });
   assert.equal(await typed.detectImageMimeType!(join(r.work, 'i.png')), 'image/png');
   assert.deepEqual(seen, [png], "pi's own check is given the file's first bytes");
+});
+
+test('pi sandbox: no command reads another chat\'s transcript or a CLI\'s user config, or writes a turn into one; the shell\'s snapshot stays readable', { skip }, () => {
+  const r = rig();
+  const put = (rel: string, text: string) => { const p = join(r.home, rel); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, text); return p; };
+  const chat = put('.claude/projects/-Users-me-money/s1.jsonl', 'OTHER-CHAT\n');
+  const rollout = put('.codex/sessions/2026/09/30/rollout-1.jsonl', 'CODEX-CHAT\n');
+  const config = put('.claude.json', 'MCP-TOKEN');
+  const snapshot = put('.claude/shell-snapshots/snapshot-zsh-1.sh', 'alias ll=ls');
+  const p = Config.parse({ profiles: { p: { cwd: r.work, backend: 'pi' } }, routes: [] }).profiles.p;
+  // Approved-command shape: writes anywhere but the denied paths, so only the rules stand in the way.
+  const sh = (cmd: string) => run(sandboxed(cmd, sandboxProfile(credentialRules(p, r.home, {}), r.home)), r.work);
+  for (const f of [chat, rollout, config, chat.replace('/.claude/', '/.CLAUDE/')]) {
+    const c = sh(`cat '${f}'`);
+    assert.notEqual(c.status, 0, f);
+    assert.doesNotMatch(c.stdout, /OTHER-CHAT|CODEX-CHAT|MCP-TOKEN/, f);
+  }
+  assert.match(sh(`echo '{"type":"user"}' >> '${chat}'`).stderr, /Operation not permitted/);
+  assert.equal(readFileSync(chat, 'utf8'), 'OTHER-CHAT\n');
+  const own = sh(`cat '${snapshot}'`);
+  assert.equal(own.status, 0, own.stderr);
+  assert.equal(own.stdout, 'alias ll=ls');
 });
 
 test('pi sandbox: an unasked command cannot plant what git runs later, and commits still work', { skip }, () => {

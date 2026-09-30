@@ -278,6 +278,38 @@ test('every profile gets the deny floor on the instance\'s own secrets, with no 
   assert.deepEqual(planProfile(cfg, 'plain', { home }).changes, []);
 });
 
+test('every profile is denied every CLI\'s transcripts, history and user config, whatever its backend; add_dirs lifts one; the shell\'s own files stay readable', async () => {
+  const { cliStores } = await import('../src/capabilities/compile.js');
+  const { codexFilesystem } = await import('../src/brain/codex-config.js');
+  const { Config } = await import('../src/instance/config/schema.js');
+  const home = mkdtempSync(join(tmpdir(), 'angelia-stores-home-'));
+  const state = join(home, '.angelia');
+  const cwd = (n: string) => join(state, 'workspace', 'profiles', n);
+  const cfg = Config.parse({
+    profiles: {
+      c: { cwd: cwd('c') }, g: { cwd: cwd('g'), backend: 'grok' }, x: { cwd: cwd('x'), backend: 'codex' }, p: { cwd: cwd('p'), backend: 'pi' },
+      review: { cwd: cwd('review'), add_dirs: [join(home, '.claude', 'projects')] },
+    },
+    routes: [],
+  });
+  const claude = profileFloor(cfg, 'c', state, home);
+  for (const r of ['Read(~/.claude/projects/**)', 'Edit(~/.claude/projects/**)', 'Read(~/.claude/history.jsonl)', 'Read(~/.claude/file-history/**)', 'Read(~/.claude/paste-cache/**)',
+    'Read(~/.claude.json)', 'Edit(~/.claude.json)', 'Read(~/.codex/sessions/**)', 'Read(~/.codex/history.jsonl)', 'Read(~/.codex/config.toml)', 'Read(~/.grok/sessions/**)', 'Read(~/.grok/config.toml)', 'Read(~/.pi/agent/sessions/**)'])
+    assert.ok(claude.includes(r), r);
+  assert.ok(!claude.some((r) => /shell-snapshots|session-env/.test(r)), "Claude's shell sources these before every command");
+  for (const n of ['g', 'x', 'p']) assert.ok(profileFloor(cfg, n, state, home).includes(`Read(${join(home, '.claude', 'projects')}/**)`), `${n} is denied Claude's transcripts too`);
+  const sandbox = codexFilesystem(profileFloor(cfg, 'x', state, home), [], home);
+  assert.deepEqual(sandbox.skipped, [], "every rule reaches Codex's sandbox");
+  for (const p of ['.claude/projects', '.codex/sessions', '.claude.json', '.codex/config.toml']) assert.equal(sandbox.entries[join(home, p)], 'deny', p);
+  const review = profileFloor(cfg, 'review', state, home);
+  assert.ok(!review.includes('Read(~/.claude/projects/**)'), 'named in add_dirs: lifted');
+  assert.ok(review.includes('Read(~/.codex/sessions/**)'), 'and only that one');
+  const moved = cliStores(home, { CLAUDE_CONFIG_DIR: join(home, 'cc'), CODEX_HOME: join(home, 'cx') });
+  for (const d of [join(home, 'cc', 'projects'), join(home, '.claude', 'projects'), join(home, 'cx', 'sessions'), join(home, '.codex', 'sessions')]) assert.ok(moved.dirs.includes(d), d);
+  for (const f of [join(home, 'cc', '.claude.json'), join(home, '.claude.json'), join(home, 'cx', 'config.toml')]) assert.ok(moved.files.includes(f), f);
+  assert.ok(!moved.files.includes(join(home, '.claude', '.claude.json')), 'not a place Claude keeps it');
+});
+
 test('agentDenyRules: the guard\'s rules, the settings\' and today\'s floor, compiled or not', async () => {
   const { agentDenyRules } = await import('../src/capabilities/compile.js');
   const { Config } = await import('../src/instance/config/schema.js');

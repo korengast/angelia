@@ -179,12 +179,44 @@ export function floorRules(backend: Profile['backend'], stateDir: string, home =
   return STATE_FLOOR.flatMap((f) => [pathRule('Read', join(stateDir, f), backend, home), pathRule('Edit', join(stateDir, f), backend, home)]);
 }
 
-/** Your credentials (HOME_PRIVATE), denied to the profile's file tools. A profile that needs one, such
- *  as a deploy profile and ~/.ssh, names that folder in add_dirs; a wider grant (the home folder
- *  itself) does not lift it. */
-export function credentialRules(p: Profile, home = homedir()): string[] {
+/**
+ * What each CLI keeps of every conversation, from every folder, your own terminal sessions included:
+ * the transcripts, the prompt history, Claude's copies of the files an edit touched and of pasted
+ * text; and the user-level configs, whose MCP entries often carry a token. Every profile is denied
+ * all of them, whatever its backend: a grok profile's shell reads Claude's as easily as its own. The
+ * CLIs read and write these from their own process, as they do their logins; the rules bind only
+ * their tools and the commands those run. Claude's `shell-snapshots/` and `session-env/` stay
+ * readable: its shell sources them before every command.
+ */
+export function cliStores(home = homedir(), env: NodeJS.ProcessEnv = process.env): { dirs: string[]; files: string[] } {
+  // The default places, and wherever CLAUDE_CONFIG_DIR and CODEX_HOME moved them.
+  const claude = [join(home, '.claude'), ...(env.CLAUDE_CONFIG_DIR ? [resolve(env.CLAUDE_CONFIG_DIR)] : [])];
+  const codex = [join(home, '.codex'), ...(env.CODEX_HOME ? [resolve(env.CODEX_HOME)] : [])];
+  const under = (roots: string[], names: string[]) => roots.flatMap((r) => names.map((n) => join(r, n)));
+  return {
+    dirs: [...new Set([
+      ...under(claude, ['projects', 'file-history', 'paste-cache']),
+      ...under(codex, ['sessions', 'archived_sessions', 'memories']),
+      join(home, '.grok', 'sessions'), join(home, '.pi', 'agent', 'sessions'),
+    ])],
+    files: [...new Set([
+      // Claude's user config sits beside the home's .claude/, or inside a moved config folder.
+      join(home, '.claude.json'), ...claude.slice(1).map((d) => join(d, '.claude.json')), ...under(claude, ['history.jsonl']),
+      ...under(codex, ['history.jsonl', 'session_index.jsonl', 'config.toml']),
+      join(home, '.grok', 'config.toml'),
+    ])],
+  };
+}
+
+/** Your credentials (HOME_PRIVATE) and every CLI's record of past conversations (cliStores), denied to
+ *  the profile's file tools, for reading and writing: a line written into another chat's transcript is
+ *  a turn it resumes with. A profile that needs one, such as a deploy profile and ~/.ssh, names that
+ *  folder in add_dirs; a wider grant (the home folder itself) does not lift it. */
+export function credentialRules(p: Profile, home = homedir(), env: NodeJS.ProcessEnv = process.env): string[] {
   const lifted = (x: string) => p.add_dirs.some((d) => isInside(d, x, home));
-  return [...HOME_PRIVATE.dirs.map((d) => join(home, d)).filter((d) => !lifted(d)).map(glob), ...HOME_PRIVATE.files.map((f) => join(home, f)).filter((f) => !lifted(f))]
+  const stores = cliStores(home, env);
+  const dirs = [...HOME_PRIVATE.dirs.map((d) => join(home, d)), ...stores.dirs], files = [...HOME_PRIVATE.files.map((f) => join(home, f)), ...stores.files];
+  return [...dirs.filter((d) => !lifted(d)).map(glob), ...files.filter((f) => !lifted(f))]
     .flatMap((x) => [pathRule('Read', x, p.backend, home), pathRule('Edit', x, p.backend, home)]);
 }
 
@@ -228,12 +260,10 @@ export const PI_LAUNCH_DIRS = [join('.pi', '**'), join('.agents', '**')];
 /**
  * pi's own folder in the home, for a pi profile: nothing in it is the agent's to change (its global
  * extensions, settings, trust decisions and packages load into every pi start, so a write there could
- * switch Angelia's gate or sandbox off next time), and its sessions are every folder's transcripts,
- * the owner's own included. pi itself reads and writes there; the rules bind only its tools and the
- * commands they run.
+ * switch Angelia's gate or sandbox off next time). Its sessions are in every profile's floor
+ * (cliStores). pi itself reads and writes there; the rules bind only its tools and the commands they run.
  */
-export const piHomeRules = (home: string): string[] =>
-  [pathRule('Edit', join(home, '.pi', 'agent', '**'), 'pi', home), pathRule('Read', join(home, '.pi', 'agent', 'sessions', '**'), 'pi', home)];
+export const piHomeRules = (home: string): string[] => [pathRule('Edit', join(home, '.pi', 'agent', '**'), 'pi', home)];
 
 /** Codex's project inputs in the profile folder: `.codex/` (config, hooks, rules; loaded once the
  *  folder is trusted) and `.agents/` (skills). Its sandbox makes these read-only for the agent. */

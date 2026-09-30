@@ -65,6 +65,12 @@ export function claudeTuiArgv(p: Profile, s: BrainSession, bin: string, settings
   return a;
 }
 
+/** Set for every Claude Code session Angelia starts, in print and tmux mode alike. Claude's auto
+ *  memory keeps one folder per git repository (code.claude.com/docs/en/memory, 2.1.285), and every
+ *  profile in the workspace shares its repository: each would load at start, and add to, what the
+ *  others saved. A profile keeps its memory in its own folder instead. */
+export const CLAUDE_ENV: Record<string, string> = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
+
 export function childEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(base)) if (!STRIP_ENV.includes(k)) env[k] = v;

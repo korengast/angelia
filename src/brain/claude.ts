@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
-import { claudeArgv, childEnv, versionAtLeast, MIN_CLAUDE_VERSION } from './argv.js';
+import { claudeArgv, childEnv, versionAtLeast, CLAUDE_ENV, MIN_CLAUDE_VERSION } from './argv.js';
 import { BrainExited, PermissionBook, exitReason, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 import { LOST_SESSION_LINE, placeTranscript } from './transcripts.js';
 
@@ -58,7 +58,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
       }
     }
     const [bin, ...args] = claudeArgv(this.profile, session, this.opts.bin ?? 'claude', this.opts.system);
-    const child = spawn(bin, args, { cwd: this.profile.cwd, env: childEnv(this.opts.env), stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { cwd: this.profile.cwd, env: { ...childEnv(this.opts.env), ...CLAUDE_ENV }, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     const done = (code: number | null, signal: NodeJS.Signals | null) => {
       if (this.exited) return;

@@ -38,6 +38,13 @@ test('happy turn yields one result', async () => {
   assert.equal(b.alive, false);
 });
 
+test('Claude\'s auto memory is off for every session, whatever the environment it came from says', async (t) => {
+  const b = make({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' });
+  t.after(() => b.stop());
+  b.start();
+  assert.deepEqual(await collect(b, 'AUTOMEMORY'), [{ kind: 'result', text: 'auto memory off: 1', isError: false }]);
+});
+
 test('progress text followed by a tool call is emitted once; result once', async () => {
   const b = make(); b.start();
   const ev = await collect(b, 'PROGRESS please');

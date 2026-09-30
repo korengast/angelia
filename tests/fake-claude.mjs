@@ -9,6 +9,7 @@
 //   text contains "SLOW"     -> the answer takes 3s, so a turn can be interrupted mid-flight
 //   text contains "BUSYTURN" -> forty progress lines, then the answer
 //   text contains "ENVDUMP"  -> the answer lists the canary variables it can see (CANARY_*, the bot token, API keys)
+//   text contains "AUTOMEMORY" -> the answer is CLAUDE_CODE_DISABLE_AUTO_MEMORY as the child sees it
 // env FAKE_CLAUDE_APIKEY=1  -> apiKeySource "ANTHROPIC_API_KEY" (billing refusal test)
 // env FAKE_CLAUDE_VERSION   -> claude_code_version override
 import { createInterface } from 'node:readline';
@@ -81,6 +82,10 @@ rl.on('line', (line) => {
   if (text.includes('LIMIT')) {
     const limit = "You've reached your Fable limit. Switch to another model, or manage usage credits at claude.ai/settings/usage, to continue.";
     out({ type: 'result', subtype: 'success', is_error: true, result: limit, session_id: sid });
+    return;
+  }
+  if (text.includes('AUTOMEMORY')) {
+    out({ type: 'result', subtype: 'success', is_error: false, result: `auto memory off: ${process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY ?? 'unset'}`, session_id: sid });
     return;
   }
   if (text.includes('ENVDUMP')) {
