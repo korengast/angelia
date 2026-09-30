@@ -24,7 +24,7 @@ if (!marker) process.exit(0);
 // The folder, the file names and STALE_MS are the daemon's too (src/brain/tui-permissions.ts);
 // tests/tui-permissions.test.ts runs this script against it.
 const dir = join(dirname(marker), 'permissions');
-const STALE_MS = 10_000;
+const STALE_MS = 30_000;
 // After the daemon's own ten-minute deny, and inside Claude's timeout for this hook (hookSettings).
 const GIVE_UP_MS = 11 * 60_000;
 

@@ -105,6 +105,25 @@ test('a waiting hook steps aside when the chat stops reading, when the daemon st
   assert.deepEqual(relay.gone(), [third.id]);
 });
 
+test('an answer that lands after its hook stepped aside, before the daemon saw it go, writes nothing and says so', async () => {
+  const { dir, relay, ask } = pane();
+  relay.beat();
+  const late = ask('Bash', { command: 'make deploy' });
+  const [r] = await requests(relay, 1);
+  relay.quiet();
+  assert.deepEqual(await late.done, { code: 0, out: '' });
+  // No gone() in between: the request is still open on the daemon's side.
+  assert.equal(relay.answer(r.id, true), false, 'nobody waits for it');
+  assert.deepEqual(readdirSync(join(dir, 'permissions')), [], 'no answer file is left behind');
+  assert.deepEqual(relay.gone(), [], 'already let go of');
+
+  relay.beat();
+  const live = ask('Bash', { command: 'make test' });
+  const [w] = await requests(relay, 1);
+  assert.equal(relay.answer(w.id, false), true, 'a hook that waits takes it');
+  assert.equal(decision((await live.done).out).decision.behavior, 'deny');
+});
+
 test('a dialog on the pane that no request accounts for is told once, after it stays up with the hook quiet', () => {
   const s = new ScreenDialogs();
   assert.equal(s.see('Bash\nls', false, 0), false, 'not at first sight: the request can land a poll after its dialog');

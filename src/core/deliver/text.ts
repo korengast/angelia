@@ -15,6 +15,9 @@ export function failureLine(reason?: string, home?: string, group = false): stri
 export const PERMISSION_TIMEOUT_LINE = 'No answer to the permission request in time, so it was denied.';
 export const UNMATCHED_LINE = '[Angelia] This chat is not routed to a profile.';
 export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
+/** A chat answer to a request no hook waits for any more (it stepped aside when the chat stopped
+ *  being read): Claude asks in its own dialog instead. */
+export const LATE_ANSWER_LINE = 'Too late: that request is no longer waiting for the chat. If Claude still asks, answer it in the Claude app or in its pane.';
 
 export function permissionLine(id: string, tool: string, preview: string): string {
   const short = id.slice(0, 8);

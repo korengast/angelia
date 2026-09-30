@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator, envelope, agentText, isAgentCommand } from '../src/core/orchestrator.js';
+import { LATE_ANSWER_LINE } from '../src/core/deliver/text.js';
 import type { Inbound } from '../src/core/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -340,6 +341,18 @@ test('a pane let go of by the idle reap is ended by /new, not left running with 
   await o.handle(dm('1', '/new'));
   assert.deepEqual(events, ['release pane-1', 'stop pane-1'], '/new ends the parked pane');
   assert.ok(!o.tuiPanes().keep.has('pane-1'));
+});
+
+test('a chat answer that reaches nobody any more is told so, not dropped in silence', async (t) => {
+  const { o, sent } = setup(); t.after(() => o.shutdown());
+  const brains = (o as unknown as { brains: Map<string, unknown> }).brains;
+  brains.set('telegram:1', {
+    name: 'late', alive: true, lastUsedAt: 0, pendingPermissionCount: 1,
+    on() { return this; }, start() {}, kill() {}, async release() {}, async stop() {},
+    hasPendingPermission: () => true, answerPermission: () => false,
+  });
+  await o.handle(dm('1', 'yes abcdef12'));
+  assert.deepEqual(sent.map((s) => s.text), [LATE_ANSWER_LINE]);
 });
 
 test('a pile-up in one chat is capped and told once; a very long answer goes as its start plus a file', async (t) => {

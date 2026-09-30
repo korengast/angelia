@@ -93,3 +93,13 @@ test('router commands that change the session are owners-only in a group', async
   assert.doesNotMatch(sent[0], /owner/i);
   assert.ok(OWNER_COMMANDS.has('model') && !OWNER_COMMANDS.has('status'));
 });
+
+test('a tmux pane that died before its first prompt gets the same one fresh-id retry as an exit', async () => {
+  const { freshRetry } = await import('../src/core/orchestrator.js');
+  // "Session ID ... already in use": the pane dies at launch, and without the retry every message
+  // failed until /new (c1f575dc 2026-09-30, polymarket 2026-09-29).
+  assert.equal(freshRetry('the agent exited while starting (claude in /x; run it there by hand to see why)'), true);
+  assert.equal(freshRetry('exit: Invalid API key'), true);
+  assert.equal(freshRetry('the session never came back to a prompt'), false);
+  assert.equal(freshRetry(undefined), false);
+});

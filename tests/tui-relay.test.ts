@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +44,12 @@ test('a turn read from the chat: the hook\'s request is relayed whole, the answe
   if (asked?.kind !== 'permission') return;
   assert.deepEqual({ tool: asked.tool, preview: asked.preview }, { tool: 'Bash', preview: 'rm -rf build' });
   assert.equal(brain.pendingPermissionCount, 1);
+  // The chat is slow to take the request (a rate limit, a network stall): the reader waits at its yield,
+  // and the hook must not take that for a daemon that stopped reading.
+  const beat = () => JSON.parse(readFileSync(join(dir, 'permissions', 'relay.json'), 'utf8')).at as number;
+  const before = beat();
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.ok(beat() > before, 'the heartbeat goes on while the reader waits');
   const screen = tmux('capture-pane', '-p', '-t', brain.name);
   assert.equal(brain.answerPermission(asked.id.slice(0, 8), true), true);
   await closed;
@@ -53,4 +59,16 @@ test('a turn read from the chat: the hook\'s request is relayed whole, the answe
 
   writeFileSync(join(dir, 'turn.json'), JSON.stringify({ text: 'done', at: Date.now() }));
   assert.deepEqual((await fg.next()).value, { kind: 'result', text: 'done', isError: false });
+  assert.ok(!existsSync(join(dir, 'permissions', 'relay.json')), 'the turn is over: the hook steps aside');
+
+  // A reader let go of (the idle reap, a restart) stops the heartbeat, and its loop does not restart it.
+  brain.turnSentAt = Date.now();
+  const again = brain.follow();
+  const pending = again.next();
+  await new Promise((r) => setTimeout(r, 100));
+  assert.ok(existsSync(join(dir, 'permissions', 'relay.json')));
+  await brain.release();
+  assert.equal((await pending).value?.kind, 'result');
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.ok(!existsSync(join(dir, 'permissions', 'relay.json')), 'no heartbeat after release');
 });

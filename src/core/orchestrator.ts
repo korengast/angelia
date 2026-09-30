@@ -10,11 +10,12 @@ import { SessionMap } from './session/map.js';
 import { KeyedQueue } from './session/queue.js';
 import { createBrain, locateBin, profileBin, type Brain, type BackendName } from '../brain/index.js';
 import { projectsDir } from '../brain/transcripts.js';
+import { START_EXIT } from '../brain/tui.js';
 import { remoteControlName } from '../brain/argv.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, isLimitText, limitHint, UNMATCHED_LINE, NOT_OWNER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
+import { failureLine, isLimitText, limitHint, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -138,7 +139,7 @@ export class Orchestrator {
       const b = this.brains.get(key);
       if (b?.hasPendingPermission(perm.id)) {
         if (!isOwner(i, route)) { this.log(`permission reply ignored key=${key} sender=${i.sender} reason=not-owner`); return this.reply(i, NOT_OWNER_LINE); }
-        b.answerPermission(perm.id, perm.allow);
+        if (!b.answerPermission(perm.id, perm.allow)) return this.reply(i, LATE_ANSWER_LINE);
         return;
       }
     }
@@ -463,7 +464,7 @@ export class Orchestrator {
       // /stop, /new and a model change all kill the child mid-turn on purpose. The chat was already
       // told what happened; a failure line on top of it reads like a bug that is not there.
       if (stopped) return;
-      if (!retried && !row.started && String(result?.reason ?? '').startsWith('exit')) {
+      if (!retried && !row.started && freshRetry(result?.reason)) {
         // First turn of a brand-new session died: retry exactly once with a fresh id, per plan E.
         // Once. A deterministic failure - not logged in, a flag this build rejects, no tmux - fails
         // the retry the same way, and an unbounded loop mints sessions and spawns processes as fast
@@ -806,6 +807,14 @@ export interface HandoffResult { key: string; profile: string; mode: 'session' |
 const AUDIO_EXT = /\.(ogg|opus|oga|m4a|mp3|wav|aac|flac|amr)$/i;
 
 /** Files are handed to the agent by path. A voice note is labelled as such: the agent, not the router, transcribes it. */
+/** A first turn worth one retry under a fresh id: the child exited, or a tmux pane died before its
+ *  first prompt. The pane case covers an id Claude already holds a transcript for ("Session ID ...
+ *  already in use"), which otherwise fails every message until /new (seen 2026-09-29 and -30). */
+export function freshRetry(reason: string | undefined): boolean {
+  const r = String(reason ?? '');
+  return r.startsWith('exit') || r.startsWith(START_EXIT);
+}
+
 export function mediaLine(path: string): string {
   return AUDIO_EXT.test(path) ? `\n[voice note: ${path}]` : `\n[file: ${path}]`;
 }

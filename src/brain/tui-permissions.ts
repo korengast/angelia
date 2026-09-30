@@ -15,8 +15,13 @@ import { permissionPreview } from './brain.js';
  * Otherwise it steps aside at once, and Claude opens its own dialog in the pane and the Claude app.
  */
 
-/** A heartbeat older than this means nobody reads the chat. The hook has the same number. */
-export const RELAY_STALE_MS = 10_000;
+/** A heartbeat older than this means nobody reads the chat. The hook has the same number. Only a
+ *  daemon that died leaves one to go stale (every other end of a turn removes it at once), so this is
+ *  how long a hook waits after a crash, and how long a stalled daemon may stall. */
+export const RELAY_STALE_MS = 30_000;
+/** How often the heartbeat is written while a turn is read from the chat: on a timer of its own, so a
+ *  reader waiting on a slow chat send does not look like a daemon that stopped. */
+export const RELAY_BEAT_MS = 1000;
 /** How long a dialog must stay on the pane, with no request from the hook, before the chat hears of it. */
 export const SCREEN_ONLY_MS = 1500;
 
@@ -39,7 +44,7 @@ export class PermissionRelay {
     this.seen.clear();
   }
 
-  /** Every poll of a turn read from the chat. */
+  /** While a turn is read from the chat, every RELAY_BEAT_MS. */
   beat(now = Date.now()): void { this.put('relay.json', { at: now }); }
 
   /** Nobody reads the chat now: a hook waiting, or asking next, lets Claude open its own dialog. */
@@ -71,10 +76,17 @@ export class PermissionRelay {
     return out;
   }
 
-  /** The owner's answer, for the hook waiting on this request and no other. */
-  answer(id: string, allow: boolean): void {
-    if (!this.open.delete(id)) return;
+  /** The owner's answer, for the hook waiting on this request and no other. False when no hook waits
+   *  for it any more, though the last poll had not seen it go: nothing is left behind for nobody. */
+  answer(id: string, allow: boolean): boolean {
+    if (!this.open.delete(id)) return false;
+    const request = join(this.dir, `${id}.request.json`);
+    if (!existsSync(request)) return false;
     this.put(`${id}.answer.json`, { allow });
+    // The hook can step aside between the check and the write; then its answer file goes too.
+    if (existsSync(request)) return true;
+    rmSync(join(this.dir, `${id}.answer.json`), { force: true });
+    return false;
   }
 
   private put(name: string, value: unknown): void {

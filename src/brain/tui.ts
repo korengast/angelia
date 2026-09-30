@@ -9,8 +9,8 @@ import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent } from '../core/types.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession } from './brain.js';
-import { importsAccepted, importsDialogOpen, paneIdle, pasteLanded, permissionDialog, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
-import { PermissionRelay, relayedPermission, ScreenDialogs } from './tui-permissions.js';
+import { importsAccepted, importsDialogOpen, loadBuffer, paneIdle, pasteLanded, permissionDialog, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { PermissionRelay, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { readRecord } from '../capabilities/compile.js';
 
@@ -76,6 +76,9 @@ export function tmuxWarnings(profiles: Record<string, Profile>, version: string 
   if (!m || Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2]) >= 7)) return [];
   return [`tui: true in ${tui.join(', ')}, and ${version} is older than 3.7, which is the first to clean pasted text. Angelia strips control characters from messages, but upgrade: brew upgrade tmux, then tmux -L angelia kill-server when the chats are quiet (every pane resumes on its next message)`];
 }
+
+/** The start of the reason a pane gives when it died before its first prompt. */
+export const START_EXIT = 'the agent exited while starting';
 
 /** What a pane was launched with, minus the one pair that differs between a first launch and a
  *  resume of the same session. A pane from before fingerprints existed has none, so it counts as stale.
@@ -162,6 +165,8 @@ export class TuiBrain extends EventEmitter implements Brain {
   private relay: PermissionRelay;
   /** When a relayed request last came, was answered or went: a dialog on the pane just then is its own. */
   private relayedAt = 0;
+  /** The heartbeat of the turn read from the chat now, and the reader (`gen`) it belongs to. */
+  private beating?: { timer: NodeJS.Timeout; gen: number };
   private ready?: Promise<string | null>;
   private up = false;
   private transcript: string;
@@ -283,7 +288,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const deadline = Date.now() + START_TIMEOUT_MS;
     while (Date.now() < deadline) {
       // The pane is gone with its output, so say what was run and where: that is the one way to see why.
-      if (!(await this.sessionAlive())) { this.up = false; return `the agent exited while starting (${argv[0]} in ${this.profile.cwd}; run it there by hand to see why)`; }
+      if (!(await this.sessionAlive())) { this.up = false; return `${START_EXIT} (${argv[0]} in ${this.profile.cwd}; run it there by hand to see why)`; }
       const pane = await this.capture(40);
       if (trustDialogOpen(pane)) { await this.acceptDialog(trustAccepted); continue; }
       if (importsDialogOpen(pane)) { await this.acceptDialog(importsAccepted); continue; }
@@ -346,7 +351,8 @@ export class TuiBrain extends EventEmitter implements Brain {
       if (Date.now() > deadline || !(await this.sessionAlive())) return false;
       await sleep(POLL_MS);
     }
-    await this.tm(['set-buffer', '-b', this.name, '--', text]);
+    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    if ((await loadBuffer(this.name, text, this.dir, (a) => this.tm(a))).code !== 0) return false;
     await this.tm(['paste-buffer', '-p', '-d', '-b', this.name, '-t', this.name]);
     for (let i = 0; i < 8; i++) {
       await sleep(300);
@@ -385,7 +391,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   backgroundTurn(): AsyncGenerator<BrainEvent> {
     const gen = ++this.gen;
     this.permissions.clear();
-    this.relay.quiet();
+    this.stopBeat();
     this.up = false;
     return this.watch(this.turnSentAt ?? Date.now(), true, gen);
   }
@@ -421,69 +427,74 @@ export class TuiBrain extends EventEmitter implements Brain {
     let quietSince = 0;
     let hours = 0, lastPane = '', movedAt = Date.now();
     // A dialog still open when the turn ends can no longer be answered from the chat: its timer goes too.
-    const over = (): void => { this.turnSentAt = undefined; this.lastUsedAt = Date.now(); this.permissions.clear(); if (!background) this.relay.quiet(); };
-    if (!background) this.relay.beat();
-    for (;;) {
-      await sleep(POLL_MS);
-      if (gen !== this.gen) { yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
-      if (!background) this.relay.beat();
-      const h = Math.floor((Date.now() - sentAt) / TURN_NOTICE_MS);
-      if (!background && h > hours) {
-        hours = h;
-        const still = Math.floor((Date.now() - movedAt) / 60_000);
-        // A notice, not a progress line: the answer is never taken for a repeat of it.
-        yield { kind: 'notice', text: still >= STILL_MS / 60_000
-          ? `Nothing has moved in this turn for ${still} minutes; it may be stuck. /stop ends it.`
-          : `Still working on this turn after ${h === 1 ? 'an hour' : `${h} hours`}. /stop ends it.` };
-      }
-      const rows = this.readTranscript();
-      if (rows.length) { quietSince = 0; movedAt = Date.now(); }
-      for (const ev of rows) {
-        if (ev.kind === 'text') { if (pending) yield { kind: 'progress', text: pending }; pending = ev.text; }
-        else if (pending) { yield { kind: 'progress', text: pending }; pending = null; }
-      }
-      const done = this.takeMarker(sentAt);
-      if (done !== null) {
-        over();
-        yield { kind: 'result', text: done, isError: false };
-        return;
-      }
-      // After the progress lines, so the chat reads what the agent said before what it asks to run.
-      if (!background) {
-        for (const r of this.relay.take()) {
-          this.relayedAt = Date.now();
-          this.permissions.add(r.id);
-          yield relayedPermission(r);
+    const over = (): void => { this.turnSentAt = undefined; this.lastUsedAt = Date.now(); this.permissions.clear(); if (!background) this.stopBeat(); };
+    if (!background) this.startBeat(gen);
+    try {
+      for (;;) {
+        await sleep(POLL_MS);
+        if (gen !== this.gen) { yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
+        const h = Math.floor((Date.now() - sentAt) / TURN_NOTICE_MS);
+        if (!background && h > hours) {
+          hours = h;
+          const still = Math.floor((Date.now() - movedAt) / 60_000);
+          // A notice, not a progress line: the answer is never taken for a repeat of it.
+          yield { kind: 'notice', text: still >= STILL_MS / 60_000
+            ? `Nothing has moved in this turn for ${still} minutes; it may be stuck. /stop ends it.`
+            : `Still working on this turn after ${h === 1 ? 'an hour' : `${h} hours`}. /stop ends it.` };
         }
-        for (const id of this.relay.gone()) { this.relayedAt = Date.now(); this.permissions.take(id); } // answered in the app or in the terminal
-      }
-      const pane = await this.capture(30);
-      if (pane !== lastPane) { lastPane = pane; movedAt = Date.now(); }
-      const open = permissionDialog(pane);
-      if (background) {
-        // Told to the chat once, and answered in the app or the pane: nobody answers from the chat.
-        const seen = dialogs.see(open, () => true);
-        if (seen.announce && open) yield { kind: 'permission', id: seen.announce, tool: open.tool, preview: open.preview };
-      } else if (screen.see(open ? `${open.tool}\n${open.preview}` : null, this.permissions.size > 0 || Date.now() - this.relayedAt < REASK_MS)) {
-        yield { kind: 'notice', text: screenOnlyLine(this.name) };
-      }
-      if (!pane && (await this.tm(['has-session', '-t', this.name])).code !== 0) {
-        if (!background) this.up = false;
-        over();
-        yield { kind: 'result', text: '', isError: true, reason: 'exit' };
-        return;
-      }
-      // A relayed request waits on the hook, and the pane may look idle while it does.
-      if (paneIdle(pane) && !dialogs.open && !open && !this.permissions.size) {
-        if (!quietSince) quietSince = Date.now();
-        else if (Date.now() - quietSince > QUIET_MS) {
-          // No Stop event is coming: either the CLI answered the message itself, or the hook failed
-          // and the transcript holds the answer.
+        const rows = this.readTranscript();
+        if (rows.length) { quietSince = 0; movedAt = Date.now(); }
+        for (const ev of rows) {
+          if (ev.kind === 'text') { if (pending) yield { kind: 'progress', text: pending }; pending = ev.text; }
+          else if (pending) { yield { kind: 'progress', text: pending }; pending = null; }
+        }
+        const done = this.takeMarker(sentAt);
+        if (done !== null) {
           over();
-          yield { kind: 'result', text: pending ?? '', isError: false };
+          yield { kind: 'result', text: done, isError: false };
           return;
         }
-      } else quietSince = 0;
+        // After the progress lines, so the chat reads what the agent said before what it asks to run.
+        if (!background) {
+          for (const r of this.relay.take()) {
+            this.relayedAt = Date.now();
+            this.permissions.add(r.id);
+            yield relayedPermission(r);
+          }
+          for (const id of this.relay.gone()) { this.relayedAt = Date.now(); this.permissions.take(id); } // answered in the app or in the terminal
+        }
+        const pane = await this.capture(30);
+        if (pane !== lastPane) { lastPane = pane; movedAt = Date.now(); }
+        const open = permissionDialog(pane);
+        if (background) {
+          // Told to the chat once, and answered in the app or the pane: nobody answers from the chat.
+          const seen = dialogs.see(open, () => true);
+          if (seen.announce && open) yield { kind: 'permission', id: seen.announce, tool: open.tool, preview: open.preview };
+        } else if (screen.see(open ? `${open.tool}\n${open.preview}` : null, this.permissions.size > 0 || Date.now() - this.relayedAt < REASK_MS)) {
+          yield { kind: 'notice', text: screenOnlyLine(this.name) };
+        }
+        if (!pane && (await this.tm(['has-session', '-t', this.name])).code !== 0) {
+          if (!background) this.up = false;
+          over();
+          yield { kind: 'result', text: '', isError: true, reason: 'exit' };
+          return;
+        }
+        // A relayed request waits on the hook, and the pane may look idle while it does.
+        if (paneIdle(pane) && !dialogs.open && !open && !this.permissions.size) {
+          if (!quietSince) quietSince = Date.now();
+          else if (Date.now() - quietSince > QUIET_MS) {
+            // No Stop event is coming: either the CLI answered the message itself, or the hook failed
+            // and the transcript holds the answer.
+            over();
+            yield { kind: 'result', text: pending ?? '', isError: false };
+            return;
+          }
+        } else quietSince = 0;
+      }
+    } finally {
+      // However the reader ends (an answer, an exit, let go of, or abandoned by its caller), its
+      // heartbeat ends with it, unless a newer reader has taken the pane since.
+      if (!background && this.beating?.gen === gen) this.stopBeat();
     }
   }
 
@@ -525,13 +536,30 @@ export class TuiBrain extends EventEmitter implements Brain {
     return String(row.text ?? '');
   }
 
-  /** A chat answer goes to the hook waiting on that request, and to no other; no key is pressed. */
+  /** A chat answer goes to the hook waiting on that request, and to no other; no key is pressed. False
+   *  when that hook has stepped aside already: Claude then asks in its own dialog. */
   answerPermission(id: string, allow: boolean): boolean {
     const full = this.permissions.take(id);
     if (!full) return false;
     this.relayedAt = Date.now();
-    this.relay.answer(full, allow);
-    return true;
+    return this.relay.answer(full, allow);
+  }
+
+  /** The hook relays while this beats: written now, then every RELAY_BEAT_MS, whatever the reader is
+   *  waiting on. One reader beats at a time. */
+  private startBeat(gen: number): void {
+    if (this.beating) clearInterval(this.beating.timer);
+    this.relay.beat();
+    const timer = setInterval(() => this.relay.beat(), RELAY_BEAT_MS);
+    timer.unref();
+    this.beating = { timer, gen };
+  }
+
+  /** Nobody reads the chat now: a waiting hook steps aside at once. */
+  private stopBeat(): void {
+    if (this.beating) clearInterval(this.beating.timer);
+    this.beating = undefined;
+    this.relay.quiet();
   }
 
   /**
@@ -546,14 +574,14 @@ export class TuiBrain extends EventEmitter implements Brain {
   async release(): Promise<void> {
     this.gen++; // a turn being read stops being read; the pane goes on with it
     this.permissions.clear();
-    this.relay.quiet();
+    this.stopBeat();
     this.up = false;
   }
 
   async stop(): Promise<void> {
     this.gen++;
     this.permissions.clear();
-    this.relay.quiet();
+    this.stopBeat();
     await this.tm(['kill-session', '-t', this.name]);
     this.up = false;
     this.emit('exit', { code: 0, signal: null });

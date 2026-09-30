@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** Angelia's own tmux server. Sessions on this socket outlive the daemon, so a restart — or the
@@ -24,6 +24,23 @@ export function tmux(args: string[], opts: { bin?: string; socket?: string; env?
       resolve({ code, out: stdout ?? '', err: stderr ?? '' });
     });
   });
+}
+
+/** Put `text` in the named paste buffer. Through a file, never on the command line: tmux refuses a
+ *  command longer than about 16 KB ("command too long"), so `set-buffer` silently dropped every long
+ *  message and the turn failed with the pane untouched (measured on tmux 3.7c, 2026-09-30). The file
+ *  is this user's only and goes as soon as the server has read it. */
+export async function loadBuffer(name: string, text: string, dir: string, run: (args: string[]) => Promise<TmuxResult>): Promise<TmuxResult> {
+  const file = join(dir, 'paste.txt');
+  // A fresh file every time: `wx` never follows a link left in its place, and 0o600 applies only
+  // when the file is created, so one left over from a crash must not decide who can read it.
+  rmSync(file, { force: true });
+  writeFileSync(file, text, { mode: 0o600, flag: 'wx' });
+  try {
+    return await run(['load-buffer', '-b', name, file]);
+  } finally {
+    rmSync(file, { force: true });
+  }
 }
 
 /** Pane markers, all measured against the Claude Code terminal.
