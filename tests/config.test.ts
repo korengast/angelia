@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { parse, stringify } from 'yaml';
 import { Config } from '../src/instance/config/schema.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -169,6 +170,66 @@ routes:
   - { platform: telegram, chat: 123, profile: a }
 telegram: {}
 `))).some((w) => /removed from Angelia/.test(w)), false);
+});
+
+// Every place a setting lives, spelt right. Each case below misspells one key in a copy of it.
+const strictBase = () => ({
+  capabilities: {
+    notes: { kind: 'skill', path: '$DIR/code', secrets: [] },
+    maps: { kind: 'mcp', command: 'maps-server', args: [] },
+    lint: { kind: 'command', run: 'lint', when: 'checking code' },
+    docs: { kind: 'directory', path: '$DIR/fam' },
+  },
+  profiles: { social: { cwd: '$DIR/fam', sandbox: true, isolated: true, deny: ['maps'], agent_commands: ['compact'], media_tags: false } },
+  routes: [{ platform: 'whatsapp', chat: '1@g.us', profile: 'social', allow_from: ['2'], owners: ['1'] }],
+  whatsapp: { phone: '+15550000000' },
+  telegram: { token_env: 'TELEGRAM_BOT_TOKEN' },
+  onboard: { owners: ['1'], profile: { permission_mode: 'default' } },
+  defaults: { deny: ['lint'] },
+});
+type StrictTable = ReturnType<typeof strictBase> & Record<string, unknown>;
+
+test('a misspelt key anywhere in the table is an error that names its full path', () => {
+  assert.equal(loadConfig(fixture(stringify(strictBase()))).profiles.social.sandbox, true, 'control: every key spelt right loads');
+  const cases: [string, (t: StrictTable) => void][] = [
+    ['profiles.social.sanbox', (t) => { Object.assign(t.profiles.social, { sanbox: true }); }],
+    ['profiles.social.isolatd', (t) => { Object.assign(t.profiles.social, { isolatd: true }); }],
+    ['profiles.social.denny', (t) => { Object.assign(t.profiles.social, { denny: ['maps'] }); }],
+    ['profiles.social.agent_comands', (t) => { Object.assign(t.profiles.social, { agent_comands: ['compact'] }); }],
+    ['profiles.social.media_tag', (t) => { Object.assign(t.profiles.social, { media_tag: false }); }],
+    ['routes.0.allow_form', (t) => { Object.assign(t.routes[0], { allow_form: ['3'] }); }],
+    ['routes.0.owner', (t) => { Object.assign(t.routes[0], { owner: ['1'] }); }],
+    ['defaults.dney', (t) => { Object.assign(t.defaults, { dney: ['maps'] }); }],
+    ['route', (t) => { t.route = []; }],
+    ['whatsapp.phon', (t) => { Object.assign(t.whatsapp, { phon: '+15550000000' }); }],
+    ['telegram.token_envv', (t) => { Object.assign(t.telegram, { token_envv: 'BOT' }); }],
+    ['onboard.owner', (t) => { Object.assign(t.onboard, { owner: ['1'] }); }],
+    ['onboard.profile.permision_mode', (t) => { Object.assign(t.onboard.profile, { permision_mode: 'plan' }); }],
+    ['capabilities.notes.secrests', (t) => { Object.assign(t.capabilities.notes, { secrests: ['$DIR/code/.env'] }); }],
+    ['capabilities.maps.arg', (t) => { Object.assign(t.capabilities.maps, { arg: ['--port'] }); }],
+    ['capabilities.lint.wen', (t) => { Object.assign(t.capabilities.lint, { wen: 'checking code' }); }],
+    ['capabilities.docs.paht', (t) => { Object.assign(t.capabilities.docs, { paht: '$DIR/code' }); }],
+  ];
+  for (const [path, misspell] of cases) {
+    const t = strictBase() as StrictTable;
+    misspell(t);
+    assert.throws(() => loadConfig(fixture(stringify(t))), (e: Error) => e instanceof ConfigError && e.message.includes(`${path}: unknown key`), path);
+  }
+});
+
+test('a removed key does not hide a misspelt one next to it', () => {
+  assert.throws(() => loadConfig(fixture(`
+profiles:
+  buyer: { cwd: $DIR/code, pay: true, sanbox: true }
+routes: []
+pay: { currency: ILS }
+`)), (e: Error) => e instanceof ConfigError && /^profiles\.buyer\.sanbox: unknown key/.test(e.message));
+});
+
+test('routing.example.yaml matches the schema', () => {
+  const example = parse(readFileSync(join(import.meta.dirname, '..', 'routing.example.yaml'), 'utf8'));
+  const parsed = Config.safeParse(example);
+  assert.ok(parsed.success, parsed.success ? '' : JSON.stringify(parsed.error.issues));
 });
 
 test('a group open to everyone ("*") is named, with the other profiles it can reach; a group nobody can talk in too', async () => {

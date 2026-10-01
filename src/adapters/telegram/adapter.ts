@@ -1,4 +1,4 @@
-import { Bot, InputFile, type Context } from 'grammy';
+import { Bot, GrammyError, InputFile, type Context } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
 import { extname } from 'node:path';
 import { Readable } from 'node:stream';
@@ -23,10 +23,34 @@ export interface TelegramAdapterOptions {
   botInfo?: UserFromGetMe;
   /** The Telegram chats in the routing table: only they get the command menu. */
   menuChats?: string[];
+  /** The pause before polling is tried again (tests pass their own). It must end when `signal` aborts. */
+  wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** The clock that says how long polling has held (tests pass their own). */
+  now?: () => number;
 }
 
 /** A file download gives up after this long: a stalled one must not hold its chat for good. */
 const DOWNLOAD_MS = 60_000;
+
+/** Polling that failed is tried again after 5 s, then twice as long each time, never more than a minute. */
+const RETRY_FIRST_MS = 5_000;
+const RETRY_MAX_MS = 60_000;
+/** Pauses start again from 5 s only after polling has held this long. Two pollers on one token
+ *  each get a getUpdates answered between the other's retries; a reset on every answer would keep
+ *  them trading the token every 5 s for good. */
+const STABLE_MS = 5 * 60_000;
+export const CONFLICT = 'conflict: another process is polling this bot token; retrying';
+export const REVOKED = 'stopped: the bot token was rejected (401). Put the new token in ~/.angelia/env and /restart';
+
+/** A timer that does not keep the process alive, and ends early when the adapter stops. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((done) => {
+    const end = () => { clearTimeout(t); signal.removeEventListener('abort', end); done(); };
+    const t = setTimeout(end, ms);
+    t.unref();
+    signal.addEventListener('abort', end, { once: true });
+  });
+}
 
 /**
  * Telegram's stand-ins for people it hides: an anonymous group admin (GroupAnonymousBot), a post made
@@ -46,6 +70,16 @@ export class TelegramAdapter implements Sender {
   private log: (line: string) => void;
   private chains = new ChatChains();
   private quota = new SenderQuota();
+  private current = 'starting';
+  private stopping = false;
+  private halt = new AbortController();
+  private retryMs = RETRY_FIRST_MS;
+  private pollingSince: number | undefined;
+  private loop: Promise<void> = Promise.resolve();
+
+  /** What Telegram is doing right now: 'starting', 'polling', 'conflict: ...', 'stopped: ...' or
+   *  'error: ...'. `angelia status` shows this and nothing else. */
+  get state(): string { return this.current; }
 
   constructor(private readonly opts: TelegramAdapterOptions) {
     this.bot = new Bot(opts.token, opts.botInfo ? { botInfo: opts.botInfo } : undefined);
@@ -58,17 +92,90 @@ export class TelegramAdapter implements Sender {
   }
 
   async start(): Promise<void> {
-    const me = await this.bot.api.getMe();
+    let me: UserFromGetMe;
+    try { me = await this.bot.api.getMe(); }
+    catch (e) {
+      // A token Telegram refuses at boot would otherwise end the daemon before WhatsApp even starts:
+      // 401 when revoked, 404 when it is not a token at all. A network error still throws, as before.
+      if (e instanceof GrammyError && e.error_code === 401) { this.become(REVOKED); return; }
+      // A 429 is a rate limit, not a refused token: it throws as before.
+      if (e instanceof GrammyError && e.error_code >= 400 && e.error_code < 500 && e.error_code !== 429) {
+        this.become(`stopped: Telegram refused the bot token (${e.error_code}: ${this.redact(e.description)}). Check it in ~/.angelia/env and /restart`);
+        return;
+      }
+      throw e;
+    }
     this.username = me.username ?? '';
     const menus = await this.setMenu(this.opts.menuChats ?? []);
     this.log(`telegram: polling as @${this.username}, ${COMMANDS.length} commands in the menu of ${menus} routed chat${menus === 1 ? '' : 's'}`);
-    void this.bot.start({ onStart: () => {} });
+    // Installed here, after anything the tests put in front of the Bot API, so it sees every answer.
+    this.bot.api.config.use(async (prev, method, payload, signal) => {
+      const res = await prev(method, payload, signal);
+      if (method === 'getUpdates' && res.ok && !this.stopping) this.confirmed();
+      return res;
+    });
+    this.loop = this.poll();
   }
 
+  /**
+   * grammY's bot.start() resolves only when polling stops, and rejects on a 401 or 409 (every other
+   * failure it retries by itself). Left alone, that rejection was one log line, and the status kept
+   * saying polling while nothing arrived. So the rejection is caught here: 401 stops for good, since
+   * only a new token helps; anything else is tried again with a growing pause.
+   */
+  private async poll(): Promise<void> {
+    while (!this.stopping) {
+      try {
+        // onStart comes before the first getUpdates, and a 409 comes after it. On a retry only an
+        // answered getUpdates says polling works again, or each retry would log a false recovery.
+        await this.bot.start({ onStart: () => { if (this.current === 'starting') { this.current = 'polling'; this.pollingSince = this.now(); } } });
+        if (!this.stopping) this.become('stopped: polling ended by itself');
+        return;
+      } catch (e) {
+        if (this.stopping) return;
+        if (e instanceof GrammyError && e.error_code === 401) { this.become(REVOKED); return; }
+        if (e instanceof GrammyError && e.error_code === 409) this.become(CONFLICT);
+        else this.become(`error: ${this.redact(String((e as Error)?.message ?? e))}; retrying`);
+      }
+      if (this.pollingSince !== undefined && this.now() - this.pollingSince >= STABLE_MS) this.retryMs = RETRY_FIRST_MS;
+      this.pollingSince = undefined;
+      const ms = this.retryMs;
+      this.retryMs = Math.min(ms * 2, RETRY_MAX_MS);
+      await (this.opts.wait ?? pause)(ms, this.halt.signal);
+    }
+  }
+
+  /** A getUpdates came back: polling works. */
+  private confirmed(): void {
+    if (this.current === 'polling') return;
+    const again = this.current !== 'starting';
+    this.current = 'polling';
+    this.pollingSince = this.now();
+    if (again) this.log('telegram: polling again');
+  }
+
+  private now(): number { return (this.opts.now ?? Date.now)(); }
+
+  private redact(text: string): string { return text.split(this.opts.token).join('<token>').slice(0, 160); }
+
+  /** One log line per change of state, not one per retry. */
+  private become(state: string): void {
+    if (state === this.current) return;
+    this.current = state;
+    this.log(`telegram: ${state}`);
+  }
+
+  /** The polling loop has ended (tests). */
+  polled(): Promise<void> { return this.loop; }
+
   async stop(): Promise<void> {
+    // First: polling ends because of this, and that end must not be read as a failure.
+    this.stopping = true;
+    this.halt.abort();
     for (const t of this.typingTimers.values()) clearInterval(t);
     this.typingTimers.clear();
     await this.bot.stop();
+    this.current = 'stopped';
   }
 
   /**

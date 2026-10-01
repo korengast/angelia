@@ -6,13 +6,17 @@ export const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 /** An environment variable's name, never its value: secrets stay in ~/.angelia/env, outside git. */
 const EnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an environment variable name, not a value (secrets stay in ~/.angelia/env)');
 
+// Every object that holds settings is strict. Unknown keys used to be dropped without a word, so a
+// misspelt `sanbox` or `denny` loaded as the default, and for sandbox, isolated and deny the default
+// is the less safe one. A misspelt deny name is already fatal; a misspelt key should be too.
+
 /**
  * A tool, skill, MCP server or folder a profile may use, compiled into the profile's own files by
  * `angelia compile`. The daemon never reads these; see src/capabilities/.
  */
 export const Capability = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('command'), run: z.string().min(1), when: z.string().min(1) }),
-  z.object({ kind: z.literal('skill'), path: z.string().min(1), when: z.string().optional(), secrets: z.array(z.string()).default([]) }),
+  z.object({ kind: z.literal('command'), run: z.string().min(1), when: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('skill'), path: z.string().min(1), when: z.string().optional(), secrets: z.array(z.string()).default([]) }).strict(),
   z.object({
     kind: z.literal('mcp'),
     command: z.string().optional(),
@@ -21,8 +25,8 @@ export const Capability = z.discriminatedUnion('kind', [
     env: z.array(EnvName).default([]),
     when: z.string().optional(),
     secrets: z.array(z.string()).default([]),
-  }).refine((c) => !!c.command !== !!c.url, 'an mcp capability has either command or url'),
-  z.object({ kind: z.literal('directory'), path: z.string().min(1), when: z.string().optional() }),
+  }).strict().refine((c) => !!c.command !== !!c.url, 'an mcp capability has either command or url'),
+  z.object({ kind: z.literal('directory'), path: z.string().min(1), when: z.string().optional() }).strict(),
 ]);
 
 export const Profile = z.object({
@@ -70,7 +74,7 @@ export const Profile = z.object({
   /** Cut off from the other profiles: it cannot message them and they cannot message it, and it does
    *  not get the shared co-working folder (workspace/_common). For a profile other people talk to. */
   isolated: z.boolean().default(false),
-});
+}).strict();
 
 const Id = z.union([z.string(), z.number()]).transform(String);
 
@@ -85,7 +89,7 @@ export const Route = z.object({
   allow_from: z.array(Id).default([]),
   /** Sender ids that may use /sh and answer permission prompts. In a DM the chat's own user always may. */
   owners: z.array(Id).default([]),
-});
+}).strict();
 
 export const Config = z.object({
   capabilities: z.record(z.string(), Capability).default({}),
@@ -97,8 +101,9 @@ export const Config = z.object({
       pairing: z.enum(['code', 'qr']).default('qr'),
       phone: z.string().optional(),
     })
+    .strict()
     .optional(),
-  telegram: z.object({ token_env: z.string().default('TELEGRAM_BOT_TOKEN') }).optional(),
+  telegram: z.object({ token_env: z.string().default('TELEGRAM_BOT_TOKEN') }).strict().optional(),
   /**
    * `defaults.unmatched: onboard`: an owner writing in a chat no route knows gets a new profile for it.
    * Angelia makes the folder and the starter instruction file, adds the profile and the route to this
@@ -120,7 +125,7 @@ export const Config = z.object({
     skip: z.array(z.string().regex(/^(whatsapp|telegram):\S+$/, 'onboard.skip: platform:chat, like whatsapp:120363000000000001@g.us')).default([]),
     /** Your own onboarding prompt. Default: prompts/onboarding.md, shipped with Angelia. */
     prompt: z.string().optional(),
-  }).optional(),
+  }).strict().optional(),
   defaults: z
     .object({
       /** drop: say nothing. reply: one line an hour. onboard: an owner's message makes a new profile (needs onboard:). */
@@ -138,8 +143,9 @@ export const Config = z.object({
        *  that profile has several chats. The chat gets a brief and the project's path. Unset: refused. */
       handoff: z.string().optional(),
     })
+    .strict()
     .prefault({}),
-});
+}).strict();
 
 export type Capability = z.infer<typeof Capability>;
 export type Profile = z.infer<typeof Profile>;

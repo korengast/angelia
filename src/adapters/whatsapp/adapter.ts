@@ -3,12 +3,13 @@ import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import pino from 'pino';
 import { ChatChains, MAX_INBOUND, SenderQuota, saveInbound } from '../inbox.js';
-import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage, DisconnectReason, type WASocket } from 'baileys';
+import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage, DisconnectReason, type AnyMessageContent, type WASocket } from 'baileys';
 import qrcode from 'qrcode-terminal';
 import type { Inbound } from '../../core/types.js';
 import type { Sender } from '../../core/orchestrator.js';
 import { LidMap, normalizeJid } from './ids.js';
 import { parseMessage, SeenIds, type WaMessageLike } from './parse.js';
+import { SentMessages } from './sent.js';
 import { isOpus, type Media } from '../../core/deliver/media.js';
 import { asVoice } from '../../voice/opus.js';
 
@@ -33,8 +34,9 @@ const EXT: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png': '.png',
 /**
  * WhatsApp as a linked device (Baileys, in-process). One socket per daemon. Pairing by code
  * printed to the terminal, QR as fallback. Reconnects on every close except a logout.
- * Learnings baked in from an earlier bridge: `getMessage` must exist or E2EE retries drop messages
- * silently; our own echoes come back as fromMe; people appear as `@lid` as often as by phone.
+ * Learnings baked in from an earlier bridge: a device that cannot decrypt what we sent asks again,
+ * and only `getMessage` can answer after a reconnect; our own echoes come back as fromMe; people
+ * appear as `@lid` as often as by phone.
  */
 export class WhatsAppAdapter extends EventEmitter implements Sender {
   private sock?: WASocket;
@@ -46,6 +48,8 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
   private say: (line: string) => void;
   private backoffMs = 3000;
   private lastBackoffNotice = 0;
+  /** A field, not made in open(): what we sent must outlive a reconnect, when a retry needs it most. */
+  private sent = new SentMessages();
 
   constructor(private readonly opts: WhatsAppAdapterOptions) {
     super();
@@ -77,7 +81,10 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
       browser: ['Angelia', 'Chrome', '120.0'],
       syncFullHistory: false,
       markOnlineOnConnect: false,
-      getMessage: async () => ({ conversation: '' }),
+      // A retry receipt resends whatever this returns, so a blank stand-in arrives as an empty bubble.
+      // Baileys' own cache answers first, but only for 5 minutes and it is cleared when the socket
+      // ends. Unknown ids get undefined: Baileys then resends nothing, which is the honest outcome.
+      getMessage: async (key) => this.sent.get(key.id),
     });
     this.sock = sock;
     sock.ev.on('creds.update', () => { void saveCreds(); this.lids.reload(); });
@@ -214,7 +221,12 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
 
   async send(chat: string, text: string): Promise<void> {
     if (!this.sock || !this.connected) throw new Error('whatsapp: not connected');
-    await this.sock.sendMessage(chat, { text });
+    await this.post(chat, { text });
+  }
+
+  /** Every outgoing message goes through here, so a retry receipt can find it later. */
+  private async post(chat: string, content: AnyMessageContent): Promise<void> {
+    this.sent.remember(await this.sock!.sendMessage(chat, content));
   }
 
   /** A group's subject, for naming its profile. A DM has no name here. */
@@ -227,18 +239,18 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
   async sendMedia(chat: string, m: Media): Promise<void> {
     if (!this.sock || !this.connected) throw new Error('whatsapp: not connected');
     const caption = m.caption || undefined;
-    if (m.kind === 'image') { await this.sock.sendMessage(chat, { image: { url: m.path }, caption, mimetype: m.mime }); return; }
-    if (m.kind === 'video') { await this.sock.sendMessage(chat, { video: { url: m.path }, caption, mimetype: m.mime }); return; }
+    if (m.kind === 'image') { await this.post(chat, { image: { url: m.path }, caption, mimetype: m.mime }); return; }
+    if (m.kind === 'video') { await this.post(chat, { video: { url: m.path }, caption, mimetype: m.mime }); return; }
     if (m.kind === 'audio' && m.voice !== false) {
       // WhatsApp shows a voice bubble only for ogg/opus; anything else is converted first.
       const v = await asVoice(m.path);
       try {
         const ptt = isOpus(v.path);
-        await this.sock.sendMessage(chat, { audio: { url: v.path }, mimetype: ptt ? 'audio/ogg; codecs=opus' : m.mime, ptt });
+        await this.post(chat, { audio: { url: v.path }, mimetype: ptt ? 'audio/ogg; codecs=opus' : m.mime, ptt });
       } finally { v.cleanup(); }
       return;
     }
-    await this.sock.sendMessage(chat, { document: { url: m.path }, fileName: m.fileName, caption, mimetype: m.mime });
+    await this.post(chat, { document: { url: m.path }, fileName: m.fileName, caption, mimetype: m.mime });
   }
 
   async typing(chat: string, on: boolean): Promise<void> {

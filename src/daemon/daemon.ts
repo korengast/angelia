@@ -131,15 +131,17 @@ export async function runDaemon(configPath: string): Promise<void> {
   await api.listen(socket);
   adapters.push({ stop: () => api.close() });
 
-  let tgState = 'off';
+  // Telegram's state is the adapter's own: a copy here would go on saying polling after polling died.
+  let telegram: TelegramAdapter | undefined;
+  const tgState = () => telegram?.state ?? 'off';
   if (cfg.telegram) {
     const token = process.env[cfg.telegram.token_env] ?? secrets[cfg.telegram.token_env];
     if (!token) throw new Error(`telegram: ${cfg.telegram.token_env} is not set`);
     const tg = new TelegramAdapter({ token, log: logLine, inboxFor, onInbound, menuChats: cfg.routes.filter((r) => r.platform === 'telegram').map((r) => r.chat) });
     senders.telegram = tg;
+    telegram = tg;
     await tg.start();
     adapters.push(tg);
-    tgState = 'polling';
   }
   let waState = 'off';
   let waAdapter: WhatsAppAdapter | undefined;
@@ -160,7 +162,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   const writeStatus = () => {
     const path = join(STATE_DIR, 'status.json');
     try {
-      writeFileSync(`${path}.tmp`, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), tg: tgState, wa: waState, sessions: orch.status() }, null, 2));
+      writeFileSync(`${path}.tmp`, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), tg: tgState(), wa: waState, sessions: orch.status() }, null, 2));
       renameSync(`${path}.tmp`, path);
       statusError = '';
     } catch (e) {
@@ -187,7 +189,7 @@ export async function runDaemon(configPath: string): Promise<void> {
     if (note.key.startsWith('whatsapp:') && waAdapter && !waAdapter.connected) waAdapter.once('open', back);
     else back();
   }
-  logLine(`daemon up pid=${process.pid} profiles=${Object.keys(cfg.profiles).length} routes=${cfg.routes.length} tg=${tgState} wa=${waState} api=${API_SOCKET}${missing.length ? ` cli_missing=${missing.length}` : ''}`);
+  logLine(`daemon up pid=${process.pid} profiles=${Object.keys(cfg.profiles).length} routes=${cfg.routes.length} tg=${tgState()} wa=${waState} api=${API_SOCKET}${missing.length ? ` cli_missing=${missing.length}` : ''}`);
 
   const shutdown = async (sig: string) => {
     logLine(`shutdown on ${sig}`);

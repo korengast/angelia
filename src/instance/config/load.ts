@@ -2,6 +2,7 @@ import { readFileSync, statSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, resolve, join, relative, isAbsolute, sep } from 'node:path';
 import { parse } from 'yaml';
+import type { z } from 'zod';
 import { Config, Profile } from './schema.js';
 import { expandHome, isInside } from '../../core/paths.js';
 import { isGroupChat } from '../../core/types.js';
@@ -94,6 +95,30 @@ function removedKeys(raw: unknown): string[] {
   return out;
 }
 
+/**
+ * The table with the removed keys taken out, as a copy. Every object in the schema is strict now, and
+ * a table written before the removal must keep loading; removedKeys still reads the original to name
+ * each leftover. Anything odd (an empty file, a list) comes back as it is, for Config to report.
+ */
+function withoutRemoved(raw: unknown): unknown {
+  const isMap = (o: unknown): o is Record<string, unknown> => !!o && typeof o === 'object' && !Array.isArray(o);
+  const drop = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !REMOVED_KEYS.includes(k)));
+  if (!isMap(raw)) return raw;
+  const out = drop(raw);
+  if (isMap(out.profiles)) out.profiles = Object.fromEntries(Object.entries(out.profiles).map(([n, p]) => [n, isMap(p) ? drop(p) : p]));
+  if (isMap(out.onboard) && isMap(out.onboard.profile)) out.onboard = { ...out.onboard, profile: drop(out.onboard.profile) };
+  return out;
+}
+
+type Issue = z.ZodError['issues'][number];
+
+/** zod names an unknown key by its parent's path and a list of keys; name each one by its full path. */
+function issueText(issue: Issue, prefix: string[] = []): string {
+  const path = [...prefix, ...issue.path.map(String)];
+  if (issue.code === 'unrecognized_keys') return issue.keys.map((k) => `${[...path, k].join('.')}: unknown key; nothing reads it (a misspelling?)`).join('; ');
+  return `${path.join('.') || '<root>'}: ${issue.message}`;
+}
+
 /** A folder that exists, or, inside Codex's or pi's sandbox, one this process may not look at: an agent
  *  that runs \`angelia profiles\` cannot stat the other profiles' folders, and that is not a broken table.
  *  Outside the sandbox an unreadable cwd stays an error (a typo under a locked folder, a macOS-protected one). */
@@ -109,11 +134,8 @@ export function loadConfig(path: string): Config {
   } catch (e) {
     throw new ConfigError(`cannot read ${path}: ${(e as Error).message}`);
   }
-  const parsed = Config.safeParse(raw);
-  if (!parsed.success) {
-    const first = parsed.error.issues[0];
-    throw new ConfigError(`${first.path.join('.') || '<root>'}: ${first.message}`);
-  }
+  const parsed = Config.safeParse(withoutRemoved(raw));
+  if (!parsed.success) throw new ConfigError(issueText(parsed.error.issues[0]));
   const cfg = parsed.data;
   removed.set(cfg, removedKeys(raw));
   for (const [name, p] of Object.entries(cfg.profiles)) {
@@ -138,7 +160,7 @@ export function loadConfig(path: string): Config {
   if (cfg.onboard) {
     // Checked now, not on the day a new chat arrives and the profile it makes fails to load.
     const t = Profile.safeParse({ ...cfg.onboard.profile, cwd: '/' });
-    if (!t.success) { const f = t.error.issues[0]; throw new ConfigError(`onboard.profile.${f.path.join('.')}: ${f.message}`); }
+    if (!t.success) throw new ConfigError(issueText(t.error.issues[0], ['onboard', 'profile']));
     if ('cwd' in cfg.onboard.profile) throw new ConfigError('onboard.profile.cwd: each new profile gets its own folder; set onboard.folder for where they go');
   }
   try { handoffDefault(cfg); } catch (e) { throw new ConfigError(`defaults.handoff: ${(e as Error).message.replace(/^defaults\.handoff names /, '')}`); }

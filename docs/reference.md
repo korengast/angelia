@@ -48,7 +48,7 @@ The backend is a single interface in `src/brain/`: start in a directory, send a 
 
 ## Setting things up by hand
 
-`angelia init` asks which of two shapes you want. **Quick** is one chat and one folder. **Advanced** is several profiles, each with its own folder, permission mode and chats. Both end with a plain `routing.yaml` in `~/.angelia/workspace` that you can edit by hand later; `angelia check-config` validates it and warns about risky combinations.
+`angelia init` asks which of two shapes you want. **Quick** is one chat and one folder. **Advanced** is several profiles, each with its own folder, permission mode and chats. Both end with a plain `routing.yaml` in `~/.angelia/workspace` that you can edit by hand later; `angelia check-config` validates it and warns about risky combinations. A key it does not know is an error that names the key, so a misspelling never falls back to a default; the old `pay` and `approvals` keys are still accepted, with a warning to delete them.
 
 To install without the script: `git clone --branch v0.3.2 https://github.com/korengast/angelia && cd angelia && npm ci --ignore-scripts && npm run build && npm i -g --ignore-scripts "$(npm pack --ignore-scripts | tail -1)"`, then `angelia init`. Without the service, `angelia daemon` runs it in the terminal; it reads `~/.angelia/env` itself.
 

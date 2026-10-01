@@ -77,7 +77,7 @@ test('end to end: the detached restart outlives the daemon it stops and starts a
   assert.equal(spawnSync('npx', ['tsc', '-p', root], { cwd: root, encoding: 'utf8' }).status, 0, 'build');
   const state = mkdtempSync(join(tmpdir(), 'angelia-e2e-'));
   const cfg = join(state, 'routing.yaml');
-  writeFileSync(cfg, `profiles:\n  a:\n    cwd: ${state}\nroutes: []\napi:\n  port: ${20000 + Math.floor(Math.random() * 20000)}\n`);
+  writeFileSync(cfg, `profiles:\n  a:\n    cwd: ${state}\nroutes: []\n`);
   // Stands in for the running daemon: it owns the pid file and launches /restart's helper as its child.
   const fakeDaemon = `
     import { writeFileSync } from 'node:fs';

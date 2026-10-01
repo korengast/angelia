@@ -83,6 +83,14 @@ client linked with the same credentials). Stop the other one; the daemon backs o
 **Telegram: nothing arrives from a group.** Make the bot a group admin: Telegram's privacy mode hides
 plain @mentions from bots otherwise.
 
+**`angelia status` says telegram: conflict.** Another process is polling the same bot token (a
+second daemon, a test script, the same token on another machine). Stop it; Angelia polls again by
+itself within a minute and logs "telegram: polling again".
+
+**telegram: stopped: ... (401).** Telegram no longer accepts the bot token: it was revoked or
+replaced in @BotFather. Put the new token in `~/.angelia/env`, then `/restart`. WhatsApp keeps
+working meanwhile.
+
 **`/restart` says the routing table does not load.** Fix what `angelia check-config` names, then
 `/restart` again. Nothing was stopped.
 

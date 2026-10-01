@@ -1,11 +1,12 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { STATE_DIR } from './daemon.js';
 import { SESSION_ENV } from '../core/env.js';
-import { entry, plistPath, serviceInstalled, serviceLoaded, serviceStart, serviceStop, tableMismatch } from './service.js';
+import { entry, plistConfig, plistPath, serviceInstalled, serviceLoaded, serviceStart, serviceStop, tableMismatch } from './service.js';
 import { configPath } from '../instance/instance.js';
+import { loadConfig } from '../instance/config/load.js';
 
 /**
  * Stop the running daemon and start a new one in its OWN session.
@@ -52,12 +53,23 @@ async function restart(argv: string[]): Promise<void> {
     }
   }
 
+  const plist = serviceInstalled() ? readFileSync(plistPath(), 'utf8') : undefined;
+  if (plist !== undefined) {
+    const mismatch = tableMismatch(rest[0], plist, fromDaemon);
+    if (mismatch) throw new Error(mismatch);
+  }
+  const config = startTable(rest[0], plist, lastConfig());
+  // Loaded here, by the code the new daemon will run, before anything is stopped. The check behind
+  // /restart runs in the old daemon, with the old code: after `angelia update` a table that one
+  // accepts can fail in the new one, and the daemon would be stopped for a start that cannot work.
+  try { loadConfig(config); } catch (e) {
+    throw new Error(`the routing table does not load with this version, so nothing was stopped:\n${(e as Error).message}\nFix what angelia check-config names, then restart again.`);
+  }
+
   // Under launchd the service owns the daemon: stop the job, then load it again from the plist on
   // disk, so a rewritten plist takes effect. A daemon still started by hand is stopped first, which
   // is how `angelia service install` hands over to the service.
-  if (serviceInstalled()) {
-    const mismatch = tableMismatch(rest[0], readFileSync(plistPath(), 'utf8'), fromDaemon);
-    if (mismatch) throw new Error(mismatch);
+  if (plist !== undefined) {
     serviceStop();
     if (old && alive(old)) process.kill(old, 'SIGTERM');
     for (let i = 0; i < 80 && old && alive(old); i++) await wait(250);
@@ -79,7 +91,6 @@ async function restart(argv: string[]): Promise<void> {
     console.log(`stopped ${old}`);
   }
 
-  const config = configPath(rest[0] ?? lastConfig());
   const out = openSync(join(STATE_DIR, 'daemon.out'), 'a');
   // A forced restart from inside an agent would otherwise hand that one session's identity to the
   // whole new daemon, and from there to every agent it spawns.
@@ -160,6 +171,17 @@ function alive(pid: number): boolean {
 }
 
 /** The config the daemon was last started with, recorded in status.json. */
+/**
+ * The table the new daemon will start with, as an absolute path: the one checked before anything
+ * stops must be that one. Under launchd it is the plist's, even when /restart passes the running
+ * daemon's own table (after `angelia service install <new table>` those differ, on purpose). A
+ * daemon started by hand gets the table given, else the one the running daemon uses; it is spawned
+ * in the state folder, so a relative path is resolved here, once.
+ */
+export function startTable(given: string | undefined, plist: string | undefined, last: string | undefined): string {
+  return resolve(configPath((plist !== undefined ? plistConfig(plist) : undefined) ?? given ?? last));
+}
+
 function lastConfig(): string | undefined {
   try {
     const s = JSON.parse(readFileSync(join(STATE_DIR, 'status.json'), 'utf8')) as { config?: string };
