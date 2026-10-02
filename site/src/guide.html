@@ -78,7 +78,10 @@ th:first-child{background:var(--bg-2)}
 footer{border-top:1px solid var(--rule);color:var(--soft);font-size:14px}
 footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;padding-top:22px;padding-bottom:28px;max-width:1160px}
 footer a{color:inherit;text-decoration:none}
-@media (max-width:560px){header nav a.docs{display:none}}
+@media (max-width:560px){header nav a.docs{display:none}header nav a{margin-left:16px}}
+header nav a.install-link{background:#D06B6B;color:#1A120D;opacity:1;padding:6px 14px;border-radius:999px;font-weight:600}
+.try{margin:40px 0 0;padding:22px 24px 6px;border-radius:12px;background:var(--bg-2)}
+.try h2{margin-top:0}
 /* The table is wider than a phone: say so, and keep the hint in view while it scrolls. */
 .table::before{content:"Swipe sideways for all four columns →";display:none;position:sticky;left:0;padding:8px 11px;font-size:12.5px;color:var(--soft);background:var(--bg-2);border-bottom:1px solid var(--rule)}
 @media (max-width:760px){.table::before{display:block}}
@@ -91,7 +94,7 @@ footer a{color:inherit;text-decoration:none}
 <header>
   <div class="wrap">
     <a class="brand" href="/" aria-label="Angelia home"><svg><use href="#mark"/></svg><span>Angelia</span></a>
-    <nav aria-label="Main"><a href="/guides/">Guides</a><a class="docs" href="https://github.com/{{REPO}}#readme">Docs</a><a href="https://github.com/{{REPO}}">GitHub</a></nav>
+    <nav aria-label="Main"><a href="/guides/">Guides</a><a class="docs" href="https://github.com/{{REPO}}#readme">Docs</a><a href="https://github.com/{{REPO}}">GitHub</a><a class="install-link" href="/#top">Install</a></nav>
   </div>
 </header>
 <main class="wrap" id="content">

@@ -39,6 +39,8 @@
   --bg:var(--paper); --bg-2:var(--paper-2); --fg:var(--ink); --fg-soft:var(--muted); --rule:var(--line);
   --accent:var(--clay-deep); --accent-tint:#96393D;
   --code-bg:var(--ink); --code-fg:#F1E4D4; --code-dim:#A89280; --code-key:#F0AAAA; --code-edge:transparent;
+  /* security: one laurel green, used only for what keeps you safe */
+  --safe:#2F6B47; --safe-ink:#24573A; --safe-line:#BFD0BE; --safe-band:#E6EBE1; --safe-fg:#FFFFFF;
 }
 /* dark mode is a red-figure cup: clay figures on black */
 @media (prefers-color-scheme: dark){
@@ -46,12 +48,14 @@
     --ground:#15100C; --figure:var(--clay); --on-ground:#F1E4D4; --on-ground-soft:#BFA893; --disc:transparent; --road:var(--clay); --btn:var(--clay); --btn-fg:#15100C;
     --bg:#15100C; --bg-2:#1E1712; --fg:#F1E4D4; --fg-soft:#AE9A88; --rule:#3A2D24;
     --accent:var(--clay-soft); --accent-tint:var(--clay-soft); --code-bg:#0E0A08; --code-edge:#3A2D24;
+    --safe:#8CC79C; --safe-ink:#A7D7B2; --safe-line:#2E4334; --safe-band:#111813; --safe-fg:#0E140F;
   }
 }
 :root[data-theme="dark"]{
   --ground:#15100C; --figure:var(--clay); --on-ground:#F1E4D4; --on-ground-soft:#BFA893; --disc:transparent; --road:var(--clay); --btn:var(--clay); --btn-fg:#15100C;
   --bg:#15100C; --bg-2:#1E1712; --fg:#F1E4D4; --fg-soft:#AE9A88; --rule:#3A2D24;
   --accent:var(--clay-soft); --accent-tint:var(--clay-soft); --code-bg:#0E0A08; --code-edge:#3A2D24;
+    --safe:#8CC79C; --safe-ink:#A7D7B2; --safe-line:#2E4334; --safe-band:#111813; --safe-fg:#0E140F;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -78,9 +82,12 @@ header{background:var(--ground);color:var(--on-ground)}
 
 /* hero */
 .hero{background:var(--ground);color:var(--on-ground);padding:40px 0 88px}
-.hero .wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:56px;align-items:center}
+.hero .wrap{display:grid;grid-template-columns:1.15fr .85fr;gap:56px;align-items:center}
+.hero .phone{justify-self:end;width:100%;max-width:420px;margin:0}
+.phone figcaption{font-size:13px;line-height:1.5;color:var(--fg-soft);margin:14px 6px 0}
+.phone figcaption b{color:var(--safe-ink)}
 .eyebrow{font:500 12px/1 "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--on-ground-soft)}
-h1{text-wrap:balance;font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:clamp(34px,4.6vw,60px);line-height:1.04;letter-spacing:-.035em;margin:22px 0 26px}
+h1{text-wrap:balance;font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:clamp(34px,4.2vw,54px);line-height:1.04;letter-spacing:-.035em;margin:22px 0 26px}
 h1 em,h2 em{font-style:normal;font-weight:400}
 h1 em{display:block;color:var(--accent)}
 .lede{font-size:19px;max-width:34em;color:var(--on-ground);margin:0 0 32px}
@@ -94,6 +101,10 @@ h1 em{display:block;color:var(--accent)}
 .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:999px;font-weight:500;font-size:15px;text-decoration:none;border:1.5px solid var(--on-ground)}
 .btn.solid{background:var(--btn);color:var(--btn-fg);border-color:var(--btn)}
 .fine{font-size:14px;color:var(--on-ground-soft);margin-top:22px}
+.chips{list-style:none;padding:0;margin:22px 0 0;display:flex;flex-wrap:wrap;gap:8px}
+.chips a{display:inline-flex;align-items:center;gap:7px;padding:6px 12px 6px 9px;border-radius:999px;border:1px solid color-mix(in srgb,var(--safe) 50%,transparent);background:color-mix(in srgb,var(--safe) 8%,transparent);color:var(--safe-ink);font:500 13px/1.2 "IBM Plex Mono",monospace;text-decoration:none}
+.chips a:hover{border-color:var(--safe)}
+.chips svg{width:16px;height:16px;flex:none}
 .fine+.fine{margin-top:8px}
 .fine a{text-underline-offset:3px}
 .fine code{font-size:13px}
@@ -119,10 +130,7 @@ h2{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:
 .demo{padding:72px 0 0}
 .demo video{display:block;width:100%;height:auto;aspect-ratio:16/9;border-radius:10px;background:var(--code-bg)}
 .demo .fine{margin-top:14px}
-.myth{text-align:center;padding:96px 0 40px}
-.myth blockquote{margin:0 auto;max-width:860px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:clamp(19px,2.1vw,25px);line-height:1.5;font-weight:400;letter-spacing:-.01em}
-.myth blockquote em{color:var(--accent);font-style:normal}
-.myth p{color:var(--fg-soft);margin:26px 0 0;font-size:16px}
+.close .myth{max-width:40em;margin:40px auto 0;color:var(--on-ground-soft);font-size:15px}
 .greek{font-weight:600}
 
 /* two outcomes */
@@ -134,7 +142,7 @@ h2{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:
 
 /* how it works */
 .how{background:var(--bg-2)}
-.how .grid{display:grid;grid-template-columns:420px 1fr;gap:64px;align-items:start;margin-top:52px}
+.how .grid{display:grid;grid-template-columns:1fr 1.15fr;gap:56px;align-items:start;margin-top:52px}
 .phone{background:var(--bg);border:1px solid var(--rule);border-radius:28px;padding:18px 16px 22px;box-shadow:0 30px 60px -30px rgba(40,20,10,.35)}
 .phone .top{display:flex;align-items:center;gap:10px;padding:4px 6px 14px;border-bottom:1px solid var(--rule);margin-bottom:14px}
 .phone .top svg{width:34px;height:34px;color:var(--ground);background:var(--figure);border-radius:50%;padding:4px}
@@ -147,7 +155,10 @@ h2{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .me{background:var(--clay);color:var(--ink)}}
 :root[data-theme="dark"] .me{background:var(--clay);color:var(--ink)}
 .bot{background:var(--bg-2);border:1px solid var(--rule);border-bottom-left-radius:5px}
-.bot.dim{background:transparent;border-style:dashed;color:var(--fg-soft);font-size:13px}
+.ask{background:color-mix(in srgb,var(--safe) 9%,var(--bg));border:1.5px solid var(--safe);border-bottom-left-radius:5px;font-size:13.5px}
+.ask .badge{display:flex;align-items:center;gap:6px;font:600 11px/1 "IBM Plex Mono",monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--safe-ink);margin:2px 0 8px}
+.ask .badge svg{width:15px;height:15px}
+.ask code{font-size:12.5px}
 .bot code{font-size:12.5px}
 .steps{display:grid;gap:0}
 .step{display:grid;grid-template-columns:54px 1fr;gap:10px;padding:22px 0;border-bottom:1px solid var(--rule)}
@@ -155,7 +166,7 @@ h2{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:
 .step .k{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:24px;line-height:1;color:var(--accent)}
 .step h3{margin:0 0 6px;font-size:19px;font-weight:600}
 .step p{margin:0;color:var(--fg-soft)}
-pre.yaml{box-shadow:inset 0 0 0 1px var(--code-edge);background:var(--code-bg);color:var(--code-fg);border-radius:12px;padding:20px 22px;font-size:12px;line-height:1.7;overflow-x:auto;margin:28px 0 0}
+pre.yaml{box-shadow:inset 0 0 0 1px var(--code-edge);background:var(--code-bg);color:var(--code-fg);border-radius:12px;padding:20px 22px;font-size:12px;line-height:1.7;overflow-x:auto;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 pre.yaml .c{color:var(--code-dim)} pre.yaml .k{color:var(--code-key)}
 
 /* features */
@@ -163,6 +174,24 @@ pre.yaml .c{color:var(--code-dim)} pre.yaml .k{color:var(--code-key)}
 .feat div{padding:26px 22px 28px;border-right:1px solid var(--rule);border-bottom:1px solid var(--rule)}
 .feat h3{font-size:17px;font-weight:600;margin:0 0 8px}
 .feat p{margin:0;font-size:15px;color:var(--fg-soft);line-height:1.5}
+.feat code,.card code,.guards code,td code{background:var(--bg-2);color:var(--fg);padding:1px 5px;border-radius:4px;font-size:.88em}
+
+/* security */
+.sec{background:var(--safe-band)}
+.sec-head{display:grid;grid-template-columns:auto 1fr;gap:32px;align-items:center}
+.sec .shield{width:104px;height:104px;color:var(--safe)}
+.sec .kicker{color:var(--safe-ink)}
+.guards{list-style:none;padding:0;margin:44px 0 0;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.guards li{background:var(--bg);border:1px solid var(--safe-line);border-radius:14px;padding:22px 22px 24px}
+.guards svg{width:44px;height:44px;padding:10px;border-radius:50%;color:var(--safe);background:color-mix(in srgb,var(--safe) 12%,transparent)}
+.guards h3{font-size:17px;font-weight:600;margin:14px 0 6px}
+.guards p{margin:0;font-size:15px;color:var(--fg-soft);line-height:1.5}
+.guards li.wide{grid-column:1/-1;display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:start;padding:26px 28px;border:1.5px solid var(--safe);background:color-mix(in srgb,var(--safe) 7%,var(--bg))}
+.guards li.wide svg{width:60px;height:60px;padding:13px}
+.guards li.wide h3{font-size:21px;margin:4px 0 8px}
+.guards li.wide p{color:var(--fg);font-size:15.5px}
+.sec .ctas{margin-top:28px}
+.btn.safe{background:var(--safe);border-color:var(--safe);color:var(--safe-fg)}
 
 /* not an agent */
 .not{background:var(--ink);color:#F1E4D4}
@@ -170,8 +199,8 @@ pre.yaml .c{color:var(--code-dim)} pre.yaml .k{color:var(--code-key)}
 :root[data-theme="dark"] .not{background:#0E0A08}
 .not .kicker{color:var(--clay-soft)}
 .not .sub{color:#BFA893}
-.not .compare{margin-top:28px}
-.compare a{color:inherit;text-underline-offset:3px}
+.not .compare{margin:28px 0 0;display:flex;flex-wrap:wrap;align-items:center;gap:12px 16px;color:#BFA893}
+.btn.light{background:var(--clay);border-color:var(--clay);color:var(--ink)}
 .not ul{list-style:none;padding:0;margin:44px 0 0;display:grid;grid-template-columns:repeat(3,1fr);gap:0 36px}
 .not li{padding:18px 0;border-top:1px solid #3A2D24;font-size:16px}
 .not li b{display:block;font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:18px;color:var(--clay-soft);margin-bottom:2px}
@@ -196,16 +225,29 @@ footer a{text-decoration:none}
 
 @media (max-width:960px){
   .hero .wrap,.how .grid{grid-template-columns:1fr}
-  .tondo{justify-self:center;max-width:280px;order:-1}
+  .tondo{justify-self:center;max-width:280px}
+  .hero .phone{justify-self:center;max-width:460px}
+  .guards{grid-template-columns:1fr 1fr}
   .feat{grid-template-columns:1fr 1fr}
   .not ul{grid-template-columns:1fr 1fr}
 }
 @media (max-width:640px){
   .wrap{padding:0 16px}
-  .nav ul{gap:22px}
+  .nav ul{gap:16px;font-size:14px}
+  .brand span{font-size:26px}
   .nav ul li:not(.keep){display:none}
   .hero{padding:12px 0 64px}
-  .hero .tondo{max-width:170px;order:0;margin-top:8px}
+  .hero .phone{max-width:none}
+  .guards{grid-template-columns:1fr}
+  .sec-head{grid-template-columns:1fr;gap:16px}
+  .sec .shield{width:64px;height:64px}
+  .guards li{display:grid;grid-template-columns:44px 1fr;column-gap:14px;align-items:center;padding:18px}
+  .guards h3{margin:0}
+  .guards p{grid-column:1/-1;margin-top:10px}
+  .guards li.wide{grid-template-columns:44px 1fr;gap:0 14px;padding:20px 18px}
+  .guards li.wide svg{width:44px;height:44px;padding:10px}
+  .guards li.wide>div{display:contents}
+  .guards li.wide h3{margin:0;font-size:18px}
   h1{margin-top:16px}
   .lede{font-size:17px}
   .eyebrow{letter-spacing:.08em;font-size:11px}
@@ -230,6 +272,15 @@ footer a{text-decoration:none}
 <a class="skip" href="#top">Skip to content</a>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <!--MARK-->
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.3-7.5 9.5-4.3-1.2-7.5-4.9-7.5-9.5V6z"/><path d="M8.5 12.2l2.4 2.4 4.6-4.8"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><path d="M12 14.5v2.5"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9.5" cy="8" r="3.5"/><path d="M3 20c.6-3.5 3.2-5.5 6.5-5.5 1.6 0 3 .4 4.1 1.2"/><path d="M15 18.5l2 2 4-4.5"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9"/><path d="M17 6l2.5 2.5"/><path d="M14.5 8.5l2 2"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/></symbol>
+  <symbol id="i-sign" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8l2.3 1.7 2.8-.2.9 2.7 2.3 1.6-.9 2.7.9 2.7-2.3 1.6-.9 2.7-2.8-.2L12 21.2l-2.3-1.7-2.8.2-.9-2.7-2.3-1.6.9-2.7-.9-2.7 2.3-1.6.9-2.7 2.8.2z"/><path d="M8.8 12.2l2.2 2.2 4.2-4.4"/></symbol>
+  <symbol id="i-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.2A9.8 9.8 0 0 1 12 5c5 0 8.5 4.5 9.5 7-.4 1-1.2 2.4-2.4 3.7M6.5 6.6C4.6 7.9 3.1 9.9 2.5 12c1 2.5 4.5 7 9.5 7 1.9 0 3.6-.6 5-1.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+  <symbol id="i-nodb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/><path d="M3 3l18 18"/></symbol>
   <symbol id="meander" viewBox="0 0 20 20"><path d="M0 18 H20 M16 18 V2 H4 V14 H12 V6 H8 V10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"/></symbol>
 </svg>
 
@@ -238,7 +289,7 @@ footer a{text-decoration:none}
     <a class="brand" href="#top" aria-label="Angelia home"><svg><use href="#mark"/></svg><span>Angelia</span></a>
     <ul>
       <li><a href="#how">How it works</a></li>
-      <li><a href="#features">Features</a></li>
+      <li class="keep"><a href="#security">Security</a></li>
       <!--GUIDES-->
       <li><a href="https://github.com/{{REPO}}#readme">Docs</a></li>
       <li class="keep"><a href="https://github.com/{{REPO}}">GitHub</a></li>
@@ -252,57 +303,63 @@ footer a{text-decoration:none}
     <div>
       <div class="eyebrow">Open source · MIT · Runs on your machine</div>
       <h1>Your coding agent. <em>Your personal assistant.</em></h1>
-      <p class="lede">Angelia turns the coding agent CLI you already know and trust into the brain of your personal assistant. It lives in your WhatsApp and Telegram, runs on your own machine, and works with your tools and your subscription.</p>
+      <p class="lede">Your personal assistant on WhatsApp and Telegram, built on the coding agent CLI you already know and trust. It runs on your own machine, with your tools and your subscription, and adds no model of its own.</p>
       <div class="install"><code><span class="p">$ </span>curl -fsSL {{SITE}}/install | sh</code><button class="copy" data-copy="curl -fsSL {{SITE}}/install | sh" aria-label="Copy install command">Copy</button></div>
       <p class="fine">It checks the release's signature, then a wizard pairs your first chat. To keep Angelia running after you close the terminal: <code>angelia service install</code>. <a href="https://github.com/{{REPO}}/blob/v{{VERSION}}/install.sh">Read the script</a></p>
       <div class="ctas">
         <a class="btn solid" href="https://github.com/{{REPO}}#quick-start">Quick start</a>
         <a class="btn" href="https://github.com/{{REPO}}">View on GitHub</a>
       </div>
-      <p class="fine">Alpha · macOS, Node 22+ · Chat through a Telegram bot, or a second WhatsApp number, not your own (<a href="/guides/claude-code-whatsapp-telegram/#angelia">why</a>).</p>
+      <ul class="chips" aria-label="Security">
+        <li><a href="#security"><svg aria-hidden="true"><use href="#i-user"/></svg>Owner approval</a></li>
+        <li><a href="#security"><svg aria-hidden="true"><use href="#i-key"/></svg>Secrets fenced off</a></li>
+        <li><a href="#security"><svg aria-hidden="true"><use href="#i-sign"/></svg>Signed releases</a></li>
+                <li><a href="#security"><svg aria-hidden="true"><use href="#i-nodb"/></svg>Stores no messages</a></li>
+        <li><a href="#security"><svg aria-hidden="true"><use href="#i-off"/></svg>No telemetry</a></li>
+      </ul>
+      <p class="fine">Alpha · macOS, Node 22+ · Chat through a Telegram bot, or a second WhatsApp number, not your own (<a href="/guides/claude-code-whatsapp-telegram/#angelia">why</a>).<!--COMPARE-HERO--></p>
     </div>
-    <div class="tondo" aria-hidden="true">
-      <svg class="ring" viewBox="0 0 400 400"><!--RING--></svg>
-      <svg class="fig"><use href="#mark"/></svg>
-    </div>
+    <figure class="phone" aria-label="Example chat">
+      <div class="top"><svg aria-hidden="true"><use href="#mark"/></svg><div><b>side-project</b><small>Telegram · you and your assistant</small></div></div>
+      <div class="msg me">Why did last night's build fail?</div>
+      <div class="msg bot">The date parser test fails on the day the clocks change. The fix is one line in <code>src/date.ts</code>. Apply it?</div>
+      <div class="msg me">Yes, and run the tests</div>
+      <div class="msg ask"><span class="badge"><svg aria-hidden="true"><use href="#i-shield"/></svg>Needs your approval</span>🔐 Bash: <code>npm test</code><br>Reply <code>yes 6b480a6f</code> or <code>no 6b480a6f</code></div>
+      <div class="msg me">yes 6b480a6f</div>
+      <div class="msg bot">38 tests green. Pushed to <code>fix/dst</code>.</div>
+      <figcaption>It runs only after an owner answers <b>yes</b> with the one-time code. Anyone else's yes is refused, and no answer means no.</figcaption>
+    </figure>
   </div>
 </div>
 <div class="road" aria-hidden="true"><svg><defs><pattern id="mp" width="26" height="26" patternUnits="userSpaceOnUse"><use href="#meander" width="26" height="26"/></pattern></defs><rect width="100%" height="26" fill="url(#mp)"/></svg></div>
 
 <section class="demo" id="demo">
   <div class="wrap">
-    <p class="kicker">Install</p>
+    <p class="kicker">See it</p>
     <h2>From one line to <em>your first message.</em></h2>
     <video controls muted playsinline preload="none" poster="/demo-poster.jpg" width="1920" height="1080" aria-label="Installing Angelia: from the install line to the first message">
       <source src="/angelia-demo.webm" type="video/webm">
       <source src="/angelia-demo-muted.mp4" type="video/mp4">
       <a href="/angelia-demo-muted.mp4">Download the demo video</a>
     </video>
-    <p class="fine">The installer above, the setup wizard and the first chat, sped up. Real setup text and a real Claude Code session.</p>
+    <p class="fine">The install line, the signature check, the setup wizard and the first reply. 48 seconds, sped up. Real setup text and a real Claude Code session.</p>
   </div>
 </section>
 
-<section class="myth">
-  <div class="wrap">
-    <blockquote>In Greek myth, Hermes carried the words of the gods. His daughter <span class="greek">Angelia</span> carried only the message: not the wisdom, not the decision. <em>Just the promise that what is said in one place arrives whole in another.</em></blockquote>
-    <p>That is the whole job.</p>
-  </div>
-</section>
-
-<section style="padding-top:56px">
+<section style="padding-top:72px">
   <div class="wrap">
     <p class="kicker">Why</p>
     <h2>Two ways <em>people use it.</em></h2>
     <div class="two">
       <div class="card">
         <div class="n">01</div>
-        <h3>Turn it into a personal assistant.</h3>
-        <p>Give each part of your life its own chat and its own folder: family, money, a side project. Each one gets its own instructions and memory. All on the subscription you already pay for.</p>
+        <h3>Keep working away from the desk.</h3>
+        <p>Ask why the build failed from the train. Approve the fix from the couch. Start at your desk, carry on from your phone: type <code>/angelia-handoff</code> in a terminal session to move it to the chat. Back at the desk, <code>/status</code> in the chat gives you the line that opens it there again.</p>
       </div>
       <div class="card">
         <div class="n">02</div>
-        <h3>Keep working away from the desk.</h3>
-        <p>Ask why the build failed from the train. Approve the fix from the couch. The agent works on your machine with everything you set up. You just talk to it.</p>
+        <h3>Turn it into a personal assistant.</h3>
+        <p>Give each part of your life its own chat and its own folder: family, money, a side project. Each one gets its own instructions, memory and permissions.</p>
       </div>
     </div>
   </div>
@@ -314,32 +371,48 @@ footer a{text-decoration:none}
     <h2>One chat, <em>one folder.</em></h2>
     <p class="sub">Every chat gets its own folder and its own session. One YAML file says which is which, and the setup wizard writes it for you.</p>
     <div class="grid">
-      <div class="phone" role="figure" aria-label="Example chat">
-        <div class="top"><svg><use href="#mark"/></svg><div><b>side-project</b><small>you, Angelia</small></div></div>
-        <div class="msg me">Why did last night's build fail?</div>
-        <div class="msg bot">The date parser test fails on the day the clocks change. The fix is one line in <code>src/date.ts</code>. Apply it?</div>
-        <div class="msg me">Yes, and run the tests</div>
-        <div class="msg bot dim">🔐 Bash: <code>npm test</code><br>reply <code>yes 6b480a6f</code> or <code>no 6b480a6f</code></div>
-        <div class="msg me">yes 6b480a6f</div>
-        <div class="msg bot">38 tests green. Pushed to <code>fix/dst</code>.</div>
+      <div class="steps">
+        <div class="step"><div class="k">1</div><div><h3>Install and pair.</h3><p>Run the installer, pick your CLI, send the bot a message. That chat is now connected.</p></div></div>
+        <div class="step"><div class="k">2</div><div><h3>Point it at a folder.</h3><p>The agent opens in that folder and uses what it finds there: instructions, settings, MCP servers. Exactly like in your terminal.</p></div></div>
+        <div class="step"><div class="k">3</div><div><h3>Talk to it.</h3><p>Text, voice notes, photos, files. Before anything risky, the agent asks you in the chat.</p></div></div>
       </div>
-      <div>
-        <div class="steps">
-          <div class="step"><div class="k">α</div><div><h3>Install and pair.</h3><p>Run the installer, pick your CLI, send the bot a message. That chat is now connected.</p></div></div>
-          <div class="step"><div class="k">β</div><div><h3>Point it at a folder.</h3><p>The agent opens in that folder and uses what it finds there: instructions, settings, MCP servers. Exactly like in your terminal.</p></div></div>
-          <div class="step"><div class="k">γ</div><div><h3>Talk to it.</h3><p>Text, voice notes, photos, files. Before anything risky, the agent asks you in the chat.</p></div></div>
-        </div>
-<pre class="yaml"><span class="k">profiles:</span>
-  coding:   { cwd: ~/agents/coding, permission_mode: acceptEdits, shell: true }
-  family:   { cwd: ~/agents/family, permission_mode: acceptEdits }
-  research: { cwd: ~/agents/research, effort: high }
+<pre class="yaml" aria-label="Example routing.yaml"><span class="c"># routing.yaml (example values)</span>
+<span class="k">profiles:</span>
+  coding: { cwd: ~/.angelia/workspace/profiles/coding, shell: true }
+  family: { cwd: ~/.angelia/workspace/profiles/family, sandbox: true }
 
 <span class="k">routes:</span>
-  - { platform: telegram, chat: 111111111,      profile: coding }
-  - { platform: whatsapp, chat: "1203…@g.us",   profile: family, owners: ["1555…"] }
-  - { platform: telegram, chat: 222222222,      profile: research }
-<span class="c"># angelia init writes the first route. With onboarding on, a new chat adds its own.</span></pre>
+  - { platform: telegram, chat: "123456789", profile: coding }
+  - { platform: whatsapp, chat: "120363000000000000@g.us",
+      profile: family, owners: ["15551234567"] }
+<span class="c"># angelia init writes the first route.
+# With onboarding on, a new chat adds its own.</span></pre>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="security">
+  <div class="wrap">
+    <div class="sec-head">
+      <svg class="shield" aria-hidden="true"><use href="#i-shield"/></svg>
+      <div>
+        <p class="kicker">Security</p>
+        <h2>Safe by default. <em>Private by design.</em></h2>
+        <p class="sub">Angelia runs on your machine, keeps no copy of your chats, and its agent works on your files, so it ships locked down. These guards are on from the first chat.</p>
       </div>
+    </div>
+    <ul class="guards">
+      <li class="wide"><svg aria-hidden="true"><use href="#i-nodb"/></svg><div><h3>Your messages are not stored.</h3><p>Angelia hands each message to your CLI and keeps no copy: no message history, no database, no Angelia server. Your conversations stay where they already are, in your CLI's own history on your machine. Angelia keeps only what routing needs, which chat goes to which session, and its log holds ids and counts, not the conversation. A file you send is saved in that chat's folder, so the agent can open it.</p></div></li>
+      <li><svg aria-hidden="true"><use href="#i-lock"/></svg><h3>Strangers get nothing</h3><p>Only chats you paired reach the agent. Anyone else gets no reply at all. In a group, only the people you name are heard.</p></li>
+      <li><svg aria-hidden="true"><use href="#i-user"/></svg><h3>Only owners approve</h3><p>A risky command waits for an owner's <code>yes</code> with its one-time code. A group member's yes is refused. No answer means no.</p></li>
+      <li><svg aria-hidden="true"><use href="#i-key"/></svg><h3>Secrets fenced off</h3><p>Every profile is compiled with deny rules for your SSH keys, cloud logins, the bot token and the other profiles' folders.</p></li>
+      <li><svg aria-hidden="true"><use href="#i-box"/></svg><h3>A sandbox when you want one</h3><p>Deny rules stop the agent's file tools; a sandbox also stops every program it runs. Codex and pi run every command in an OS sandbox. A Claude Code profile gets the same with one line: <code>sandbox: true</code>.</p></li>
+      <li><svg aria-hidden="true"><use href="#i-stop"/></svg><h3>Tampering stops it</h3><p>If a profile's rules are loosened, by the agent or by hand, it does not start until you compile it again. The chat says why.</p></li>
+      <li><svg aria-hidden="true"><use href="#i-sign"/></svg><h3>Signed, local, quiet</h3><p>Every release is signed and checked before it installs. No Angelia server, no account, no telemetry.</p></li>
+    </ul>
+    <div class="ctas">
+      <a class="btn solid safe" href="https://github.com/{{REPO}}/blob/main/docs/security.md">Read the security model</a>
+      <a class="btn" href="https://github.com/{{REPO}}/blob/main/SECURITY.md">Report a hole privately</a>
     </div>
   </div>
 </section>
@@ -349,14 +422,14 @@ footer a{text-decoration:none}
     <p class="kicker">What it does today</p>
     <h2>Built for chat, <em>not a terminal.</em></h2>
     <div class="feat">
-      <div><h3>Every chat remembers</h3><p>Each chat keeps its own session, even after a restart. <code>/new</code> starts fresh.</p></div>
+      <div><h3>You approve risky steps</h3><p>Before a risky command, the chat shows it with a code. Only an owner's <code>yes</code> plus that code runs it. No answer means no.</p></div>
       <div><h3>Quiet in groups</h3><p>It answers only when mentioned, and only to people you allow. Strangers get nothing.</p></div>
-      <div><h3>You approve risky steps</h3><p>Before a risky command, the chat asks. You reply yes or no. No reply means no.</p></div>
+      <div><h3>Every chat remembers</h3><p>Each chat keeps its own session, even after a restart. <code>/new</code> starts fresh.</p></div>
+      <div><h3>Keys stay out</h3><p>API keys are kept out of the agent's environment, and in the default mode a session that would bill an API key is refused. You stay on your subscription.</p></div>
       <div><h3>Voice notes and files</h3><p>Send a voice note, a photo or a PDF. Voice becomes text on your Mac (Whisper, optional). The agent can answer with a voice note too.</p></div>
       <div><h3>New group, new assistant</h3><p>Turn onboarding on, then mention the bot in a new group. It sets up its own folder and asks what the group is for.</p></div>
-      <div><h3>Scheduled check-ins</h3><p>A morning summary, a weekly report. Your OS runs the schedule; the answer lands in the chat.</p></div>
-      <div><h3>Scriptable</h3><p><code>angelia send</code> posts to any of your chats from a script. <code>angelia turn</code> asks the agent.</p></div>
-      <div><h3>No surprise bills</h3><p>API keys are kept out of the agent's environment, so no chat can switch it to a per-token bill.</p></div>
+      <div><h3>Scheduled check-ins</h3><p>A morning summary, a weekly report. Your Mac runs the schedule (launchd); the answer lands in the chat.</p></div>
+      <div><h3>Scriptable</h3><p><code>angelia send</code> posts to a chat from any script. <code>angelia turn</code> asks that chat's agent and waits for the answer.</p></div>
     </div>
   </div>
 </section>
@@ -364,17 +437,17 @@ footer a{text-decoration:none}
 <section class="not">
   <div class="wrap">
     <p class="kicker">By design</p>
-    <h2>Not another <em>AI assistant.</em></h2>
-    <p class="sub">Other assistants ask you to learn a new agent, with its own model, skills and memory. Angelia does not add a brain. It gives the one you already know a phone, a schedule and a place for each part of your life.</p>
+    <h2>Not a new agent. <em>A phone for the one you have.</em></h2>
+    <p class="sub">Other chat bridges put every chat into one session. Angelia gives every chat its own session, folder and owners, comes back after a reboot, and works with the CLI you choose.</p>
+    <!--COMPARE-->
     <ul>
       <li><b>No second model.</b>Angelia runs no LLM. Voice notes, if you want them, become text with Whisper, on your Mac.</li>
-      <li><b>No middleman.</b>Your machine, your chat app, your CLI's own provider. No Angelia server, no telemetry.</li>
+      <li><b>No middleman.</b>Your machine, your chat app, your CLI's own provider. No Angelia server, and no copy of your messages.</li>
       <li><b>No new bill.</b>Your CLI, your account, your subscription.</li>
       <li><b>Nothing to relearn.</b>Skills, MCP servers and memory stay in your CLI.</li>
       <li><b>Plain files.</b>One YAML file. The wizard only writes what you could write by hand.</li>
       <li><b>Open source.</b>MIT license. Read every line.</li>
     </ul>
-    <!--COMPARE-->
   </div>
 </section>
 
@@ -382,15 +455,15 @@ footer a{text-decoration:none}
   <div class="wrap">
     <p class="kicker">Backends</p>
     <h2>Works with <em>the CLI you use.</em></h2>
-    <p class="sub">Supported today: Claude Code, Grok Build, Codex and pi. Coming soon: OpenCode. Every CLI plugs into the same interface.</p>
+    <p class="sub">Every CLI plugs into the same interface, with one warm process per chat.</p>
     <table>
-      <thead><tr><th>CLI</th><th>Status</th><th>How it runs</th></tr></thead>
+      <thead><tr><th>CLI</th><th>Status</th><th>Safety</th></tr></thead>
       <tbody>
-        <tr><td><b>Claude Code</b><br><code>backend: claude-code</code></td><td><span class="tag on">today</span></td><td>One warm process per chat.</td></tr>
-        <tr><td><b>Grok Build</b><br><code>backend: grok</code></td><td><span class="tag on">today</span></td><td>One warm process per chat.</td></tr>
-        <tr><td><b>Codex</b><br><code>backend: codex</code></td><td><span class="tag on">today</span></td><td>One warm process per chat, inside Codex's own sandbox.</td></tr>
-        <tr><td><b>pi</b><br><code>backend: pi</code></td><td><span class="tag on">today</span></td><td>One warm process per chat; every command and file access inside macOS's sandbox.</td></tr>
-        <tr><td><b>OpenCode</b></td><td><span class="tag off">coming soon</span></td><td>Same interface.</td></tr>
+        <tr><td><b>Claude Code</b><br><code>backend: claude-code</code></td><td><span class="tag on">today</span></td><td>Permission prompts in the chat; <code>sandbox: true</code> adds an OS sandbox.</td></tr>
+        <tr><td><b>Grok Build</b><br><code>backend: grok</code></td><td><span class="tag on">today</span></td><td>Permission prompts in the chat.</td></tr>
+        <tr><td><b>Codex</b><br><code>backend: codex</code></td><td><span class="tag on">today</span></td><td>Every command inside Codex's own sandbox.</td></tr>
+        <tr><td><b>pi</b><br><code>backend: pi</code></td><td><span class="tag on">today</span></td><td>Every command and file access inside macOS's sandbox.</td></tr>
+        <tr><td><b>OpenCode</b></td><td><span class="tag off">coming soon</span></td><td></td></tr>
       </tbody>
     </table>
   </div>
@@ -405,7 +478,8 @@ footer a{text-decoration:none}
     </div>
     <h2>You already have the brain. <em>Give it a chat.</em></h2>
     <div class="install"><code><span class="p">$ </span>curl -fsSL {{SITE}}/install | sh</code><button class="copy" data-copy="curl -fsSL {{SITE}}/install | sh" aria-label="Copy install command">Copy</button></div>
-    <p class="fine key">Every release is signed. Key <code>SHA256:74hZgwt/ABiUQz6C9A1r7hpHZtCRq1KfC1KvvCR1ys0</code></p>
+    <p class="fine key">Every release is signed. Release key fingerprint:<br><code>SHA256:74hZgwt/ABiUQz6C9A1r7hpHZtCRq1KfC1KvvCR1ys0</code></p>
+    <p class="myth">In Greek myth, Hermes carried the words of the gods. His daughter <b>Angelia</b> carried only the message: not the wisdom, not the decision. That is the whole job.</p>
   </div>
 </section>
 </main>

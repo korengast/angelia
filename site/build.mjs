@@ -119,7 +119,8 @@ const COMPARE = 'claude-code-whatsapp-telegram';
 const html = page('index.html')
   .replace('<!--GUIDES-->', guides.length ? '<li class="keep"><a href="/guides/">Guides</a></li>' : '')
   .replace('<!--COMPARE-->', guides.some((g) => g.slug === COMPARE)
-    ? `<p class="sub compare"><a href="/guides/${COMPARE}/">Remote Control, Claude Code channels, a WhatsApp plugin or Angelia? Four ways compared →</a></p>` : '');
+    ? `<p class="compare"><span>Remote Control, Claude Code channels, a WhatsApp plugin or Angelia?</span> <a class="btn light" href="/guides/${COMPARE}/">Four ways compared →</a></p>` : '')
+  .replace('<!--COMPARE-HERO-->', guides.some((g) => g.slug === COMPARE) ? ` <a href="/guides/${COMPARE}/">How it compares</a>.` : '');
 writeFileSync(join(out, 'index.html'), html);
 writeFileSync(join(out, '404.html'), page('404.html'));
 writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SITE}/sitemap.xml\n`);
