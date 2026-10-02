@@ -78,8 +78,8 @@ test('install.sh draws the same banner as angelia init, and its blink only shuts
 test('install.sh in a terminal: the character blinks while it works, and a failure leaves the cursor back and the tool output shown', { skip: process.platform !== 'darwin' && 'script(1) flags are macOS ones' }, () => {
   const r = rig();
   r.tag('v0.1.0', r.release);
-  // A build long enough for the first blink (about 3 s in).
-  const out = r.runTty({ COLORTERM: 'truecolor', NO_COLOR: '', NPM_STUB_SLEEP: '3.6' });
+  // A build long enough for the first blink: 28 frames, about 3 s here, over 4 s on a slow CI runner.
+  const out = r.runTty({ COLORTERM: 'truecolor', NO_COLOR: '', NPM_STUB_SLEEP: '7' });
   for (const line of BANNER_ART) assert.ok(out.includes(line), line);
   assert.ok(out.includes('\x1b[38;2;208;107;107m'), 'clay');
   assert.equal(out.includes('\x1b[38;2;236;163;163m'), false, 'the colour stays');

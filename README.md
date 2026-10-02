@@ -9,7 +9,7 @@
 </p>
 <p align="center">
   <a href="https://useangelia.com"><img src="https://img.shields.io/badge/Website-useangelia.com-D06B6B?style=for-the-badge" alt="Website"></a>
-  <a href="https://github.com/korengast/angelia/releases/tag/v0.3.2"><img src="https://img.shields.io/badge/Release-v0.3.2%20signed-1A120D?style=for-the-badge" alt="Release v0.3.2, signed"></a>
+  <a href="https://github.com/korengast/angelia/releases/latest"><img src="https://img.shields.io/github/v/release/korengast/angelia?style=for-the-badge&label=Release%20(signed)&color=1A120D" alt="Latest release, signed"></a>
   <a href="#backends"><img src="https://img.shields.io/badge/Platform-macOS-A8474B?style=for-the-badge&logo=apple&logoColor=white" alt="macOS"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
@@ -194,6 +194,8 @@ Each chat keeps one warm process, so a message never waits for a CLI to start. P
 **What does it cost?** Angelia is free and MIT-licensed. You pay only for your CLI's own subscription. Telegram bots and linked WhatsApp devices are free.
 
 **Does anything go through an Angelia server?** No. There is no Angelia server, account, telemetry or update check. Each turn goes to your CLI's model provider under that CLI's terms. Telegram keeps bot messages on its servers; WhatsApp messages are end-to-end encrypted to the linked device.
+
+**Why not Remote Control or Claude Code channels?** They are good at different things. See [four ways to reach Claude Code from your phone, compared](https://useangelia.com/guides/claude-code-whatsapp-telegram/), including when not to use Angelia.
 
 **Does my computer have to stay on?** Yes, the agent runs on it. A Mac mini or an always-on laptop is the usual home.
 

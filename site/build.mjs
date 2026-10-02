@@ -1,8 +1,9 @@
 // Builds the landing page: inlines the mark as a <symbol> and draws the meander ring.
 // node site/build.mjs        ->  site/dist/, ready to upload as it is (Cloudflare Pages reads _redirects, _headers)
+// node site/build.mjs --drafts ->  the same, with the guides still marked draft (to read them locally, never to deploy)
 // node site/build.mjs --og   ->  the share card and the README banner as pages in the temp folder; render them
 //                                into static/og.png (1200x630) and static/banner.png (1280x400 at 2x)
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -61,15 +62,60 @@ if (process.argv.includes('--og')) {
   process.exit(0);
 }
 
+// Guides: site/guides/<slug>.html is the article body, headed by a JSON comment (title, description,
+// date, optional updated, draft). A draft is left out of the site and the sitemap unless --drafts.
+const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const AUTHOR = { '@type': 'Person', name: 'Koren Gast', url: 'https://github.com/korengast' };
+const guides = readdirSync(join(here, 'guides')).filter((f) => f.endsWith('.html')).map((f) => {
+  const src = readFileSync(join(here, 'guides', f), 'utf8');
+  const m = src.match(/^<!--(\{[\s\S]*?\})-->\n/);
+  if (!m) throw new Error(`site/guides/${f}: no JSON header`);
+  return { slug: f.replace(/\.html$/, ''), body: src.slice(m[0].length), ...JSON.parse(m[1]) };
+}).filter((g) => !g.draft || process.argv.includes('--drafts')).sort((a, b) => b.date.localeCompare(a.date));
+// The tab and search title: the brand after it only while the whole stays within what results show.
+const pageTitle = (title) => (title.length + 10 <= 60 ? `${title} · Angelia` : title);
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const longDate = (d) => { const [y, m, day] = d.split('-').map(Number); return `${day} ${MONTHS[m - 1]} ${y}`; };
+// Every h2 gets an id (from its text when it has none), so a section can be linked to.
+const slugify = (t) => t.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+const withIds = (body) => body.replace(/<h2>([\s\S]*?)<\/h2>/g, (_, inner) => `<h2 id="${slugify(inner)}">${inner}</h2>`);
+const guidePage = ({ title, description, url, date, modified = date, byline, body, jsonld }) => page('guide.html')
+  .replaceAll('{{PAGETITLE}}', esc(pageTitle(title))).replaceAll('{{MODIFIED}}', modified)
+  .replaceAll('{{TITLE}}', esc(title)).replaceAll('{{DESCRIPTION}}', esc(description)).replaceAll('{{URL}}', url)
+  .replaceAll('{{DATE}}', date).replace('{{BYLINE}}', byline).replace('{{JSONLD}}', JSON.stringify(jsonld).replace(/</g, '\\u003c'))
+  .replace('<!--BODY-->', withIds(body).replaceAll('{{SITE}}', SITE).replaceAll('{{REPO}}', REPO));
+
 const out = join(here, 'dist');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
-const html = page('index.html');
+for (const g of guides) {
+  const url = `${SITE}/guides/${g.slug}/`;
+  mkdirSync(join(out, 'guides', g.slug), { recursive: true });
+  writeFileSync(join(out, 'guides', g.slug, 'index.html'), guidePage({
+    title: g.title, description: g.description, url, date: g.date, modified: g.updated ?? g.date, body: g.body,
+    byline: `Koren Gast · Updated <time datetime="${g.updated ?? g.date}">${longDate(g.updated ?? g.date)}</time>`,
+    jsonld: { '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: `${SITE}/og.png`, publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
+  }));
+}
+if (guides.length) writeFileSync(join(out, 'guides', 'index.html'), guidePage({
+  title: 'Guides', description: 'How to run your coding agent CLI as a personal assistant from WhatsApp and Telegram.',
+  url: `${SITE}/guides/`, date: guides[0].date, byline: 'Angelia',
+  body: '<ul>' + guides.map((g) => `<li><a href="/guides/${g.slug}/">${esc(g.title)}</a><br><span class="meta">${g.date} · ${esc(g.description)}</span></li>`).join('') + '</ul>',
+  jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: 'Angelia guides', url: `${SITE}/guides/` },
+}));
+// The comparison guide, linked from the home page once it is published.
+const COMPARE = 'claude-code-whatsapp-telegram';
+const html = page('index.html')
+  .replace('<!--GUIDES-->', guides.length ? '<li><a href="/guides/">Guides</a></li>' : '')
+  .replace('<!--COMPARE-->', guides.some((g) => g.slug === COMPARE)
+    ? `<p class="sub compare"><a href="/guides/${COMPARE}/">Remote Control, Claude Code channels, a WhatsApp plugin or Angelia? Four ways compared →</a></p>` : '');
 writeFileSync(join(out, 'index.html'), html);
 writeFileSync(join(out, '404.html'), page('404.html'));
 writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SITE}/sitemap.xml\n`);
 writeFileSync(join(out, 'sitemap.xml'),
-  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc></url></urlset>\n`);
+  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc></url>` +
+  (guides.length ? `<url><loc>${SITE}/guides/</loc></url>` : '') +
+  guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') + '</urlset>\n');
 copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
@@ -111,4 +157,4 @@ writeFileSync(join(out, '_headers'), [
   '  Cache-Control: public, max-age=2592000',
   '',
 ].join('\n'));
-console.log('site/dist written', (html.length / 1024).toFixed(1) + ' kB', `install -> v${version}`);
+console.log('site/dist written', (html.length / 1024).toFixed(1) + ' kB', `install -> v${version}`, `guides: ${guides.length}`);

@@ -1,0 +1,108 @@
+<!--{
+  "title": "Claude Code on WhatsApp and Telegram: four ways compared",
+  "description": "Claude Code has no official WhatsApp channel. Remote Control, the Telegram channel, a WhatsApp plugin and Angelia compared: setup, limits, which to pick.",
+  "date": "2026-10-02",
+  "draft": false
+}-->
+<p class="lede">You have Claude Code set up the way you like it: your files, your skills, your MCP servers. Now you want it in your pocket. Four ways keep that setup and let you reach it from your phone, and they solve different problems. I built one of them, Angelia, and this page is on its site, so I'll say up front where the others are the better choice.</p>
+
+<p>Short answer: there is no official WhatsApp channel. Anthropic's channels cover Telegram, Discord and iMessage. Of the options that keep your own Claude Code setup, WhatsApp takes a community plugin or Angelia.</p>
+<ul>
+  <li>Keep steering one coding session from your phone: <a href="#remote-control"><strong>Remote Control</strong></a>.</li>
+  <li>Ask a running session a quick question from Telegram, Discord or iMessage: an <a href="#official-channels"><strong>official channel</strong></a>.</li>
+  <li>The same on WhatsApp, from your own number: a <a href="#whatsapp-plugins"><strong>community plugin</strong></a>.</li>
+  <li>A separate session per chat, each in its own folder with its own rules, running in the background: <a href="#angelia"><strong>Angelia</strong></a> (mine; macOS only for now, and WhatsApp needs a second number).</li>
+</ul>
+<p>All four run on your computer, against your files, so the computer has to be on.</p>
+
+<p class="fine">Checked against the Claude Code docs on <a href="https://code.claude.com/docs/en/remote-control">Remote Control</a> and <a href="https://code.claude.com/docs/en/channels">channels</a> on 2 October 2026. Channels are a research preview, so their flags may change.</p>
+
+<h2 id="side-by-side">Side by side</h2>
+<div class="table"><table>
+<thead><tr><th></th><th>Remote Control</th><th>Official channels</th><th>WhatsApp plugin</th><th>Angelia</th></tr></thead>
+<tbody>
+<tr><td>Where you chat</td><td>Claude app, browser</td><td>Telegram, Discord, iMessage</td><td>WhatsApp</td><td>WhatsApp, Telegram (Claude app too, optional)</td></tr>
+<tr><td>Replies come from</td><td>You, in the Claude app</td><td>Your bot (iMessage: your account)</td><td>Your own number</td><td>Your bot, or a second number</td></tr>
+<tr><td>Sign-in</td><td>claude.ai plan</td><td>claude.ai or Console API key</td><td>Same as channels</td><td>Your CLI's login (Claude Code: claude.ai)</td></tr>
+<tr><td>Sessions</td><td>One per process; many in server mode</td><td>The one open session</td><td>The one open session</td><td>One per chat</td></tr>
+<tr><td>After a reboot or crash</td><td>You start it again</td><td>You start it again, or run it as a service</td><td>Same as channels</td><td>Starts at login, once installed as a service</td></tr>
+<tr><td>Other people</td><td>Just you</td><td>Allowlist; anyone on it can approve</td><td>Allowlist; anyone on it can approve</td><td>Per chat; only owners approve</td></tr>
+<tr><td>CLIs</td><td>Claude Code</td><td>Claude Code</td><td>Claude Code (others without push)</td><td>Claude Code, Codex, Grok Build, pi</td></tr>
+<tr><td>Status</td><td>Built in</td><td>Research preview</td><td>Community, Apache-2.0</td><td>Community, MIT, v0.3</td></tr>
+</tbody>
+</table></div>
+
+<p>Whichever you pick, the agent runs on your machine with the permissions you give it, and prompt injection is not solved for any of them: a web page or a forwarded message can still talk it into anything those permissions allow.</p>
+
+<h2 id="remote-control">Remote Control: Claude Code in the Claude app</h2>
+<p>Remote Control is built into Claude Code. You start a session on your computer with <code>claude --remote-control</code> (or <code>/rc</code> in a running session), and it shows up in the Claude app on your phone and at claude.ai/code. The work still runs on your machine, against your real files; the phone is a window into it. It is the odd one out here: not a chat app.</p>
+<ul>
+  <li><strong>Needs:</strong> a Pro, Max, Team or Enterprise plan; on Team and Enterprise an Owner turns it on first. API keys do not work, and neither do Bedrock, Google Cloud, Foundry or a custom <code>ANTHROPIC_BASE_URL</code>.</li>
+  <li><strong>Good at:</strong> picking up exactly where you left off at your desk, with the full session: progress, subagents, permission prompts, and push notifications once you turn them on. You can send photos and files from the phone, and it reconnects by itself after your laptop sleeps. A server mode (<code>claude remote-control</code>) serves up to 32 sessions at once by default; they share one folder unless you give each its own git worktree (<code>--spawn worktree</code>).</li>
+  <li><strong>Not for:</strong> WhatsApp, Telegram or a group: the session is yours alone. While it is connected, the transcript is stored on Anthropic's servers, and organizations with Zero Data Retention can't turn it on.</li>
+</ul>
+
+<h2 id="official-channels">Claude Code on Telegram, Discord and iMessage: official channels</h2>
+<p>A channel is an MCP server, installed as a plugin, that pushes messages into a session that is already running and lets Claude reply in the same chat. Anthropic ships three: Telegram, Discord and iMessage. For Telegram, create a bot with BotFather, then start Claude Code and run:</p>
+<pre><code>/plugin install telegram@claude-plugins-official
+/telegram:configure &lt;token&gt;</code></pre>
+<p>(If the configure command is not found, run <code>/reload-plugins</code>.) Exit, and start it again from your shell with the channel on:</p>
+<pre><code>claude --channels plugin:telegram@claude-plugins-official</code></pre>
+<p>Message your bot. It answers with a pairing code. Back in Claude Code, pair, then lock the bot to your account:</p>
+<pre><code>/telegram:access pair &lt;code&gt;
+/telegram:access policy allowlist</code></pre>
+<ul>
+  <li><strong>Needs:</strong> a claude.ai login or a Console API key, and Bun. On Team and Enterprise an Owner has to turn channels on. Not on Bedrock, Google Cloud or Foundry.</li>
+  <li><strong>Good at:</strong> a quick question from your phone to the session you have open, with an allowlist of who may write to it. All three official channels relay permission prompts, so you approve or deny from the chat; anyone on the allowlist can approve too. Telegram and Discord also work in groups: you opt each group in, and the bot answers only when mentioned or replied to.</li>
+  <li><strong>Keep in mind:</strong> messages arrive only while that session is open, so for "always on" you keep Claude running in a persistent terminal or a background process. Every chat feeds that one session, in one working folder. The terminal shows the incoming message, but the reply text appears only in the chat.</li>
+</ul>
+
+<h2 id="whatsapp-plugins">Claude Code on WhatsApp: community plugins</h2>
+<p>WhatsApp is where many people actually talk, so the community filled the gap. The most starred plugin on GitHub, <a href="https://github.com/Rich627/whatsapp-claude-plugin">whatsapp-claude-plugin</a> (about 100 stars in October 2026, Apache-2.0), links to your WhatsApp account as a linked device (like WhatsApp Web) and works as a channel: voice notes, access control, approvals from the chat, even per-group personalities with their own notes. Claude replies as you, from your own number. Other WhatsApp plugins exist; this section and the table describe this one.</p>
+<pre><code>claude plugin marketplace add Rich627/whatsapp-claude-plugin
+claude plugin install whatsapp-channel@whatsapp-claude-plugin
+claude --dangerously-load-development-channels plugin:whatsapp-channel@whatsapp-claude-plugin</code></pre>
+<ul>
+  <li><strong>Needs:</strong> Bun, and that last flag. Claude Code documents it for testing channels you are building; the plugin's README says <code>--channels</code> does not accept it yet, so the flag is what lets a WhatsApp message wake the session.</li>
+  <li><strong>Good at:</strong> the channel experience on WhatsApp, on the number you already have, without a business account or an API.</li>
+  <li><strong>Keep in mind:</strong> every chat feeds one Claude session, in one folder, with one set of permissions; a per-group personality changes how it talks, not what it can reach. It lives only while that session runs, and only one process can hold the WhatsApp link at a time.</li>
+</ul>
+<p>Both this plugin and Angelia link as an unofficial client, not through the WhatsApp Business API, and a linked device can read every chat on its account. WhatsApp can ban a number it sees acting like a bot; with the plugin, that is your personal number. Read the code of anything that sees your messages and runs commands, Angelia's installer included.</p>
+
+<h2 id="angelia">Angelia: one assistant per chat</h2>
+<p><a href="/">Angelia</a> takes a different angle. It is not a plugin inside a session. It is a small program that runs in the background on your Mac, connects to WhatsApp and Telegram, and starts your CLI for each chat. Each chat is routed to a profile: a folder with its own instruction file and memory. Each chat keeps its own session. The family group, your side project and your money can each have their own assistant. The agent works in the profile's folder, not in your current repo; to give it a repo, list it in the profile's <code>add_dirs</code>. In a group it answers only when someone mentions it or replies to it, and only to the people you allow.</p>
+<pre><code>curl -fsSL https://useangelia.com/install | sh
+angelia service install</code></pre>
+<p>The first line checks the release's signature, installs Angelia and starts the setup; you can <a href="https://github.com/{{REPO}}/blob/main/install.sh">read the script</a> first. The second makes it start at login and come back after a crash.</p>
+<figure class="video"><video controls muted playsinline preload="none" poster="/demo-poster.jpg" width="1920" height="1080" aria-label="Installing Angelia: from the install command to the first reply"><source src="/angelia-demo.webm" type="video/webm"><source src="/angelia-demo-muted.mp4" type="video/mp4"><a href="/angelia-demo-muted.mp4">Download the video</a></video><figcaption>The install command, the signature check, the setup wizard and the first reply. 48 seconds, sped up.</figcaption></figure>
+<ul>
+  <li><strong>Needs:</strong> macOS, Node 22 or newer, git, and a CLI you already use, signed in to your own account: Claude Code (2.1.270 or newer), Codex, Grok Build or pi. A Telegram bot: setup asks for its token. For WhatsApp, also a second, established number, not your personal one: Angelia ignores what its own account sends, so on your personal number it would not hear you. WhatsApp bans newly created numbers that start acting like bots, often within hours.</li>
+  <li><strong>Good at:</strong> an assistant per chat that answers whenever your Mac is on. A command the profile may not run on its own comes to the chat and waits for an owner's yes; no answer means no. Voice notes (with Whisper installed) and scheduled check-ins work too. API keys are kept out of the CLI's environment, so in the default mode a chat cannot switch you to per-token billing.</li>
+  <li><strong>Keep in mind:</strong> it is a young project (v0.3), maintained by one person. Each chat keeps a warm CLI process, so ten chats are ten processes on your Mac, all drawing on the same plan limits.</li>
+  <li><strong>Security:</strong> every profile is compiled with deny rules for your credentials and the other profiles' folders, but a deny stops the CLI's file tools, not every program it runs. For a profile other people can talk to, keep shell commands asking, or set <code>sandbox: true</code>. Its WhatsApp link can read every chat on the second number.</li>
+  <li><strong>Privacy:</strong> Angelia has no server. Each turn goes to your CLI's provider under that CLI's own terms; Telegram keeps bot messages on its servers, and WhatsApp messages are end-to-end encrypted to the linked device.</li>
+</ul>
+<p><strong>With Remote Control</strong> (optional, Claude Code only): set <code>tui: true</code> on a profile and install tmux 3.7 or newer. The profile then runs as a real interactive session that registers with Remote Control, so the chat also shows up in the Claude app and you can carry on there. What you type in the app stays in the app; it does not go back to the chat. Remote Control's terms apply: a claude.ai plan, and the transcript is stored on Anthropic's servers while connected.</p>
+<figure class="shot"><img src="/guides/claude-app-recents.jpg" width="443" height="450" loading="lazy" alt="The Claude app on a phone, Recents list: Claude Code sessions named angelia-make-me-rich, angelia-sports-health-assistant, angelia-inbox-zero-hero, angelia-dinner-decider, angelia-family, cc-code-lab and angelia-plant-whisperer"><figcaption>The Claude app's Recents list. Each &lt;/&gt; row is a Claude Code session: the angelia-… rows are Angelia chats (profile names made up), cc-code-lab is an ordinary one.</figcaption></figure>
+
+<h2 id="when-not-angelia">When not to use Angelia</h2>
+<ul>
+  <li>You only want to keep an eye on a coding session while you make coffee. Remote Control does that better, with the full session view.</li>
+  <li>You live in Discord or iMessage. Use the official channel.</li>
+  <li>You want one assistant on your own WhatsApp number, and all your chats can share one session, one folder and one set of permissions. The plugin is simpler: nothing to route, no second number, and it already has per-group personalities.</li>
+  <li>You pay for Claude Code with a Console API key. Angelia's Claude Code profiles need a claude.ai login; channels accept a key.</li>
+  <li>You are on Linux or Windows, or your Mac sleeps in a bag all day. Angelia is macOS only for now (Linux is next), and it answers only while the Mac is on.</li>
+</ul>
+
+<h2 id="also-possible">Also possible, not covered here</h2>
+<ul>
+  <li>Dispatch: sends a task from the Claude app to Claude Desktop on your computer. Close to an assistant in your pocket, but it lives in the Claude app, not a chat app.</li>
+  <li>Claude in Slack and cloud sessions at claude.ai/code: they run on Anthropic's machines, not yours.</li>
+  <li>SSH into tmux from your phone: free and works with any CLI, but you type in a terminal on a phone keyboard, with no chat.</li>
+  <li>Full agents such as OpenClaw or Hermes Agent: they run their own agent rather than your Claude Code setup.</li>
+</ul>
+
+<h2 id="why-i-built-it">Why I built it</h2>
+<p>I tried the personal agents: OpenClaw, Instinct, Grok Bot, Hermes Agent and more. Hermes Agent was my favorite, but I liked my own Claude Code better, with the skills and MCP servers I had already set up. Two things were missing: separate profiles, each with its own instructions and memory, and an easy way to reach all of them from my pocket. So Angelia was born from my Hermes setup, and it took its name from there. In Greek myth, Hermes carried the words of the gods; his daughter Angelia carried only the message. That is the whole job.</p>
+
+<p>Angelia is free and open source (MIT). The code and docs are on <a href="https://github.com/{{REPO}}">GitHub</a>.</p>
