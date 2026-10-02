@@ -23,6 +23,8 @@ h1{font-weight:600;font-size:clamp(26px,5vw,38px);letter-spacing:-.03em;line-hei
 h1 span{font-weight:400;color:var(--accent)}
 p{color:var(--soft);margin:0 0 26px}
 a{display:inline-block;padding:11px 20px;border-radius:999px;background:var(--disc);color:#1A120D;text-decoration:none;font-weight:600}
+.more{margin:22px 0 0}
+.more a.plain{display:inline;padding:0;background:none;color:inherit;font-weight:400;text-decoration:underline;text-underline-offset:3px}
 @media (prefers-color-scheme: dark){a{background:#D06B6B}}
 </style>
 </head>
@@ -34,8 +36,8 @@ a{display:inline-block;padding:11px 20px;border-radius:999px;background:var(--di
     <svg class="fig"><use href="#mark"/></svg>
   </div>
   <h1>This message went astray. <span>Nothing is here.</span></h1>
-  <p>The page you asked for does not exist.</p>
-  <a href="/">Back to Angelia</a>
+    <a href="/">Back to Angelia</a>
+  <p class="more"><a class="plain" href="/guides/">Guides</a> · <a class="plain" href="https://github.com/{{REPO}}">GitHub</a></p>
 </main>
 </body>
 </html>

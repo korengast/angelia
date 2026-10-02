@@ -51,12 +51,19 @@ const page = (name) => readFileSync(join(here, 'src', name), 'utf8')
   .replaceAll('{{REPO}}', REPO)
   .replaceAll('{{VERSION}}', version);
 
+const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
 if (process.argv.includes('--og')) {
   const out = join(tmpdir(), 'angelia-og');
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, 'og.html'), page('og.html'));
   writeFileSync(join(out, 'banner.html'), page('banner.html'));
+  // One card per guide, its title in place of the slogan: render og-<slug>.html into site/static/guides/<slug>/og.png.
+  for (const f of readdirSync(join(here, 'guides')).filter((x) => x.endsWith('.html'))) {
+    const { title } = JSON.parse(readFileSync(join(here, 'guides', f), 'utf8').match(/^<!--(\{[\s\S]*?\})-->\n/)[1]);
+    writeFileSync(join(out, `og-${f}`), page('og.html').replace(/<h1>[\s\S]*?<\/h1>/, `<h1 class="guide">${esc(title)}</h1>`).replace('On WhatsApp and Telegram. On your machine.', 'A guide from Angelia.'));
+  }
   cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
   console.log(`${out}: og.html at 1200x630 into site/static/og.png, banner.html at 1280x400 (2x) into site/static/banner.png`);
   process.exit(0);
@@ -64,7 +71,6 @@ if (process.argv.includes('--og')) {
 
 // Guides: site/guides/<slug>.html is the article body, headed by a JSON comment (title, description,
 // date, optional updated, draft). A draft is left out of the site and the sitemap unless --drafts.
-const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const AUTHOR = { '@type': 'Person', name: 'Koren Gast', url: 'https://github.com/korengast' };
 const guides = readdirSync(join(here, 'guides')).filter((f) => f.endsWith('.html')).map((f) => {
   const src = readFileSync(join(here, 'guides', f), 'utf8');
@@ -79,12 +85,16 @@ const longDate = (d) => { const [y, m, day] = d.split('-').map(Number); return `
 // Every h2 gets an id (from its text when it has none), so a section can be linked to.
 const slugify = (t) => t.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const withIds = (body) => body.replace(/<h2>([\s\S]*?)<\/h2>/g, (_, inner) => `<h2 id="${slugify(inner)}">${inner}</h2>`);
-const guidePage = ({ title, description, url, date, modified = date, byline, body, jsonld }) => page('guide.html')
+const guidePage = ({ title, description, url, date, modified = date, byline, body, jsonld, ogType = 'article', ogImage = `${SITE}/og.png`, ogAlt = 'Angelia. Your coding agent. Your personal assistant.' }) => page('guide.html')
+  .replace('{{OGTYPE}}', ogType).replace('{{OGIMAGE}}', ogImage).replace('{{OGALT}}', esc(ogAlt))
+  .replace('<!--ARTICLE-->', ogType === 'article' ? `<meta property="article:published_time" content="${date}">\n<meta property="article:modified_time" content="${modified}">` : '')
   .replaceAll('{{PAGETITLE}}', esc(pageTitle(title))).replaceAll('{{MODIFIED}}', modified)
   .replaceAll('{{TITLE}}', esc(title)).replaceAll('{{DESCRIPTION}}', esc(description)).replaceAll('{{URL}}', url)
   .replaceAll('{{DATE}}', date).replace('{{BYLINE}}', byline).replace('{{JSONLD}}', JSON.stringify(jsonld).replace(/</g, '\\u003c'))
-  .replace('<!--BODY-->', withIds(body).replaceAll('{{SITE}}', SITE).replaceAll('{{REPO}}', REPO));
+  .replace('<!--BODY-->', withIds(body).replaceAll('{{SITE}}', SITE).replaceAll('{{REPO}}', REPO).replaceAll('{{VERSION}}', version));
 
+// A guide's own share card, when one has been rendered: site/static/guides/<slug>/og.png (see --og).
+const guideOg = (slug) => existsSync(join(here, 'static', 'guides', slug, 'og.png')) ? `${SITE}/guides/${slug}/og.png` : `${SITE}/og.png`;
 const out = join(here, 'dist');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
@@ -93,20 +103,21 @@ for (const g of guides) {
   mkdirSync(join(out, 'guides', g.slug), { recursive: true });
   writeFileSync(join(out, 'guides', g.slug, 'index.html'), guidePage({
     title: g.title, description: g.description, url, date: g.date, modified: g.updated ?? g.date, body: g.body,
+    ogImage: guideOg(g.slug), ogAlt: g.title,
     byline: `Koren Gast · Updated <time datetime="${g.updated ?? g.date}">${longDate(g.updated ?? g.date)}</time>`,
-    jsonld: { '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: `${SITE}/og.png`, publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
+    jsonld: { '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: guideOg(g.slug), publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
   }));
 }
 if (guides.length) writeFileSync(join(out, 'guides', 'index.html'), guidePage({
   title: 'Guides', description: 'How to run your coding agent CLI as a personal assistant from WhatsApp and Telegram.',
-  url: `${SITE}/guides/`, date: guides[0].date, byline: 'Angelia',
+  url: `${SITE}/guides/`, date: guides[0].date, byline: 'Angelia', ogType: 'website',
   body: '<ul>' + guides.map((g) => `<li><a href="/guides/${g.slug}/">${esc(g.title)}</a><br><span class="meta">${g.date} · ${esc(g.description)}</span></li>`).join('') + '</ul>',
   jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: 'Angelia guides', url: `${SITE}/guides/` },
 }));
 // The comparison guide, linked from the home page once it is published.
 const COMPARE = 'claude-code-whatsapp-telegram';
 const html = page('index.html')
-  .replace('<!--GUIDES-->', guides.length ? '<li><a href="/guides/">Guides</a></li>' : '')
+  .replace('<!--GUIDES-->', guides.length ? '<li class="keep"><a href="/guides/">Guides</a></li>' : '')
   .replace('<!--COMPARE-->', guides.some((g) => g.slug === COMPARE)
     ? `<p class="sub compare"><a href="/guides/${COMPARE}/">Remote Control, Claude Code channels, a WhatsApp plugin or Angelia? Four ways compared →</a></p>` : '');
 writeFileSync(join(out, 'index.html'), html);
@@ -144,7 +155,8 @@ for (const [name, sha] of Object.entries(MEDIA)) {
 // The short install line. It points at the install.sh attached to the release, byte for byte the one in
 // the signed tag (it carries that release's key), because GitHub counts an asset's downloads.
 writeFileSync(join(out, '_redirects'),
-  `/install https://github.com/${REPO}/releases/download/v${version}/install.sh 302\n`);
+  `/install https://github.com/${REPO}/releases/download/v${version}/install.sh 302\n` +
+  `/docs https://github.com/${REPO}#readme 302\n/docs/ https://github.com/${REPO}#readme 302\n`);
 writeFileSync(join(out, '_headers'), [
   '/*',
   '  X-Content-Type-Options: nosniff',

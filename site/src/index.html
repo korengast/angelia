@@ -37,31 +37,35 @@
   --ground:var(--paper); --figure:var(--ink); --on-ground:var(--ink); --on-ground-soft:var(--muted);
   --disc:var(--clay); --road:var(--clay); --btn:var(--clay); --btn-fg:var(--ink);
   --bg:var(--paper); --bg-2:var(--paper-2); --fg:var(--ink); --fg-soft:var(--muted); --rule:var(--line);
-  --accent:var(--clay-deep);
-  --code-bg:var(--ink); --code-fg:#F1E4D4; --code-dim:#A89280; --code-key:#F0AAAA;
+  --accent:var(--clay-deep); --accent-tint:#96393D;
+  --code-bg:var(--ink); --code-fg:#F1E4D4; --code-dim:#A89280; --code-key:#F0AAAA; --code-edge:transparent;
 }
 /* dark mode is a red-figure cup: clay figures on black */
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     --ground:#15100C; --figure:var(--clay); --on-ground:#F1E4D4; --on-ground-soft:#BFA893; --disc:transparent; --road:var(--clay); --btn:var(--clay); --btn-fg:#15100C;
     --bg:#15100C; --bg-2:#1E1712; --fg:#F1E4D4; --fg-soft:#AE9A88; --rule:#3A2D24;
-    --accent:var(--clay-soft); --code-bg:#0E0A08;
+    --accent:var(--clay-soft); --accent-tint:var(--clay-soft); --code-bg:#0E0A08; --code-edge:#3A2D24;
   }
 }
 :root[data-theme="dark"]{
   --ground:#15100C; --figure:var(--clay); --on-ground:#F1E4D4; --on-ground-soft:#BFA893; --disc:transparent; --road:var(--clay); --btn:var(--clay); --btn-fg:#15100C;
   --bg:#15100C; --bg-2:#1E1712; --fg:#F1E4D4; --fg-soft:#AE9A88; --rule:#3A2D24;
-  --accent:var(--clay-soft); --code-bg:#0E0A08;
+  --accent:var(--clay-soft); --accent-tint:var(--clay-soft); --code-bg:#0E0A08; --code-edge:#3A2D24;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font:400 15.5px/1.65 "IBM Plex Mono",ui-monospace,monospace;-webkit-font-smoothing:antialiased}
 a{color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+.install :focus-visible,.not :focus-visible{outline-color:var(--code-key)}
+.skip{position:absolute;left:12px;top:-60px;z-index:10;background:var(--ink);color:#F1E4D4;padding:10px 14px;border-radius:8px;text-decoration:none}
+.skip:focus{top:12px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 code,pre,.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
 .wrap{max-width:1160px;margin:0 auto;padding:0 28px}
 .hero .wrap>*,.how .grid>*,.install code{min-width:0}
 html,body{overflow-x:clip}
-.serif{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600}
 
 /* header */
 header{background:var(--ground);color:var(--on-ground)}
@@ -76,25 +80,23 @@ header{background:var(--ground);color:var(--on-ground)}
 .hero{background:var(--ground);color:var(--on-ground);padding:40px 0 88px}
 .hero .wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:56px;align-items:center}
 .eyebrow{font:500 12px/1 "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--on-ground-soft)}
-h1{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:clamp(34px,4.6vw,60px);line-height:1.04;letter-spacing:-.035em;margin:22px 0 26px}
+h1{text-wrap:balance;font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:clamp(34px,4.6vw,60px);line-height:1.04;letter-spacing:-.035em;margin:22px 0 26px}
 h1 em,h2 em{font-style:normal;font-weight:400}
 h1 em{display:block;color:var(--accent)}
-.rot{display:inline-grid;vertical-align:bottom;overflow:hidden;height:1.04em}
-.rot span{grid-area:1/1;animation:rot 6s infinite}
-.rot span+span{animation-delay:-3s}
-@keyframes rot{0%,42%{transform:translateY(0);opacity:1}50%{transform:translateY(-110%);opacity:0}50.01%,92%{transform:translateY(110%);opacity:0}100%{transform:translateY(0);opacity:1}}
-@media (prefers-reduced-motion:reduce){.rot span{animation:none}.rot span+span{display:none}}
 .lede{font-size:19px;max-width:34em;color:var(--on-ground);margin:0 0 32px}
-.install{background:var(--code-bg);color:var(--code-fg);border-radius:10px;padding:16px 16px 16px 20px;display:flex;align-items:center;gap:14px;max-width:620px}
+.install{box-shadow:inset 0 0 0 1px var(--code-edge);background:var(--code-bg);color:var(--code-fg);border-radius:10px;padding:16px 16px 16px 20px;display:flex;align-items:center;gap:14px;max-width:620px}
 .install code{font-size:14px;white-space:nowrap;overflow-x:auto;flex:1;scrollbar-width:none}
 .install code::-webkit-scrollbar{display:none}
 .install .p{color:var(--code-dim);user-select:none}
-.copy{flex:none;background:transparent;border:1px solid #4A3A2E;color:var(--code-fg);border-radius:7px;padding:7px 12px;font:500 13px "IBM Plex Mono",monospace;cursor:pointer}
+.copy{flex:none;background:transparent;border:1px solid #7A6352;color:var(--code-fg);border-radius:7px;padding:7px 12px;font:500 13px "IBM Plex Mono",monospace;cursor:pointer}
 .copy:hover{border-color:var(--code-key)}
 .ctas{display:flex;gap:12px;margin-top:18px;flex-wrap:wrap}
 .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:999px;font-weight:500;font-size:15px;text-decoration:none;border:1.5px solid var(--on-ground)}
 .btn.solid{background:var(--btn);color:var(--btn-fg);border-color:var(--btn)}
 .fine{font-size:14px;color:var(--on-ground-soft);margin-top:22px}
+.fine+.fine{margin-top:8px}
+.fine a{text-underline-offset:3px}
+.fine code{font-size:13px}
 
 /* the cup: a tondo with a meander ring */
 .tondo{position:relative;aspect-ratio:1;width:100%;max-width:470px;justify-self:end}
@@ -107,6 +109,7 @@ h1 em{display:block;color:var(--accent)}
 .road svg{display:block;width:100%;height:26px}
 
 section{padding:104px 0}
+.how .kicker{color:var(--accent-tint)}
 .kicker{font:500 12px/1 "IBM Plex Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0 0 18px}
 h2{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:clamp(28px,3.4vw,42px);line-height:1.1;letter-spacing:-.03em;margin:0 0 20px}
 
@@ -152,7 +155,7 @@ h2{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:
 .step .k{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:24px;line-height:1;color:var(--accent)}
 .step h3{margin:0 0 6px;font-size:19px;font-weight:600}
 .step p{margin:0;color:var(--fg-soft)}
-pre.yaml{background:var(--code-bg);color:var(--code-fg);border-radius:12px;padding:20px 22px;font-size:12px;line-height:1.7;overflow-x:auto;margin:28px 0 0}
+pre.yaml{box-shadow:inset 0 0 0 1px var(--code-edge);background:var(--code-bg);color:var(--code-fg);border-radius:12px;padding:20px 22px;font-size:12px;line-height:1.7;overflow-x:auto;margin:28px 0 0}
 pre.yaml .c{color:var(--code-dim)} pre.yaml .k{color:var(--code-key)}
 
 /* features */
@@ -193,21 +196,25 @@ footer a{text-decoration:none}
 
 @media (max-width:960px){
   .hero .wrap,.how .grid{grid-template-columns:1fr}
-  .tondo{justify-self:center;max-width:360px;order:-1}
+  .tondo{justify-self:center;max-width:280px;order:-1}
   .feat{grid-template-columns:1fr 1fr}
   .not ul{grid-template-columns:1fr 1fr}
 }
 @media (max-width:640px){
   .wrap{padding:0 16px}
-  .nav ul li:not(:last-child){display:none}
+  .nav ul{gap:22px}
+  .nav ul li:not(.keep){display:none}
   .hero{padding:12px 0 64px}
-  .tondo{max-width:260px}
+  .hero .tondo{max-width:170px;order:0;margin-top:8px}
   h1{margin-top:16px}
   .lede{font-size:17px}
   .eyebrow{letter-spacing:.08em;font-size:11px}
   .two,.feat,.not ul{grid-template-columns:1fr}
   section{padding:72px 0}
-  .install code{font-size:12.5px}
+  .install{flex-direction:column;align-items:stretch;gap:10px;padding:14px 16px}
+  .install code{font-size:12.5px;white-space:normal;overflow-wrap:anywhere}
+  .install .copy{align-self:flex-start}
+  pre.yaml{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11.5px;padding:16px}
   th:nth-child(3),td:nth-child(3){display:none}
 }
 </style>
@@ -220,6 +227,7 @@ footer a{text-decoration:none}
 </script>
 </head>
 <body>
+<a class="skip" href="#top">Skip to content</a>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <!--MARK-->
   <symbol id="meander" viewBox="0 0 20 20"><path d="M0 18 H20 M16 18 V2 H4 V14 H12 V6 H8 V10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"/></symbol>
@@ -233,7 +241,7 @@ footer a{text-decoration:none}
       <li><a href="#features">Features</a></li>
       <!--GUIDES-->
       <li><a href="https://github.com/{{REPO}}#readme">Docs</a></li>
-      <li><a href="https://github.com/{{REPO}}">GitHub</a></li>
+      <li class="keep"><a href="https://github.com/{{REPO}}">GitHub</a></li>
     </ul>
   </nav>
 </header>
@@ -245,12 +253,13 @@ footer a{text-decoration:none}
       <div class="eyebrow">Open source · MIT · Runs on your machine</div>
       <h1>Your coding agent. <em>Your personal assistant.</em></h1>
       <p class="lede">Angelia turns the coding agent CLI you already know and trust into the brain of your personal assistant. It lives in your WhatsApp and Telegram, runs on your own machine, and works with your tools and your subscription.</p>
-      <div class="install"><code><span class="p">$ </span>curl -fsSL {{SITE}}/install | sh</code><button class="copy" data-copy="curl -fsSL {{SITE}}/install | sh">Copy</button></div>
+      <div class="install"><code><span class="p">$ </span>curl -fsSL {{SITE}}/install | sh</code><button class="copy" data-copy="curl -fsSL {{SITE}}/install | sh" aria-label="Copy install command">Copy</button></div>
+      <p class="fine">It checks the release's signature, then a wizard pairs your first chat. To keep Angelia running after you close the terminal: <code>angelia service install</code>. <a href="https://github.com/{{REPO}}/blob/v{{VERSION}}/install.sh">Read the script</a></p>
       <div class="ctas">
         <a class="btn solid" href="https://github.com/{{REPO}}#quick-start">Quick start</a>
         <a class="btn" href="https://github.com/{{REPO}}">View on GitHub</a>
       </div>
-      <p class="fine">Alpha · macOS · Open source</p>
+      <p class="fine">Alpha · macOS, Node 22+ · Chat through a Telegram bot, or a second WhatsApp number, not your own (<a href="/guides/claude-code-whatsapp-telegram/#angelia">why</a>).</p>
     </div>
     <div class="tondo" aria-hidden="true">
       <svg class="ring" viewBox="0 0 400 400"><!--RING--></svg>
@@ -305,7 +314,7 @@ footer a{text-decoration:none}
     <h2>One chat, <em>one folder.</em></h2>
     <p class="sub">Every chat gets its own folder and its own session. One YAML file says which is which, and the setup wizard writes it for you.</p>
     <div class="grid">
-      <div class="phone" aria-label="Example chat">
+      <div class="phone" role="figure" aria-label="Example chat">
         <div class="top"><svg><use href="#mark"/></svg><div><b>side-project</b><small>you, Angelia</small></div></div>
         <div class="msg me">Why did last night's build fail?</div>
         <div class="msg bot">The date parser test fails on the day the clocks change. The fix is one line in <code>src/date.ts</code>. Apply it?</div>
@@ -343,7 +352,7 @@ footer a{text-decoration:none}
       <div><h3>Every chat remembers</h3><p>Each chat keeps its own session, even after a restart. <code>/new</code> starts fresh.</p></div>
       <div><h3>Quiet in groups</h3><p>It answers only when mentioned, and only to people you allow. Strangers get nothing.</p></div>
       <div><h3>You approve risky steps</h3><p>Before a risky command, the chat asks. You reply yes or no. No reply means no.</p></div>
-      <div><h3>Voice notes and files</h3><p>Send a voice note, a photo or a PDF. The agent can answer with a voice note too.</p></div>
+      <div><h3>Voice notes and files</h3><p>Send a voice note, a photo or a PDF. Voice becomes text on your Mac (Whisper, optional). The agent can answer with a voice note too.</p></div>
       <div><h3>New group, new assistant</h3><p>Turn onboarding on, then mention the bot in a new group. It sets up its own folder and asks what the group is for.</p></div>
       <div><h3>Scheduled check-ins</h3><p>A morning summary, a weekly report. Your OS runs the schedule; the answer lands in the chat.</p></div>
       <div><h3>Scriptable</h3><p><code>angelia send</code> posts to any of your chats from a script. <code>angelia turn</code> asks the agent.</p></div>
@@ -358,7 +367,7 @@ footer a{text-decoration:none}
     <h2>Not another <em>AI assistant.</em></h2>
     <p class="sub">Other assistants ask you to learn a new agent, with its own model, skills and memory. Angelia does not add a brain. It gives the one you already know a phone, a schedule and a place for each part of your life.</p>
     <ul>
-      <li><b>No second model.</b>Angelia runs no AI of its own. Not even for speech.</li>
+      <li><b>No second model.</b>Angelia runs no LLM. Voice notes, if you want them, become text with Whisper, on your Mac.</li>
       <li><b>No middleman.</b>Your machine, your chat app, your CLI's own provider. No Angelia server, no telemetry.</li>
       <li><b>No new bill.</b>Your CLI, your account, your subscription.</li>
       <li><b>Nothing to relearn.</b>Skills, MCP servers and memory stay in your CLI.</li>
@@ -395,7 +404,7 @@ footer a{text-decoration:none}
       <svg class="fig"><use href="#mark"/></svg>
     </div>
     <h2>You already have the brain. <em>Give it a chat.</em></h2>
-    <div class="install"><code><span class="p">$ </span>curl -fsSL {{SITE}}/install | sh</code><button class="copy" data-copy="curl -fsSL {{SITE}}/install | sh">Copy</button></div>
+    <div class="install"><code><span class="p">$ </span>curl -fsSL {{SITE}}/install | sh</code><button class="copy" data-copy="curl -fsSL {{SITE}}/install | sh" aria-label="Copy install command">Copy</button></div>
     <p class="fine key">Every release is signed. Key <code>SHA256:74hZgwt/ABiUQz6C9A1r7hpHZtCRq1KfC1KvvCR1ys0</code></p>
   </div>
 </section>
@@ -406,9 +415,13 @@ footer a{text-decoration:none}
     <span><a href="mailto:info@useangelia.com">info@useangelia.com</a> · <a href="https://github.com/{{REPO}}">GitHub</a> · <a href="https://github.com/{{REPO}}/blob/main/LICENSE">MIT license</a></span>
   </div>
 </footer>
+<div class="sr" role="status" id="copied"></div>
 <script>
+const say=document.getElementById('copied');
 document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click',async()=>{
-  try{await navigator.clipboard.writeText(b.dataset.copy);b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1600)}catch(e){}
+  const show=(t)=>{b.textContent=t;say.textContent=t;setTimeout(()=>{b.textContent='Copy';say.textContent=''},1800)};
+  try{await navigator.clipboard.writeText(b.dataset.copy);show('Copied')}
+  catch(e){const r=document.createRange();r.selectNodeContents(b.previousElementSibling);const s=getSelection();s.removeAllRanges();s.addRange(r);show('Press ⌘C')}
 }));
 </script>
 </body>
