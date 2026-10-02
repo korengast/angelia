@@ -2,7 +2,8 @@
 // node site/build.mjs        ->  site/dist/, ready to upload as it is (Cloudflare Pages reads _redirects, _headers)
 // node site/build.mjs --og   ->  the share card and the README banner as pages in the temp folder; render them
 //                                into static/og.png (1200x630) and static/banner.png (1280x400 at 2x)
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync, rmSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,6 +74,27 @@ copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
 cpSync(join(here, 'static'), out, { recursive: true });
+// The demo video: kept out of the repository, which every install clones, and fetched from a release
+// download pinned by SHA-256. Cached in site/.media; a file that does not match is refused and the build
+// fails, so a deploy never serves something else.
+const MEDIA_RELEASE = `https://github.com/${REPO}/releases/download/site-media-1`;
+const MEDIA = {
+  'angelia-demo.webm': '5c4022c3fc5bed8dbe262033e37f3f8120202a2ec91885ebf61886d53ac98633',
+  'angelia-demo-muted.mp4': '95723b707888c9b961b8a9f5e05c3d2533762015ad692426b670135978568b31',
+};
+const cache = join(here, '.media');
+mkdirSync(cache, { recursive: true });
+for (const [name, sha] of Object.entries(MEDIA)) {
+  const file = join(cache, name);
+  const ok = () => existsSync(file) && createHash('sha256').update(readFileSync(file)).digest('hex') === sha;
+  if (!ok()) {
+    const res = await fetch(`${MEDIA_RELEASE}/${name}`);
+    if (!res.ok) throw new Error(`site media: ${name}: HTTP ${res.status} from ${MEDIA_RELEASE}`);
+    writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+    if (!ok()) throw new Error(`site media: ${name} does not match its pinned SHA-256; not deployed`);
+  }
+  copyFileSync(file, join(out, name));
+}
 // The short install line. It points at the install.sh attached to the release, byte for byte the one in
 // the signed tag (it carries that release's key), because GitHub counts an asset's downloads.
 writeFileSync(join(out, '_redirects'),
@@ -84,6 +106,8 @@ writeFileSync(join(out, '_headers'), [
   // Cloudflare Web Analytics (cookieless) injects its beacon script and posts to cloudflareinsights.com.
   "  Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; img-src 'self' data:; frame-ancestors 'none'",
   '/fonts/*',
+  '  Cache-Control: public, max-age=2592000',
+  '/angelia-demo*',
   '  Cache-Control: public, max-age=2592000',
   '',
 ].join('\n'));

@@ -41,6 +41,8 @@ Angelia runs no model of its own. It carries messages, files and approvals betwe
 curl -fsSL https://useangelia.com/install | sh
 ```
 
+https://github.com/user-attachments/assets/2532dfea-d4f9-4d07-830d-d1fa084e0690
+
 The installer checks Node, fetches the newest release, **verifies its signature** (release key `SHA256:74hZgwt/ABiUQz6C9A1r7hpHZtCRq1KfC1KvvCR1ys0`), installs it and starts the setup wizard. The wizard asks for a bot token and which CLI to use, makes your first profile, and pairs the chat when you send the bot a message.
 
 You need:

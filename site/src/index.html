@@ -113,6 +113,9 @@ h2{font-family:"IBM Plex Mono",ui-monospace,monospace;font-weight:600;font-size:
 .sub{color:var(--fg-soft);max-width:38em;margin:0}
 
 /* myth */
+.demo{padding:72px 0 0}
+.demo video{display:block;width:100%;height:auto;aspect-ratio:16/9;border-radius:10px;background:var(--code-bg)}
+.demo .fine{margin-top:14px}
 .myth{text-align:center;padding:96px 0 40px}
 .myth blockquote{margin:0 auto;max-width:860px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:clamp(19px,2.1vw,25px);line-height:1.5;font-weight:400;letter-spacing:-.01em}
 .myth blockquote em{color:var(--accent);font-style:normal}
@@ -253,6 +256,19 @@ footer a{text-decoration:none}
   </div>
 </div>
 <div class="road" aria-hidden="true"><svg><defs><pattern id="mp" width="26" height="26" patternUnits="userSpaceOnUse"><use href="#meander" width="26" height="26"/></pattern></defs><rect width="100%" height="26" fill="url(#mp)"/></svg></div>
+
+<section class="demo" id="demo">
+  <div class="wrap">
+    <p class="kicker">Install</p>
+    <h2>From one line to <em>your first message.</em></h2>
+    <video controls muted playsinline preload="none" poster="/demo-poster.jpg" width="1920" height="1080" aria-label="Installing Angelia: from the install line to the first message">
+      <source src="/angelia-demo.webm" type="video/webm">
+      <source src="/angelia-demo-muted.mp4" type="video/mp4">
+      <a href="/angelia-demo-muted.mp4">Download the demo video</a>
+    </video>
+    <p class="fine">The installer above, the setup wizard and the first chat, sped up. Real setup text and a real Claude Code session.</p>
+  </div>
+</section>
 
 <section class="myth">
   <div class="wrap">
