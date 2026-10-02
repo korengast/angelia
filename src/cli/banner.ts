@@ -3,6 +3,7 @@
  * the wordmark, then one line with the version. Static text, at most 64 columns, so it fits a default
  * terminal. Clay on a terminal (24-bit when it says it can, the nearest of 256 colours otherwise), plain
  * with NO_COLOR, and nothing at all when the output is not a terminal: pipes and CI stay clean.
+ * install.sh draws the same art (kept equal by a test) and sets ANGELIA_BANNER_SHOWN for init.
  */
 export const BANNER_ART = [
   ' ///   /\\     ┌─┐┌┐┌┌─┐┌─┐┬  ┬┌─┐',
@@ -21,7 +22,8 @@ export interface BannerTarget {
 }
 
 export function banner(version: string, out: BannerTarget): string {
-  if (!out.isTTY) return '';
+  // install.sh drew it already, and kept it on screen while it built.
+  if (!out.isTTY || out.env.ANGELIA_BANNER_SHOWN) return '';
   const tagline = `Angelia ${version} · your coding agent, your personal assistant`;
   if (out.env.NO_COLOR !== undefined && out.env.NO_COLOR !== '') return `${[...BANNER_ART, tagline].join('\n')}\n\n`;
   const truecolor = /^(truecolor|24bit)$/i.test(out.env.COLORTERM ?? '');
