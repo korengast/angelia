@@ -89,7 +89,7 @@ export function piPath(input: string, base: string, home = homedir()): string {
   if (p.startsWith('@')) p = p.slice(1);
   if (p === '~') p = home;
   else if (p.startsWith('~/')) p = join(home, p.slice(2));
-  else if (/^file:\/\//.test(p)) { try { p = fileURLToPath(p); } catch { /* left as written */ } }
+  else if (p.startsWith('file://')) { try { p = fileURLToPath(p); } catch { /* left as written */ } }
   return isAbsolute(p) ? resolve(p) : resolve(base, p);
 }
 
@@ -354,7 +354,7 @@ const sbpl = (s: string) => `"${s.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
 
 /** Text matched as itself in the sandbox's regex, ASCII letters in either case: the kernel compares
  *  the name as stored on disk, and APFS lets a file be reached, or made, under another case. */
-const reText = (s: string) => [...s].map((c) => (/[A-Za-z]/.test(c) ? `[${c.toLowerCase()}${c.toUpperCase()}]` : /[.[\]()*+?{}|^$\\]/.test(c) ? `\\${c}` : c)).join('');
+const reText = (s: string) => Array.from(s).map((c) => (/[A-Za-z]/.test(c) ? `[${c.toLowerCase()}${c.toUpperCase()}]` : /[.[\]()*+?{}|^$\\]/.test(c) ? `\\${c}` : c)).join('');
 const segRe = (s: string) => s.replace(/\*|\?|[^*?]+/g, (m) => (m === '*' ? '[^/]*' : m === '?' ? '[^/]' : reText(m)));
 
 /** A rule's glob part as regexes, one per segment (`**` spans folders), or undefined for syntax this
@@ -362,6 +362,7 @@ const segRe = (s: string) => s.replace(/\*|\?|[^*?]+/g, (m) => (m === '*' ? '[^/
  *  letters outside ASCII. */
 function globSegs(tail: string): string[] | undefined {
   // Non-ASCII letters: the disk folds their case and normalisation, which a regex does not.
+  // oxlint-disable-next-line no-control-regex -- any character outside ASCII, on purpose
   if (/[[\]]/.test(tail) || /[^\x00-\x7f]/.test(tail) || /\{[^}]*(\{|\.\.|\/|$)/.test(tail) || /\}/.test(tail.replace(/\{[^{}]*\}/g, ''))) return undefined;
   const segs = tail.split('/').filter(Boolean);
   return segs.map((seg, i) => (seg === '**' ? (i === segs.length - 1 ? '(/.*)?' : '(/[^/]+)*')

@@ -1,45 +1,50 @@
 
- ▐▛███▛█   Claude Code v2.1.280
-▝▜██████▀  Opus 5.5 with low effort · Claude Pro
-  ▝▝ ▝▝    /private/tmp/angelia-tui-model · /rc
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Haiku 4.5 · Claude Pro
+ ▝▝   ▝▝   /private/tmp/angelia-tui-perm · /rc
+
+
+❯ Think step by step for a while about prime numbers below 200, then run: touch frames-test.txt
+
+⏺ Thinking through prime numbers below 200:
+
+  Starting from 2, I need to find numbers divisible only by 1 and themselves. The first few: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29... Moving through the ranges:
+  - 30s-40s: 31, 37, 41, 43, 47
+  - 50s-70s: 53, 59, 61, 67, 71, 73, 79, 83, 89, 97
+  - 100-150: 101, 103, 107, 109, 113, 127, 131, 137, 139, 149
+  - 150-200: 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199
+
+  Total: approximately 45 primes below 200.
+
+  Now creating the file:
+
+⏺ Running 1 shell command…
+  ⎿  Interrupted · What should Claude do instead?
+  ⎿  $ touch frames-test.txt
+
+✻ Brewed for 7s · done 10:31 AM
 
 
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ○ low · /effort ▔
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
    Select model
    Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.
 
-     1. Default (recommended)  Opus 5.5 · Best for everyday, complex tasks
-   ❯ 2. Opus ✔                 Opus 5.5 · Best for everyday, complex tasks
-     3. Fable                  Fable 5.1 · Most capable for your hardest and longest-running tasks
-     4. Sonnet                 Sonnet 5 · Efficient for routine tasks
-     5. Haiku                  Haiku 4.5 · Fastest for quick answers
+     1.  Default (recommended)  Haiku 4.5
+     2.  Opus 5.5               For complex work and everyday tasks
+     3.  Fable 5.1              For your toughest challenges
+     4.  Sonnet 5.5             Most efficient for simpler tasks
+   ❯ 5.  Haiku 4.5 ✔            Fastest for quick answers
+     6.  Sonnet 5               Efficient for routine tasks
+     7.  Opus 5                 Best for everyday, complex tasks
+     8.  Fable 5                Most capable for your hardest and longest-running tasks
+     9.  Opus 4.8               Best for everyday, complex tasks
+   ↓ 10. Opus 4.7               Best for everyday, complex tasks
+      … +2 models
 
-   ○ Low effort ←/→ to adjust
+   ○ Effort not supported for Haiku 4.5
 
    Enter to set as default · s to use this session only · Esc to cancel

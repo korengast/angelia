@@ -88,19 +88,20 @@ export function paneIdle(pane: string): boolean {
 const clean = (l: string): string => l.replace(/[│╭╮╰╯┃]/g, ' ').replace(/\s+/g, ' ').trim();
 
 /** The open permission dialog as a chat line, or null when none is open. The dialog is drawn under
- *  a full-width rule, title first, then the command and why it is being run:
+ *  a full-width rule: the title, why the command runs, then the command between dashed rules:
  *
  *      ──────────────────────────────────────────
  *       Bash command
- *
- *         touch /Users/example/probe.txt
- *         Create probe file outside working directory
- *
+ *       Create frames-test.txt file
+ *      ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ *       touch frames-test.txt
+ *      ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
  *       Do you want to proceed?
  *       ❯ 1. Yes
  *
  *  so everything between that rule and the question is the dialog, and the transcript above it is
- *  not. Measured on claude 2.1.278; the fixture is in tests/fixtures. */
+ *  not; the dashed rules are drawing. Measured on claude 2.1.287 (2.1.278 had the command first and
+ *  no dashed rules); the fixture is in tests/fixtures. */
 export function permissionDialog(pane: string): { tool: string; preview: string } | null {
   const raw = pane.split('\n');
   // The last one: the dialog is drawn at the foot of the screen, and the agent's own output above it
@@ -109,7 +110,8 @@ export function permissionDialog(pane: string): { tool: string; preview: string 
   if (at < 0) return null;
   let top = -1;
   for (let i = at - 1; i >= 0 && i >= at - 16; i--) if (/^[\s│]*[─━╭]{8,}/.test(raw[i])) { top = i; break; }
-  const body = raw.slice(top >= 0 ? top + 1 : Math.max(0, at - 6), at).map(clean).filter(Boolean);
+  // 2.1.287 draws dashed rules (╌) above and below the command inside the box: drawing, not text.
+  const body = raw.slice(top >= 0 ? top + 1 : Math.max(0, at - 6), at).map(clean).filter((l) => l && !/^[\s╌─━┄┈]+$/.test(l));
   if (!body.length) return { tool: 'tool', preview: 'a permission prompt is open' };
   return { tool: body[0].slice(0, 40), preview: (body.slice(1).join(' · ') || body[0]).slice(0, 300) };
 }

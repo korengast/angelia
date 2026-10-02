@@ -1,19 +1,7 @@
 
- ▐▛███▛█   Claude Code v2.1.278
+ ▐▛███▛█   Claude Code v2.1.287
 ▝▜██████▀  Haiku 4.5 · Claude Pro
-  ▝▝ ▝▝    /private/tmp/angelia-tui-perm · /rc
-
-
-❯ Use the Bash tool to run exactly: touch /Users/example/angelia-outside-probe.txt
-
-  /remote-control is active · Continue here, on your phone, or at https://claude.ai/code/session_01ExampleExampleExample0
-
-⏺ I'll run that command to create the file.
-
-  Ran 1 shell command
-  ⎿  Interrupted · What should Claude do instead?
-
-✻ Brewed for 10s · done 3:45 PM
+ ▝▝   ▝▝   /private/tmp/angelia-tui-perm · /rc
 
 
 
@@ -43,8 +31,20 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                         tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ 
+❯ Try "refactor <filepath>"
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Haiku 4.5·200k | 5h:12%(2h34m) | wk:54%(2d11h) | fab:93%(2d11h) | ctx:[▰▱▱▱▱▱▱▱▱▱]▮14%
-  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents
+  Haiku 4.5·200k | fab:0%(3d16h)
+  ⏸ manual mode on · ← for agents

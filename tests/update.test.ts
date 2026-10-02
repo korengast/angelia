@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { changesText, chooseTarget, defaultSource, newCommits, readBuild, refusal, releaseTags, verifyTag } from '../src/daemon/update.js';
+import { changesText, chooseTarget, defaultSource, newCommits, readBuild, refusal, releaseTags, serviceMismatch, verifyTag } from '../src/daemon/update.js';
+import { buildPlist } from '../src/daemon/service.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-upd-'));
 
@@ -112,4 +113,27 @@ test('an update whose history does not contain the installed commit is refused w
   assert.equal(newCommits(s.repo, { commit: b }, a, true), undefined, '--force: installed, and the lines say the history is unknown');
   assert.throws(() => newCommits(s.repo, { commit: 'f'.repeat(40) }, b, false), /rewritten/);
   assert.equal(newCommits(s.repo, undefined, b, false)?.length, 2, 'no build stamp: the last commits, no refusal');
+});
+
+test('update says when the copy it updated is not the one the service runs', () => {
+  // Two Node installs, each with its own global copy; the service starts the first through a bin link.
+  const base = mkdtempSync(join(tmpdir(), 'angelia-twocopies-'));
+  const copy = (prefix: string) => {
+    const pkg = join(base, prefix, 'lib', 'node_modules', 'angelia-gateway');
+    mkdirSync(join(pkg, 'dist', 'cli'), { recursive: true });
+    writeFileSync(join(pkg, 'package.json'), '{"name":"angelia-gateway"}');
+    writeFileSync(join(pkg, 'dist', 'cli', 'cli.js'), '');
+    mkdirSync(join(base, prefix, 'bin'), { recursive: true });
+    symlinkSync(join(pkg, 'dist', 'cli', 'cli.js'), join(base, prefix, 'bin', 'angelia'));
+    return pkg;
+  };
+  const runs = copy('brew'), other = copy('nvm');
+  const plist = buildPlist({ node: join(base, 'brew', 'bin', 'node'), entry: join(base, 'brew', 'bin', 'angelia'), config: '/t/routing.yaml', stateDir: '/s', path: '/usr/bin', home: '/h' });
+  assert.equal(serviceMismatch(runs, plist), undefined, 'the service runs the updated copy');
+  const said = serviceMismatch(other, plist);
+  assert.ok(said?.includes(`PATH=${join(base, 'brew', 'bin')}:$PATH angelia update`), said);
+  assert.equal(serviceMismatch(other, '<plist/>'), undefined, 'a plist it cannot read is not a mismatch');
+  // The other copy was removed and its bin link dangles: the service runs nothing at all.
+  const gone = buildPlist({ node: '/n/node', entry: join(base, 'removed', 'bin', 'angelia'), config: '/t/r.yaml', stateDir: '/s', path: '/usr/bin', home: '/h' });
+  assert.match(serviceMismatch(runs, gone) ?? '', /no longer exists.*angelia service install/);
 });

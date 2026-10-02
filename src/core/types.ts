@@ -8,12 +8,13 @@ export type Platform = 'whatsapp' | 'telegram';
  * Applied once, where a message comes in, so logs and print mode get the same text.
  */
 export function cleanText(s: string): string {
+  // oxlint-disable-next-line no-control-regex -- stripping control characters is the point
   return s.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 }
 /** A name someone else chose (a sender's display name, a group's subject), made safe to put in a
  *  line the agent reads as Angelia's: one line, no brackets, no braces, bounded. */
 export function cleanName(name: string, max = 40): string {
-  return name.replace(/[\[\]{}\r\n]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+  return name.replace(/[[\]{}\r\n]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
 export interface Inbound {

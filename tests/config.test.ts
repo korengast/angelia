@@ -223,7 +223,7 @@ profiles:
   buyer: { cwd: $DIR/code, pay: true, sanbox: true }
 routes: []
 pay: { currency: ILS }
-`)), (e: Error) => e instanceof ConfigError && /^profiles\.buyer\.sanbox: unknown key/.test(e.message));
+`)), (e: Error) => e instanceof ConfigError && e.message.startsWith('profiles.buyer.sanbox: unknown key'));
 });
 
 test('routing.example.yaml matches the schema', () => {

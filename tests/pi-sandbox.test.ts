@@ -241,13 +241,13 @@ test('pi: compile says where the rules hold; turning the sandbox off in the tabl
   const cfg = (sandbox?: boolean) => Config.parse({ profiles: { p: { cwd, backend: 'pi', permission_mode: 'bypassPermissions', ...(sandbox === undefined ? {} : { sandbox }) } }, routes: [] });
   const pl = planProfile(cfg(), 'p', { home, stateDir: state });
   assert.ok(pl.notes.some((n) => /every shell command \(each runs in a macOS sandbox/.test(n)), pl.notes.join('\n'));
-  assert.ok(!pl.notes.some((n) => /^bypassPermissions: deny rules stop the file tools, not the shell/.test(n)));
+  assert.ok(!pl.notes.some((n) => n.startsWith('bypassPermissions: deny rules stop the file tools, not the shell')));
   pl.apply();
   assert.deepEqual(launchCheck(cfg(), 'p', state), []);
   assert.match(launchCheck(cfg(false), 'p', state).join(), /sandbox for pi's commands off/);
   const off = planProfile(cfg(false), 'p', { home, stateDir: state });
   assert.ok(off.notes.some((n) => /sandbox: false, so shell commands run outside the sandbox/.test(n)));
-  assert.ok(off.notes.some((n) => /^bypassPermissions: deny rules stop the file tools, not the shell/.test(n)));
+  assert.ok(off.notes.some((n) => n.startsWith('bypassPermissions: deny rules stop the file tools, not the shell')));
   off.apply();
   assert.deepEqual(launchCheck(cfg(false), 'p', state), []);
   // A table whose other profile folder the process may not stat: fine inside the sandbox only.

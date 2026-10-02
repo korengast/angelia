@@ -181,7 +181,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   // Turns a handoff sent to the background before this restart: read them again, or drop their mark.
   // Before the first sweep below, so their panes count as ours.
   await orch.restoreBackground().catch((e) => logLine(`background restore failed: ${(e as Error).message}`));
-  const reapTimer = setInterval(() => reap().catch((e) => logLine(`idle reap failed: ${(e as Error).message}`)), 60_000);
+  const reapTimer = setInterval(() => void reap().catch((e) => logLine(`idle reap failed: ${(e as Error).message}`)), 60_000);
   // A /restart asked for this: tell that chat we are back, once its platform can deliver.
   const note = takeRestartNote(STATE_DIR);
   if (note) {

@@ -1,5 +1,5 @@
 import type { Profile } from '../instance/config/schema.js';
-import type { Brain, BrainOptions, BrainSession, BackendName } from './brain.js';
+import type { Brain, BrainOptions, BrainSession } from './brain.js';
 import { ClaudeBrain } from './claude.js';
 import { TuiBrain } from './tui.js';
 import { GrokBrain } from './grok.js';

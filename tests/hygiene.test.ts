@@ -77,7 +77,7 @@ export function problems(file: string, line: string, home: string): string[] {
   }
   // A session link from a real screen capture names a session in someone's claude.ai account.
   for (const m of line.matchAll(/claude\.ai\/code\/session_(\w+)/g)) {
-    if (!/^01Example/.test(m[1])) out.push(`a real claude.ai session link "${m[1]}" (use session_01Example…)`);
+    if (!m[1].startsWith('01Example')) out.push(`a real claude.ai session link "${m[1]}" (use session_01Example…)`);
   }
   return out;
 }

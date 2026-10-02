@@ -286,7 +286,7 @@ export class TelegramAdapter implements Sender {
     if (t) { clearInterval(t); this.typingTimers.delete(chat); }
     if (!on) return;
     const ping = () => this.bot.api.sendChatAction(chat, 'typing').catch(() => {});
-    ping();
-    this.typingTimers.set(chat, setInterval(ping, 4000));
+    void ping();
+    this.typingTimers.set(chat, setInterval(() => void ping(), 4000));
   }
 }

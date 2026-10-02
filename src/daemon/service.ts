@@ -128,6 +128,15 @@ export function tableMismatch(given: string | undefined, plist: string, fromDaem
   return `the service runs ${runs ?? 'the table in its plist'}, not ${resolve(given)}. To change it: angelia service install <routing.yaml>`;
 }
 
+/** The node and the script a written plist starts the daemon with. */
+export function plistProgram(plist: string): { node: string; entry: string } | undefined {
+  const args = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(plist)?.[1];
+  if (!args) return undefined;
+  const items = [...args.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => unesc(m[1]));
+  const i = items.indexOf('daemon');
+  return i >= 2 ? { node: items[i - 2], entry: items[i - 1] } : undefined;
+}
+
 /** The instance a written plist belongs to. */
 export function plistStateDir(plist: string): string | undefined {
   const m = /<key>ANGELIA_STATE_DIR<\/key><string>([^<]*)<\/string>/.exec(plist);

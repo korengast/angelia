@@ -34,7 +34,7 @@ function rig(opts: { runs?: Run[]; wait?: (ms: number, signal: AbortSignal) => P
   });
   tg.bot.api.config.use(async (_prev, method, _payload, signal) => {
     const res = opts.api?.(method, signal);
-    if (res) return (await res) as never;
+    if (res) return (await Promise.resolve(res)) as never;
     if (method === 'getMe') return { ok: true, result: ME } as never;
     if (method === 'getUpdates') return { ok: true, result: [] } as never;
     return { ok: true, result: true } as never;

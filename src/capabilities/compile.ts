@@ -431,7 +431,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   let mcpOp: (() => void) | undefined;
   if (p.backend === 'claude-code') {
     const cur = readJson(mcpPath);
-    const servers: Record<string, unknown> = { ...(cur.mcpServers ?? {}) };
+    const servers: Record<string, unknown> = { ...cur.mcpServers };
     const ours = new Set(rec?.mcpServers ?? []);
     // A missing file is made only when there is something to put in it, or strict mode needs it to
     // exist: a profile with no capability at all gets its deny floor and nothing else.
@@ -465,7 +465,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   // Settings: deny entries and extra folders, only ever the ones recorded as ours.
   const settingsPath = join(p.cwd, '.claude', 'settings.json');
   const settings = readJson(settingsPath);
-  const perms: Record<string, any> = { ...(settings.permissions ?? {}) };
+  const perms: Record<string, any> = { ...settings.permissions };
   const launch = [...LAUNCH_FILES, ...(p.backend === 'pi' ? PI_LAUNCH_DIRS : p.backend === 'codex' ? CODEX_LAUNCH_DIRS : [])].map((f) => pathRule('Edit', join(p.cwd, f), p.backend, home));
   if (p.backend === 'pi') launch.push(...piHomeRules(home));
   const wantDeny = [...new Set([...profileFloor(cfg, name, stateDir, home), ...launch, ...[...denied].flatMap(([n, c]) => denyEntries(n, c, p.backend, home))])];
@@ -494,8 +494,8 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   // The CLI's sandbox (Claude only). The API socket is always reachable from it, so turning the
   // sandbox on by hand does not cut the agent off from angelia send; `sandbox: true` turns it on,
   // with no unsandboxed escape (without that, a command the sandbox stops can run outside it).
-  const sb: Record<string, any> = { ...(settings.sandbox ?? {}) };
-  const net: Record<string, any> = { ...(sb.network ?? {}) };
+  const sb: Record<string, any> = { ...settings.sandbox };
+  const net: Record<string, any> = { ...sb.network };
   let sandboxChanged = false;
   const wantSockets = p.backend === 'claude-code' ? [join(stateDir, API_SOCKET)] : [];
   const sockets: string[] = [...(net.allowUnixSockets ?? [])];

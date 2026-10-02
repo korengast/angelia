@@ -82,6 +82,6 @@ export class ChatChains {
 
   /** Resolves when every chat's jobs so far are done. */
   async idle(): Promise<void> {
-    while (this.tails.size) await Promise.all([...this.tails.values()]);
+    while (this.tails.size) await Promise.all(this.tails.values());
   }
 }

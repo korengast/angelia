@@ -45,7 +45,7 @@ export function piSessionFile(cwd: string, id: string, home = homedir()): string
   // pi names the folder after the cwd it runs in, which a symlinked profile folder resolves to.
   let realCwd = cwd;
   try { realCwd = realpathSync(cwd); } catch { /* a folder gone since: the name as configured */ }
-  for (const c of [...new Set([realCwd, cwd])]) {
+  for (const c of new Set([realCwd, cwd])) {
     const dir = join(home, '.pi', 'agent', 'sessions', `--${c.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`);
     let names: string[];
     try { names = readdirSync(dir); } catch { continue; }
@@ -149,7 +149,7 @@ export function codexRows(path: string | undefined, base: Base, tools = false): 
       if (text || used.length) out.push({ ...base, ts, role: 'assistant', text, ...(used.length ? { tools: used } : {}) });
       used = [];
     } else if (/^(function_call|custom_tool_call|local_shell_call)$/.test(p.type)) used.push(String(p.name ?? p.type));
-    else if (tools && /_output$/.test(String(p.type))) out.push({ ...base, ts, role: 'tool', text: typeof p.output === 'string' ? p.output : toolText(p.output) });
+    else if (tools && String(p.type).endsWith('_output')) out.push({ ...base, ts, role: 'tool', text: typeof p.output === 'string' ? p.output : toolText(p.output) });
   }
   return out;
 }

@@ -25,7 +25,7 @@ test('the permission dialog is read from the box, not from the transcript above 
   const d = permissionDialog(fixture('permission'));
   assert.ok(d);
   assert.equal(d.tool, 'Bash command');
-  assert.match(d.preview, /touch \/Users\/example\/angelia-outside-probe\.txt/);
+  assert.equal(d.preview, 'Create frames-test.txt file · touch frames-test.txt', 'the dashed rules around the command are not text');
   assert.doesNotMatch(d.preview, /I'll run that command/); // the assistant's own line is not the dialog
   assert.equal(permissionDialog(fixture('idle')), null);
 });

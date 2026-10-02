@@ -1,0 +1,18 @@
+{
+  "categories": { "correctness": "error" },
+  "rules": {
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    "typescript/unbound-method": "off",
+    "typescript/no-base-to-string": "off",
+    "typescript/restrict-template-expressions": "off"
+  },
+  "overrides": [
+    {
+      "files": ["tests/**"],
+      "rules": { "typescript/no-floating-promises": "off" }
+    }
+  ],
+  "ignorePatterns": ["dist/", "site/", "vendor/", "node_modules/"]
+}

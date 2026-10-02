@@ -25,7 +25,7 @@ test('the inbox keeps the newest files within its limits', () => {
   const inbox = join(dir, '.inbox');
   mkdirSync(inbox);
   for (let i = 0; i < 5; i++) { const f = join(inbox, `f${i}`); writeFileSync(f, 'x'.repeat(10)); utimesSync(f, 1000 + i, 1000 + i); }
-  assert.deepEqual(pruneInbox(inbox, { bytes: 1000, files: 3 }).map((p) => p.split('/').pop()).sort(), ['f0', 'f1']);
+  assert.deepEqual(pruneInbox(inbox, { bytes: 1000, files: 3 }).map((p) => p.split('/').pop() ?? '').sort((a, b) => a.localeCompare(b)), ['f0', 'f1']);
   assert.deepEqual(pruneInbox(inbox, { bytes: 15, files: 100 }).map((p) => p.split('/').pop()), ['f3', 'f2']);
   assert.deepEqual(readdirSync(inbox), ['f4']);
 });

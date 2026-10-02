@@ -1,6 +1,6 @@
 import { readFileSync, statSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, resolve, join, relative, isAbsolute, sep } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
 import { parse } from 'yaml';
 import type { z } from 'zod';
 import { Config, Profile } from './schema.js';

@@ -259,7 +259,7 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     if (!on) { await this.sock?.sendPresenceUpdate('paused', chat).catch(() => {}); return; }
     const ping = () => this.sock?.sendPresenceUpdate('composing', chat).catch(() => {});
     void ping();
-    this.typingTimers.set(chat, setInterval(ping, 4000));
+    this.typingTimers.set(chat, setInterval(() => void ping(), 4000));
   }
 
   /** Log this linked device out on the phone's side, then forget the credentials. Other linked devices are untouched. */
@@ -273,7 +273,8 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     this.stopping = true;
     for (const t of this.typingTimers.values()) clearInterval(t);
     this.typingTimers.clear();
-    try { this.sock?.end(undefined); } catch { /* already closed */ }
+    // end() is async: a rejection would escape the try and become an unhandled one.
+    try { this.sock?.end(undefined)?.catch(() => {}); } catch { /* already closed */ }
     this.state = 'disconnected';
   }
 }

@@ -43,7 +43,7 @@ export class ApiServer {
   }
 
   listen(socket: string): Promise<void> {
-    this.server = createServer((req, res) => this.handle(req, res).catch((e) => json(res, { error: (e as Error).message }, 500)));
+    this.server = createServer((req, res) => void this.handle(req, res).catch((e) => json(res, { error: (e as Error).message }, 500)));
     return new Promise((resolve, reject) => {
       this.server!.once('error', reject);
       this.server!.listen(socket, () => { chmodSync(socket, 0o600); resolve(); });

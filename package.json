@@ -1,6 +1,6 @@
 {
   "name": "angelia-gateway",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Turn the coding agent CLI you already know into the brain of your personal assistants, on WhatsApp and Telegram. One chat, one folder, one session.",
   "type": "module",
   "license": "MIT",
@@ -37,6 +37,8 @@
     "typecheck": "tsc --noEmit",
     "_test": "The slow group (a real pack and a global install into an empty prefix) gets its own limit: node applies --test-timeout to the file as a whole, and a cold machine needs minutes for it.",
     "test": "tsc --noEmit && node --test --import tsx --test-timeout=20000 tests/*.test.ts tests/voice/*.test.ts && node --test --import tsx --test-timeout=600000 tests/slow/*.test.ts",
+    "_lint": "Run with npx at pinned versions, not as devDependencies: every install and `angelia update` runs npm ci, and the linter's native binaries (about 37 MB) would be downloaded by every user for nothing.",
+    "lint": "npx -y -p oxlint@1.86.0 -p oxlint-tsgolint@7.0.2003 oxlint --type-aware --deny-warnings src tests tools scripts",
     "dev": "tsx src/cli/cli.ts"
   },
   "_bundleDependencies": "All of them: the tarball carries every runtime dependency at the version package-lock.json locked, so an install resolves nothing from the registry on the day. npm ignores a shrinkwrap in a tarball installed by path (measured, npm 11.17), so a lock file alone would not do this. Baileys must be bundled anyway: it is a vendored build of a fork.",

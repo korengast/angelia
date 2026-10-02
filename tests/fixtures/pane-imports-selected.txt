@@ -1,10 +1,11 @@
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Allow external CLAUDE.md file imports?
 
-  This project's CLAUDE.md imports files outside the current working directory. Never allow this for third-party repositories.
+  This project's CLAUDE.md or .claude/rules imports files outside the current working directory. Never allow this for third-party repositories.
 
   External imports:
-    /Users/example/.angelia/workspace/_shared/claude-code/WEB.md
+    /private/tmp/angelia-tui-ext.md
 
   Important: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks https://code.claude.com/docs/en/security
 
@@ -12,3 +13,38 @@
   ❯ Yes, allow external imports
 
   Enter to confirm · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

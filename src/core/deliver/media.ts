@@ -178,6 +178,7 @@ function denied(path: string, home: string, stateDir?: string): boolean {
 }
 
 function short(p: string): string {
+  // oxlint-disable-next-line no-control-regex -- stripping control characters is the point
   const clean = p.replace(/[\x00-\x1f\x7f\u2028\u2029]/g, '');
   return clean.length > 120 ? clean.slice(0, 117) + '…' : clean;
 }
