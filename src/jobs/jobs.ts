@@ -9,6 +9,10 @@ import type { Config, Profile } from '../instance/config/schema.js';
 import { sessionKey } from '../core/types.js';
 import { profileEnv, tableSecrets } from '../core/env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
+import { LAUNCH_FILES, agentDenyRules, launchCheck, profilePermissions } from '../capabilities/compile.js';
+import { SANDBOX_EXEC, sandboxProblem, sandboxProfile } from '../brain/pi-gate.js';
+import { codexSandboxed } from '../brain/codex-config.js';
+import { tmuxSocketPath } from '../brain/tmux.js';
 
 /**
  * Scheduled jobs (design §4). A profile keeps its jobs in `angelia-jobs.yaml` in its own folder, so
@@ -21,7 +25,9 @@ import { capabilityEnv } from '../capabilities/resolve.js';
  *
  * A timer runs the definition it was installed with. The plist carries a hash of the job, and a
  * run refuses a job that changed since: an agent that edits the file cannot change what a timer
- * does until someone installs again and sees the list.
+ * does until someone installs again and sees the list. The hash cannot cover what a script loads
+ * (a module next to it, a Makefile), so on a profile whose agent is sandboxed a `run:` job runs in
+ * the same sandbox: whatever the agent wrote, the job can do no more than the agent could.
  */
 
 export const JOBS_FILE = 'angelia-jobs.yaml';
@@ -235,12 +241,58 @@ export function installedJobs(stateDir: string, home = homedir()): Map<string, s
 
 // ---- running ----------------------------------------------------------------------------------
 
-export interface Deliver { (kind: 'send' | 'turn', key: string, text: string): Promise<void> }
+/** `asChat`: the text came from code the agent could have written (a `run:` job's output), so it is
+ *  sent with the chat's own token and held to the profile's rules, never with the owner's. */
+export interface Deliver { (kind: 'send' | 'turn', key: string, text: string, asChat?: boolean): Promise<void> }
+
+/** Is the profile's agent held by an OS sandbox? Then so is its `run:` job: the script it runs sits
+ *  in a folder that agent may write, and a timer outside the sandbox would run whatever it wrote. */
+export function jobSandboxed(p: Profile): boolean {
+  return p.backend === 'claude-code' ? !!p.sandbox : p.backend === 'codex' ? codexSandboxed(p) : p.backend === 'pi' ? p.sandbox !== false : false;
+}
+
+/** The sandbox a profile's job runs in: the deny rules its agent is held to, writes only in the folders
+ *  its agent writes (its own, add_dirs, the extra folders compile gave it) and temp, Angelia's tmux
+ *  server closed, and no program started outside the sandbox on its behalf (`open`, Apple Events).
+ *  Throws when the sandbox cannot be used here. */
+export function jobSandbox(cfg: Config, profile: string, stateDir?: string, home = homedir()): string {
+  if (process.platform !== 'darwin') throw new Error(`profile ${profile} is sandboxed, and a job's sandbox is macOS only for now; its run: jobs do not run here`);
+  // The job stands on the same rules as its agent: a profile whose agent would not be started (never
+  // compiled, a deny rule gone, the sandbox switched off) does not run its jobs either.
+  const refused = launchCheck(cfg, profile, stateDir);
+  if (refused.length) throw new Error(`profile ${profile}'s agent would not be started (${refused.join('; ')}), so its run: jobs do not run either; angelia compile ${profile} --write`);
+  const p = cfg.profiles[profile];
+  const abs = (d: string) => resolve(p.cwd, d.startsWith('~/') ? join(home, d.slice(2)) : d);
+  const dirs = [...new Set([p.cwd, ...p.add_dirs, ...profilePermissions(p.cwd).dirs].map(abs))];
+  const rules = agentDenyRules(cfg, profile, stateDir, home);
+  // The files that decide the next launch and the job's own folders, closed to the job itself.
+  const launch = LAUNCH_FILES.map((f) => `Edit(/${join(p.cwd, f)})`);
+  const deny = [...(p.backend === 'claude-code' ? rules.map((r) => claudeRuleAbs(r, p.cwd)) : rules), ...launch];
+  const sb = sandboxProfile(deny, home, { writable: dirs, sockets: [tmuxSocketPath()], noLaunch: true });
+  const problem = sandboxProblem(sb);
+  if (problem) throw new Error(`the sandbox for profile ${profile}'s jobs does not work here: ${problem}`);
+  return sb;
+}
+
+/** A Claude Code rule's path as Claude reads it, written absolute for the sandbox: `//x` is the disk
+ *  root, `~/x` home, and `/x`, `./x` or a bare `x` are inside the profile folder (where its settings
+ *  file sits). The sandbox's own reading takes `/x` from the disk root, which would miss the folder. */
+export function claudeRuleAbs(rule: string, cwd: string): string {
+  const m = /^(Read|Edit)\(([\s\S]+)\)$/.exec(rule);
+  if (!m) return rule;
+  const path = m[2];
+  const abs = path.startsWith('//') ? path.slice(1)
+    : path.startsWith('~/') || path === '~' ? path
+    : join(cwd, path.replace(/^\.?\//, ''));
+  return `${m[1]}(${abs.startsWith('/') && !abs.startsWith('//') ? '/' + abs : abs})`;
+}
 
 const SILENT = '[SILENT]';
 
-/** One run of a job: what the timer calls, and `angelia jobs run` by hand. Returns a log line. */
-export async function runJob(cfg: Config, profile: string, name: string, deliver: Deliver, opts: { hash?: string; env?: NodeJS.ProcessEnv; secrets?: Record<string, string> } = {}): Promise<string> {
+/** One run of a job: what the timer calls, and `angelia jobs run` by hand. Returns a log line.
+ *  `chatToken`: the job's chat token, put in the command's environment so a script can `angelia send`
+ *  to its own chat (inside the sandbox the owner's token file is closed). */
+export async function runJob(cfg: Config, profile: string, name: string, deliver: Deliver, opts: { hash?: string; env?: NodeJS.ProcessEnv; secrets?: Record<string, string>; stateDir?: string; chatToken?: (key: string) => string } = {}): Promise<string> {
   const { jobs } = readJobs(cfg, profile);
   const j = jobs[name];
   if (!j) throw new Error(`profile ${profile} has no job "${name}"`);
@@ -255,22 +307,28 @@ export async function runJob(cfg: Config, profile: string, name: string, deliver
   if (j.turn) { await deliver('turn', chat, j.turn); return `turn queued in ${chat}`; }
   // What the profile's agent gets: no bot token, no billing variable, and only its own secrets.
   const env = profileEnv(opts.env ?? process.env, opts.secrets ?? {}, tableSecrets(cfg), capabilityEnv(cfg, profile)).env;
-  const r = await runCommand(j.run!, cfg.profiles[profile].cwd, j.timeout_seconds * 1000, env);
+  const sandbox = jobSandboxed(cfg.profiles[profile]) ? jobSandbox(cfg, profile, opts.stateDir) : undefined;
+  // Inside the sandbox the owner's token file is closed: the chat's own token lets a script reach its
+  // chat. Outside, a script keeps the owner's file, as it always had.
+  if (sandbox && opts.chatToken) Object.assign(env, { ANGELIA_API_TOKEN: opts.chatToken(chat), ANGELIA_SESSION_KEY: chat });
+  const r = await runCommand(j.run!, cfg.profiles[profile].cwd, j.timeout_seconds * 1000, env, sandbox);
   if (r.code !== 0) {
     const why = r.timedOut ? `stopped after ${j.timeout_seconds} s` : `exit ${r.code}`;
     const last = r.err.trim().split('\n').pop()?.slice(0, 300) ?? '';
-    await deliver('send', chat, `Scheduled job ${name} failed (${why})${last ? `: ${last}` : ''}`);
+    await deliver('send', chat, `Scheduled job ${name} failed (${why})${last ? `: ${last}` : ''}`, true);
     return `failed ${why}`;
   }
   const text = r.out.trim();
   if (!text || text === SILENT) return 'ran, nothing to send';
-  await deliver('send', chat, text);
+  await deliver('send', chat, text, true);
   return `ran, sent ${text.length} chars to ${chat}`;
 }
 
-function runCommand(cmd: string, cwd: string, ms: number, env: NodeJS.ProcessEnv): Promise<{ code: number; out: string; err: string; timedOut: boolean }> {
+function runCommand(cmd: string, cwd: string, ms: number, env: NodeJS.ProcessEnv, sandbox?: string): Promise<{ code: number; out: string; err: string; timedOut: boolean }> {
   return new Promise((done) => {
-    const child = spawn('/bin/sh', ['-c', cmd], { cwd, env: { ...env, ANGELIA_JOB: '1' }, detached: true });
+    // ANGELIA_SANDBOX tells Angelia's own CLI, run inside, that an unreadable state folder is the sandbox.
+    const [bin, args] = sandbox ? [SANDBOX_EXEC, ['-p', sandbox, '/bin/sh', '-c', cmd]] : ['/bin/sh', ['-c', cmd]];
+    const child = spawn(bin, args, { cwd, env: { ...env, ANGELIA_JOB: '1', ...(sandbox ? { ANGELIA_SANDBOX: 'job' } : {}) }, detached: true });
     let out = '', err = '', timedOut = false;
     // Decoded as text by the stream, so a character split across two chunks is not broken in half.
     child.stdout.setEncoding('utf8');

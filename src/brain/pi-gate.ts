@@ -399,6 +399,9 @@ interface SandboxOptions {
   writable?: string[];
   /** The profile's own cache folder: the others next to it are closed, for reading and writing. */
   cache?: string;
+  /** Close the doors to programs that run outside the sandbox on the command's behalf: LaunchServices
+   *  (`open` of an app the command just wrote starts it unsandboxed) and Apple Events. */
+  noLaunch?: boolean;
 }
 
 /**
@@ -466,6 +469,12 @@ export function sandboxProfile(deny: string[], home = homedir(), o: SandboxOptio
     const own = [...new Set([o.cache, onDisk(o.cache)])], parent = [...new Set([dirname(o.cache), onDisk(dirname(o.cache))])];
     // Strictly below the shared folder: tools such as npx look at the folders above their cache.
     out.add(`(deny file-read* file-write* (require-all (require-any ${parent.map((d) => `(regex ${sbpl(`^${reText(d)}/`)})`).join(' ')}) (require-not (require-any ${own.map((d) => `(subpath ${sbpl(d)})`).join(' ')}))))`);
+  }
+  if (o.noLaunch) {
+    lines.push('(deny appleevent-send)');
+    // Whole prefixes: naming launchservicesd and com.apple.lsd.* alone still let `open` start an app
+    // (measured on macOS 26); these two prefixes stop it, and plain tools (python, node, git, curl) run.
+    lines.push(`(deny mach-lookup (global-name-prefix ${sbpl('com.apple.coreservices')}) (global-name-prefix ${sbpl('com.apple.lsd')}))`);
   }
   if (o.writable) {
     const where = [...new Set([...o.writable.flatMap((d) => [d, onDisk(d)]), ...TEMP_DIRS])].map((d) => `(subpath ${sbpl(d)})`);

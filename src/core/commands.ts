@@ -21,7 +21,7 @@ export function parseCommand(text: string): Command | null {
 /** One list feeds /help and Telegram's command menu (setMyCommands). */
 export const COMMANDS: { command: string; args?: string; description: string }[] = [
   { command: 'new', description: 'start a fresh session (the old one stays in history)' },
-  { command: 'stop', description: 'interrupt the current turn' },
+  { command: 'stop', description: 'end the current turn and drop the messages waiting behind it' },
   { command: 'status', description: 'active session, turns, last use' },
   { command: 'resume', args: '[N | id prefix]', description: 'list recent sessions, or switch to one' },
   { command: 'model', args: '[name | default]', description: 'the model now and the ones to choose from; set it for this session only' },

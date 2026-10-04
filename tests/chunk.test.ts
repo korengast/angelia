@@ -100,3 +100,46 @@ test('a hard cut never splits an emoji into two surrogate halves', () => {
   for (const p of parts) assert.ok(!/[\uD800-\uDBFF]$|^[\uDC00-\uDFFF]/.test(p), `lone surrogate at an edge of ${JSON.stringify(p)}`);
   assert.equal(parts.join(''), text);
 });
+
+/** Every character of the input, in order, survives the split (whitespace and added fence lines aside). */
+function keepsText(input: string, parts: string[]): boolean {
+  const want = input.replace(/\s+/g, '');
+  const got = parts.join('').replace(/\s+/g, '');
+  let i = 0;
+  for (let j = 0; j < got.length && i < want.length; j++) if (got[j] === want[i]) i++;
+  return i === want.length;
+}
+
+test('a fence line just under the limit ends, and no part outgrows the limit', () => {
+  for (const limit of [3500, 4000]) {
+    // The fence opener of limit-6 characters made room zero, and the loop never ended (heap out of memory).
+    const text = '```' + 'x'.repeat(limit - 9) + '\n\n' + 'tail text '.repeat(50) + '\n' + 'y'.repeat(limit * 2);
+    const out = chunk(text, limit);
+    for (const c of out) assert.ok(c.length <= limit, `part of ${c.length} over ${limit}`);
+    assert.ok(keepsText(text, out));
+  }
+});
+
+test('a reopened fence carries only its opener and language, not a long info string', () => {
+  const code = '```python ' + 'note '.repeat(30) + '\n' + Array.from({ length: 60 }, (_, i) => `x${i} = ${i}`).join('\n') + '\n```';
+  const out = chunk(code, 200);
+  assert.ok(out.length > 2);
+  for (const c of out) assert.ok(c.length <= 200);
+  assert.ok(out[1].startsWith('```python\n'), out[1].slice(0, 30));
+});
+
+test('chunk: random text with fences, long lines and emoji always ends within the limit', () => {
+  let seed = 7;
+  const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const bits = ['word ', 'longer words here ', '\n', '\n\n', '```', '````js', '```' + 'i'.repeat(90), '😀', 'z'.repeat(150), '\t'];
+  for (let run = 0; run < 400; run++) {
+    const limit = 50 + rnd(400);
+    let text = '';
+    const n = 5 + rnd(120);
+    for (let i = 0; i < n; i++) { const b = bits[rnd(bits.length)]; text += b.startsWith('`') ? '\n' + b + '\n' : b; }
+    const out = chunk(text, limit);
+    for (const c of out) assert.ok(c.length <= limit, `run ${run}: part of ${c.length} over ${limit}`);
+    assert.ok(keepsText(text, out), `run ${run}: text lost`);
+    for (const c of out) assert.ok(!/[\uD800-\uDBFF]$/.test(c) && !/^[\uDC00-\uDFFF]/.test(c), `run ${run}: split emoji`);
+  }
+});

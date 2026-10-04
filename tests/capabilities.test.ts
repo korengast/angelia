@@ -531,3 +531,17 @@ test('compile (codex): /abs rules, .codex/ and .agents/ read-only, user-level Co
     assert.ok(deny.includes(`Read(${join(r.lib, 'ledger')}/**)`) && !deny.some((d) => d.startsWith('Skill(')));
   } finally { if (saved !== undefined) process.env.CODEX_HOME = saved; }
 });
+
+test('compile refuses a CLAUDE.md that is a link or a hard link, before writing anything', async () => {
+  const { symlinkSync, linkSync, rmSync } = await import('node:fs');
+  for (const make of [(at: string, to: string) => symlinkSync(to, at), (at: string, to: string) => linkSync(to, at)]) {
+    const r = rig();
+    const other = join(r.home, 'routing-like.md');
+    writeFileSync(other, 'kept\n');
+    rmSync(join(r.cwd, 'CLAUDE.md'), { force: true });
+    make(join(r.cwd, 'CLAUDE.md'), other);
+    const pl = planProfile(r.cfg(), 'home', { home: r.home });
+    assert.match(pl.conflicts.join('\n'), /CLAUDE\.md is a link or has another name/);
+    assert.equal(readFileSync(other, 'utf8'), 'kept\n');
+  }
+});

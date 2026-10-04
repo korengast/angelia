@@ -379,3 +379,36 @@ test('a pile-up in one chat is capped and told once; a very long answer goes as 
   assert.equal(sent.filter((x) => /Still working through earlier messages/.test(x)).length, 1, 'told once');
   assert.equal(sent.filter((x) => !/Still working through/.test(x)).length, 10, 'the running turn and nine waiting ones are answered');
 });
+
+test('/stop also drops the messages waiting behind the turn, and says how many', async (t) => {
+  const { o, sent } = setup(); t.after(() => o.shutdown());
+  const turns = [o.handle(dm('1', 'SLOW first')), o.handle(dm('1', 'then one')), o.handle(dm('1', 'then two'))];
+  await new Promise((r) => setTimeout(r, 300));
+  await o.handle(dm('1', '/stop'));
+  await Promise.all(turns);
+  assert.deepEqual(sent.map((s) => s.text), ['Stopped. 2 waiting messages dropped.']);
+  sent.length = 0;
+  await o.handle(dm('1', 'after'));
+  assert.equal(sent.length, 1, 'the chat answers again');
+  assert.doesNotMatch(sent[0].text, /then/);
+});
+
+test('an injected turn is held to the same cap as a chat\'s own messages', async (t) => {
+  const { o, sent } = setup(); t.after(() => o.shutdown());
+  const turns = Array.from({ length: 14 }, (_, n) => o.injectTurn('telegram:1', n === 0 ? 'SLOW first' : `again ${n}`, true));
+  assert.equal(o.queueFull('telegram:1'), true);
+  await Promise.all(turns);
+  assert.equal(sent.length, 10, 'the running turn and nine waiting ones; the rest refused');
+});
+
+test('/new drops the waiting messages too, and /stop with nothing running says nothing ran', async (t) => {
+  const { o, sent } = setup(); t.after(() => o.shutdown());
+  assert.equal((await (async () => { await o.handle(dm('2', '/stop')); return sent.at(-1)?.text; })()), 'Nothing running.');
+  sent.length = 0;
+  const turns = [o.handle(dm('1', 'SLOW first')), o.handle(dm('1', 'then one'))];
+  await new Promise((r) => setTimeout(r, 300));
+  await o.handle(dm('1', '/new'));
+  await Promise.all(turns);
+  assert.match(sent.map((s) => s.text).join('\n'), /^New session [0-9a-f]{8} started\. 1 waiting message dropped\.$/m);
+  assert.ok(!sent.some((s) => /then one/.test(s.text)));
+});

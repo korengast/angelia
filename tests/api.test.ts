@@ -223,3 +223,27 @@ test('api: profiles message each other with their own token and their own chat a
   assert.equal(status, 403);
   assert.ok(n <= 31, `stopped after ${n}`);
 });
+
+test('api: /turn answers 429 when the chat already has as many turns as it takes (the daemon\'s own wiring)', async (t) => {
+  const { apiDeps } = await import('../src/daemon/api/deps.js');
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-api-'));
+  const cfg = Config.parse({ profiles: { a: { cwd: here } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000 } });
+  const o = new Orchestrator(cfg, { telegram: { send: async () => {} }, whatsapp: { send: async () => {} } }, { stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs') } });
+  t.after(() => o.shutdown());
+  const token = loadOrMintToken(join(dir, 'api.token'));
+  const api = new ApiServer(apiDeps(o), token);
+  const socket = join(dir, API_SOCKET);
+  await claimSocket(socket);
+  await api.listen(socket); t.after(() => api.close());
+  const post = caller(socket);
+  const agent = sessionToken(token, 'telegram:1');
+  const codes: number[] = [];
+  for (let n = 0; n < 11; n++) codes.push((await post('/turn', { token: agent, key: 'telegram:1', text: n === 0 ? 'SLOW first' : `go ${n}` })).status);
+  assert.deepEqual(codes, [...Array(10).fill(200), 429]);
+  // Let the queued turns finish before the orchestrator shuts down: a turn started after it would hang.
+  const until = Date.now() + 15_000;
+  while (o.queueFull('telegram:1') || (o as unknown as { queue: { queued(k: string): number } }).queue.queued('telegram:1') > 0) {
+    if (Date.now() > until) throw new Error('queued turns did not finish');
+    await new Promise((r) => setTimeout(r, 100));
+  }
+});

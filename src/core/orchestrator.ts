@@ -73,6 +73,10 @@ const CATALOG_MS = 10 * 60_000;
 const DROP_LOG_MS = 10 * 60_000;
 /** Messages that may wait behind a chat's running turn. Past it, the chat is told once, and the rest dropped. */
 const QUEUE_MAX = 10;
+/** The tail of a /stop or /new answer that also took back waiting messages. */
+function waitingDropped(n: number): string {
+  return n ? ` ${n} waiting message${n === 1 ? '' : 's'} dropped.` : '';
+}
 const BUSY_LINE = 'Still working through earlier messages in this chat, so this one was not taken. Send it again when I have answered.';
 /** More chunks than this and an answer goes as its start plus a file. */
 const LONG_ANSWER_PARTS = 4;
@@ -156,7 +160,7 @@ export class Orchestrator {
     // MCP, permissions and the user-wide default model.
     const bare = isAgentCommand(i) && (isOwner(i, route) || profile.agent_commands.includes(agentCommandName(i.text)));
     if (isAgentCommand(i) && !bare) this.log(`agent command sent as text key=${key} sender=${i.sender} reason=not-owner`);
-    if (this.queue.queued(key) >= QUEUE_MAX) {
+    if (this.queueFull(key)) {
       // One chat cannot line up an hour of turns, each drawing on the platform's one bucket; said once per pile-up.
       this.dropped(key, 'reason=queue-full');
       if (!this.busyTold.has(key)) { this.busyTold.add(key); await this.reply(i, BUSY_LINE); }
@@ -182,15 +186,16 @@ export class Orchestrator {
       }
       case 'status': return this.reply(i, statusText(this.map, key, profileName, this.brains.get(key)?.alive ?? false, this.queue.queued(key)));
       case 'new': {
+        const n = this.queue.drop(key);
         await this.dropBrain(key);
         const row = this.map.startNew(key);
-        return this.reply(i, `New session ${row.id.slice(0, 8)} started.`);
+        return this.reply(i, `New session ${row.id.slice(0, 8)} started.${waitingDropped(n)}`);
       }
       case 'stop': {
-        const b = this.brains.get(key);
-        if (!b?.alive) return this.reply(i, 'Nothing running.');
-        await this.dropBrain(key);
-        return this.reply(i, 'Stopped.');
+        const n = this.queue.drop(key);
+        const running = !!this.brains.get(key)?.alive;
+        if (running) await this.dropBrain(key);
+        return this.reply(i, running || n ? 'Stopped.' + waitingDropped(n) : 'Nothing running.');
       }
       case 'model': return this.modelCommand(i, key, profileName, cmd.value);
       case 'effort': return this.effortCommand(i, key, profileName, cmd.value);
@@ -516,7 +521,17 @@ export class Orchestrator {
     const i: Inbound = { ...k, sender: fromKey ? 'profile' : 'local', senderName, text: cleanText(text), isGroup: isGroupChat(k.platform, k.chat), mentioned: true, media: [] };
     const route = matchRoute(this.cfg, i);
     if (!route) return;
-    await this.queue.enqueue(key, () => this.turn(i, key, route.profile, { bare: !fromAgent && isAgentCommand(i) }));
+    // The same cap a chat's own messages have: an agent or a job looping `angelia turn` must not
+    // line up model turns without end. The API checks queueFull first and answers 429.
+    if (this.queueFull(key)) { this.dropped(key, `reason=queue-full from=${fromKey ? 'peer' : fromAgent ? 'agent' : label}`); return; }
+    // Nobody awaits this for an API caller (it was told "queued" already): a failure ends here, logged.
+    await this.queue.enqueue(key, () => this.turn(i, key, route.profile, { bare: !fromAgent && isAgentCommand(i) }))
+      .catch((e) => this.log(`injected turn failed key=${key}: ${(e as Error).message}`));
+  }
+
+  /** True when the chat already has QUEUE_MAX turns running and waiting. */
+  queueFull(key: string): boolean {
+    return this.queue.queued(key) >= QUEUE_MAX;
   }
 
   /**

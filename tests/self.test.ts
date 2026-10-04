@@ -140,3 +140,29 @@ test('profiles --json gives each profile its backend, folder, chats and session 
   assert.equal(out.profiles[1].tui, true);
   assert.equal(out.profiles[1].model, 'm');
 });
+
+test('the self block is never written through a link in the agent folder', async () => {
+  const { mkdtempSync, writeFileSync, readFileSync, symlinkSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { upsertSelfBlock } = await import('../src/daemon/self.js');
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-self-link-'));
+  const target = join(dir, 'routing.yaml');
+  writeFileSync(target, 'routes: []\n');
+  symlinkSync(target, join(dir, 'CLAUDE.md'));
+  assert.equal(upsertSelfBlock(join(dir, 'CLAUDE.md'), 'hello'), 'link');
+  assert.equal(readFileSync(target, 'utf8'), 'routes: []\n');
+});
+
+test('the self block is never written into a hard-linked CLAUDE.md', async () => {
+  const { mkdtempSync, writeFileSync, readFileSync, linkSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { upsertSelfBlock } = await import('../src/daemon/self.js');
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-self-hard-'));
+  const target = join(dir, 'config.yaml');
+  writeFileSync(target, 'a: 1\n');
+  linkSync(target, join(dir, 'CLAUDE.md'));
+  assert.equal(upsertSelfBlock(join(dir, 'CLAUDE.md'), 'hello'), 'link');
+  assert.equal(readFileSync(target, 'utf8'), 'a: 1\n');
+});

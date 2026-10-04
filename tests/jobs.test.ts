@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { buildJobPlist, cronCalendar, sameJob, everySeconds, installedJobs, jobHash, jobLabel, readJobs, runJob, JOBS_FILE } from '../src/jobs/jobs.js';
 
@@ -13,6 +14,12 @@ function rig(yaml: string, profile: Record<string, unknown> = {}, routes = [{ pl
   writeFileSync(join(cwd, JOBS_FILE), yaml);
   const cfg = Config.parse({ profiles: { p: { cwd, ...profile } }, routes });
   return { cwd, cfg };
+}
+
+/** Compile the profile into `state`, as `angelia compile --write` does: a sandboxed job runs only then. */
+async function compiled(cfg: Config, state: string): Promise<void> {
+  const { planProfile } = await import('../src/capabilities/compile.js');
+  planProfile(cfg, 'p', { stateDir: state, home: tmp() }).apply();
 }
 
 function recorder() {
@@ -150,4 +157,76 @@ test('a timer\'s pin covers the scripts in the profile folder its job runs; a ti
   // A timer installed before scripts were pinned still runs until the next install.
   writeFileSync(join(cwd, 'scripts', 'card.sh'), 'echo card\n');
   assert.match(await runJob(cfg, 'p', 'card', r.deliver, { hash: jobHash(jobs.card) }), /^ran, sent/);
+});
+
+test('which profiles run their jobs sandboxed: those whose agent is', async () => {
+  const { jobSandboxed } = await import('../src/jobs/jobs.js');
+  const p = (o: Record<string, unknown>) => Config.parse({ profiles: { p: { cwd: '/x', ...o } }, routes: [] }).profiles.p;
+  assert.equal(jobSandboxed(p({})), false, 'Claude Code without sandbox: true');
+  assert.equal(jobSandboxed(p({ sandbox: true })), true);
+  assert.equal(jobSandboxed(p({ backend: 'codex' })), true, "Codex's own sandbox is on by default");
+  assert.equal(jobSandboxed(p({ backend: 'codex', sandbox: false })), false);
+  assert.equal(jobSandboxed(p({ backend: 'pi' })), true);
+  assert.equal(jobSandboxed(p({ backend: 'grok' })), false);
+});
+
+test('a command job sends its output as the chat, its own definition as the owner', async () => {
+  const { cfg } = rig('jobs:\n  out: {every: 1h, run: "echo hi"}\n  bad: {every: 1h, run: "exit 2"}\n  s: {every: 1h, send: hello}\n', { shell: true });
+  const calls: [string, string, boolean | undefined][] = [];
+  const deliver = async (kind: 'send' | 'turn', _key: string, text: string, asChat?: boolean) => { calls.push([kind, text, asChat]); };
+  await runJob(cfg, 'p', 'out', deliver);
+  await runJob(cfg, 'p', 'bad', deliver);
+  await runJob(cfg, 'p', 's', deliver);
+  assert.deepEqual(calls.map((c) => c[2]), [true, true, undefined]);
+});
+
+test('on a sandboxed profile a job runs in its agent\'s sandbox: no reads of denied files, no writes outside', { skip: process.platform !== 'darwin' }, async () => {
+  const { readFileSync, existsSync, realpathSync } = await import('node:fs');
+  const state = realpathSync(tmp());
+  writeFileSync(join(state, 'env'), 'SECRET=hunter2\n');
+  // Temp folders are writable for every command, as for the agent: the probes go elsewhere. One is a
+  // state file the deny floor closes, one a folder of this repo (removed again if the sandbox fails).
+  const outside = join(dirname(fileURLToPath(import.meta.url)), `.job-sandbox-probe-${process.pid}`);
+  const { cfg, cwd } = rig([
+    'jobs:',
+    `  peek: {every: 1h, run: "cat ${join(state, 'env')}"}`,
+    `  escape: {every: 1h, run: "echo x > ${outside}"}`,
+    `  floor: {every: 1h, run: "echo x > ${join(state, 'sessions.json')}"}`,
+    '  home: {every: 1h, run: "echo ok > mine.txt && cat mine.txt"}',
+  ].join('\n'), { shell: true, sandbox: true });
+  const r = recorder();
+  const opts = { stateDir: state, chatToken: () => 'chat-token' };
+  await assert.rejects(runJob(cfg, 'p', 'home', r.deliver, opts), /would not be started \(never compiled\)/);
+  await compiled(cfg, state);
+  assert.match(await runJob(cfg, 'p', 'peek', r.deliver, opts), /^failed/);
+  assert.match(r.calls.at(-1)?.[2] ?? '', /Operation not permitted/, 'refused by the kernel, not failed for another reason');
+  assert.doesNotMatch(r.calls.map((c) => c[2]).join('\n'), /hunter2/);
+  const escaped = await runJob(cfg, 'p', 'escape', r.deliver, opts);
+  const planted = existsSync(outside);
+  if (planted) (await import('node:fs')).rmSync(outside);
+  assert.match(escaped, /^failed/);
+  assert.equal(planted, false);
+  assert.match(await runJob(cfg, 'p', 'floor', r.deliver, opts), /^failed/);
+  assert.equal(existsSync(join(state, 'sessions.json')), false);
+  await runJob(cfg, 'p', 'home', r.deliver, opts);
+  assert.equal(readFileSync(join(cwd, 'mine.txt'), 'utf8'), 'ok\n');
+  assert.equal(r.calls.at(-1)?.[2], 'ok');
+});
+
+test('a job on a profile without a sandbox still runs as before', async () => {
+  const outside = tmp();
+  const { cfg } = rig(`jobs:\n  w: {every: 1h, run: "echo x > ${join(outside, 'f')} && echo done"}\n`, { shell: true });
+  const r = recorder();
+  await runJob(cfg, 'p', 'w', r.deliver);
+  assert.equal(r.calls[0][2], 'done');
+});
+
+test('Claude Code rules are read as Claude reads them before they go into the sandbox', async () => {
+  const { claudeRuleAbs } = await import('../src/jobs/jobs.js');
+  assert.equal(claudeRuleAbs('Read(//etc/secret)', '/p'), 'Read(//etc/secret)');
+  assert.equal(claudeRuleAbs('Read(./secrets/**)', '/p'), 'Read(//p/secrets/**)');
+  assert.equal(claudeRuleAbs('Read(/data/**)', '/p'), 'Read(//p/data/**)');
+  assert.equal(claudeRuleAbs('Edit(notes.md)', '/p'), 'Edit(//p/notes.md)');
+  assert.equal(claudeRuleAbs('Read(~/.ssh/**)', '/p'), 'Read(~/.ssh/**)');
+  assert.equal(claudeRuleAbs('Bash(rm:*)', '/p'), 'Bash(rm:*)');
 });

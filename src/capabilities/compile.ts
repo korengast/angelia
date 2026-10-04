@@ -1,9 +1,9 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Capability, Config, Profile } from '../instance/config/schema.js';
 import { resolveProfile } from './resolve.js';
-import { SELF_END, SELF_START, upsertSelfBlock } from '../daemon/self.js';
+import { SELF_END, SELF_START, openAgentFile, rewriteAgentFile, upsertSelfBlock } from '../daemon/self.js';
 import { API_SOCKET, HOME_PRIVATE, INSTANCE_DIR, STATE_PRIVATE, commonDir, workspaceDir } from '../instance/instance.js';
 import { isInside } from '../core/paths.js';
 import { codexUserMcpServers } from '../brain/codex-config.js';
@@ -526,12 +526,19 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   const claudeMd = join(p.cwd, 'CLAUDE.md');
   const selfText = p.backend === 'grok' ? opts.self?.(name) : undefined;
   const text = blockText(selfText, lines);
-  const hasBlock = existsSync(claudeMd) && readFileSync(claudeMd, 'utf8').includes(SELF_START);
+  const md = openAgentFile(claudeMd);
+  if (md === 'link') conflicts.push(`${claudeMd} is a link or has another name (a hard link); Angelia writes only a plain file there, so make it one`);
+  const hasBlock = typeof md === 'object' && md.text.includes(SELF_START);
+  if (typeof md === 'object') closeSync(md.fd);
   let blockOp: (() => void) | undefined;
   if (!same(rec?.blockLines ?? [], lines) || (text && !hasBlock)) {
     changes.push(lines.length ? `~ CLAUDE.md managed block: ${lines.length - 1} capability line(s)` : '- CLAUDE.md capability lines');
     blockOp = () => {
-      if (text) { if (upsertSelfBlock(claudeMd, text) === 'broken') throw new Error(`${claudeMd} has one angelia:self marker without the other; fix it by hand`); }
+      if (text) {
+        const r = upsertSelfBlock(claudeMd, text);
+        if (r === 'broken') throw new Error(`${claudeMd} has one angelia:self marker without the other; fix it by hand`);
+        if (r === 'link') throw new Error(`${claudeMd} is a link or not a plain file; Angelia writes only a plain file there`);
+      }
       else removeBlock(claudeMd);
     };
   }
@@ -617,10 +624,11 @@ function stripBlock(text: string): string {
 }
 
 function removeBlock(file: string): void {
-  if (!existsSync(file)) return;
-  const cur = readFileSync(file, 'utf8');
-  const next = stripBlock(cur).replace(/^\n+/, '');
-  if (next !== cur) writeFileSync(file, next);
+  const f = openAgentFile(file);
+  if (f === 'link') throw new Error(`${file} is a link or has another name; Angelia writes only a plain file there`);
+  if (!f) return;
+  const next = stripBlock(f.text).replace(/^\n+/, '');
+  if (next !== f.text) rewriteAgentFile(f.fd, next); else closeSync(f.fd);
 }
 
 /** The text a report prints for one profile's plan. */

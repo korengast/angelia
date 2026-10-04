@@ -12,6 +12,7 @@ import { TelegramAdapter } from '../adapters/telegram/adapter.js';
 import { WhatsAppAdapter } from '../adapters/whatsapp/adapter.js';
 import { matchRoute } from '../core/router/match.js';
 import { gate as routeGate } from '../core/router/gate.js';
+import { apiDeps } from './api/deps.js';
 import { API_SOCKET, ApiServer, claimSocket, loadOrMintToken, sessionToken } from './api/server.js';
 import { selfPrompt, selfOverrideWarning, upsertSelfBlock, FILE_BACKENDS } from './self.js';
 import { blockText, floorWarnings, launchCheck, nestingWarnings, readRecord, seedGuards } from '../capabilities/compile.js';
@@ -84,6 +85,7 @@ export async function runDaemon(configPath: string): Promise<void> {
       // A compiled profile's capability lines share the block; rewriting it with the self text alone would drop them.
       const r = upsertSelfBlock(join(p.cwd, file), blockText(self(name), readRecord(p.cwd)?.blockLines ?? []));
       if (r === 'broken') logLine(`self prompt: ${name}: ${file} has one angelia:self marker without the other; left alone`);
+      else if (r === 'link') logLine(`self prompt: ${name}: ${file} is a link or not a plain file; left alone`);
       else if (r !== 'unchanged') logLine(`self prompt: ${name}: ${file} ${r}`);
     } catch (e) {
       logLine(`self prompt: ${name}: ${(e as Error).message}`);
@@ -121,11 +123,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   // pass routing and gating. Nothing is downloaded for anyone else.
   const inboxFor = (i: Omit<Inbound, 'media'>) => { const r = matchRoute(cfg, i); return r && routeGate(i, r).ok ? cfg.profiles[r.profile].cwd : undefined; };
   const onInbound = (i: Inbound) => orch.handle(i).catch((e) => logLine(`handle error: ${(e as Error).message}`));
-  const api = new ApiServer({
-    send: (key, text, fromKey) => orch.notify(key, text, fromKey), turn: (key, text, fromAgent, fromKey) => orch.injectTurn(key, text, fromAgent, fromKey), routed: (key) => orch.routed(key), handoff: (req) => orch.handoff(req),
-    reach: (from, to) => orch.reach(from, to),
-    sendMedia: (key, m, byOwner) => orch.sendMediaTo(key, m, byOwner),
-  }, apiToken);
+  const api = new ApiServer(apiDeps(orch), apiToken);
   const socket = join(STATE_DIR, API_SOCKET);
   await claimSocket(socket);
   await api.listen(socket);

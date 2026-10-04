@@ -1,8 +1,14 @@
+# Angelia
+
+**Your coding agent. Your personal assistant.** The coding agent CLI you already trust becomes the brain of your personal assistant. You reach it from WhatsApp or Telegram; it runs on your own Mac.
+
 <p align="center">
-  <img src="site/static/banner.png" alt="Angelia: your coding agent, your personal assistant" width="100%">
+  <a href="https://useangelia.com/#demo"><img src="https://github.com/user-attachments/assets/d8a1cbed-6f6f-45d1-88e4-8cf74cdab3cd" alt="A message from a phone reaches Claude Code on the Mac; the answer comes back to the chat, and a commit waits for the owner's yes" width="100%"></a>
 </p>
 
-# Angelia
+```bash
+curl -fsSL https://useangelia.com/install | sh
+```
 
 <p align="center">
   <a href="https://useangelia.com">Website</a> | <a href="docs/reference.md">Docs</a> | <a href="https://github.com/korengast/angelia/releases">Releases</a>
@@ -14,7 +20,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
 
-**Your coding agent. Your personal assistant.** Angelia turns the coding agent CLI you already know and trust into the brain of your personal assistant. You reach it from WhatsApp or Telegram; it runs on your own Mac, with your files, your tools and the subscription you already pay for. Give each part of your life its own chat and its own folder, and each one gets its own instructions and memory.
+It works with your files, your tools and the subscription you already pay for. Give each part of your life its own chat and its own folder, and each one gets its own instructions and memory.
 
 Angelia runs no model of its own. It carries messages, files and approvals between your chats and your agent, and nothing else. Bring the CLI you use, keep its skills and MCP servers, and switch any time: see [Backends](#backends).
 
@@ -116,9 +122,9 @@ Answered by Angelia itself, without spending a token. Registered in Telegram's c
 
 | Command | What it does |
 | --- | --- |
-| `/new` | Start a fresh session; the old one stays in history |
+| `/new` | Start a fresh session; the old one stays in history. Messages still waiting are dropped |
 | `/resume` | List past sessions and switch back to one |
-| `/stop` | Interrupt the current turn |
+| `/stop` | End the current turn and drop the messages waiting behind it (the answer says how many) |
 | `/status` | The active session, its turns and last use |
 | `/model`, `/effort` | Alone: the one in use and the choices the CLI offers. With a value: set it for this session only |
 | `/backend` | Alone: the CLI in use and the ones installed. `/backend codex`: move this profile to another CLI, with a fresh session |
@@ -235,3 +241,5 @@ ANGELIA_STATE_DIR=$(mktemp -d) npm run dev -- init  # a scratch instance that ne
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+If Angelia is useful to you, a star helps other people find it.

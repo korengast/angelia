@@ -1,4 +1,5 @@
-import { createWriteStream, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { constants, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -16,34 +17,71 @@ class TooBig extends Error {}
 /**
  * Stream a file from a chat into `<profile>/.inbox/` under a fresh name, capped at `max`: the declared
  * size is the sender's word. The name is Angelia's (time first, so the folder lists in order), and the
- * file is created with `wx`, so it never replaces or follows anything already there. Returns the path,
+ * file is created exclusively (`O_EXCL`), so it never replaces anything already there. Returns the path,
  * or undefined when the stream passed `max`; nothing is left behind either way.
+ *
+ * The daemon runs outside every sandbox, and `.inbox` sits in the one folder every agent may write. An
+ * agent talked into `ln -s ~/Library/LaunchAgents .inbox` would otherwise have the daemon write a
+ * sender's file there. So `.inbox` must be a plain folder, and on macOS the file is opened with
+ * O_NOFOLLOW_ANY, which refuses a link anywhere in the path, so swapping `.inbox` for a link between the
+ * check and the write does not work either.
  */
 export async function saveInbound(profileDir: string, ext: string, source: AsyncIterable<Uint8Array>, max = MAX_INBOUND, limit = INBOX_LIMIT): Promise<string | undefined> {
-  const dir = join(profileDir, '.inbox');
-  mkdirSync(dir, { recursive: true });
-  const dest = join(dir, `${Date.now()}-${randomBytes(4).toString('hex')}${/^\.[A-Za-z0-9]{1,5}$/.test(ext) ? ext : ''}`);
+  const dir = inboxDir(profileDir);
+  const name = `${Date.now()}-${randomBytes(4).toString('hex')}${/^\.[A-Za-z0-9]{1,5}$/.test(ext) ? ext : ''}`;
+  const dest = join(dir, name);
   let n = 0;
   async function* capped() {
     for await (const c of source) { n += c.length; if (n > max) throw new TooBig(); yield c; }
   }
-  try { await pipeline(Readable.from(capped()), createWriteStream(dest, { flags: 'wx', mode: 0o600 })); }
-  catch (e) { rmSync(dest, { force: true }); if (e instanceof TooBig) return undefined; throw e; }
+  const file = await open(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW_ANY, 0o600);
+  try { await pipeline(Readable.from(capped()), file.createWriteStream()); }
+  catch (e) { await file.close().catch(() => {}); rmSync(dest, { force: true }); if (e instanceof TooBig) return undefined; throw e; }
   pruneInbox(dir, limit, dest);
-  return dest;
+  // The path as the profile is configured (the agent's own cwd), not the resolved one it was written by.
+  return join(profileDir, '.inbox', name);
 }
 
-/** Drop the oldest files until the folder is within `limit`. `keep` (the file just written) always stays. */
+/** macOS: fail the open if any part of the path is a symbolic link (sys/fcntl.h, macOS 11+). */
+const NOFOLLOW_ANY = process.platform === 'darwin' ? 0x20000000 : 0;
+
+/** The profile's `.inbox`, made if missing, and refused unless it is a plain folder inside the profile. */
+export function inboxDir(profileDir: string): string {
+  mkdirSync(profileDir, { recursive: true });
+  const dir = join(realpathSync(profileDir), '.inbox');
+  try { mkdirSync(dir, { mode: 0o700 }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
+  const st = lstatSync(dir);
+  if (!st.isDirectory()) throw new Error(`refusing to save a file: ${dir} is not a plain folder (a link, or a file)`);
+  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) throw new Error(`refusing to save a file: ${dir} belongs to another user`);
+  return dir;
+}
+
+/** The names saveInbound gives files. Only these are ever pruned, so a folder that is not really the
+ *  inbox (a link swapped in after the check) cannot lose anything of its own. */
+const INBOX_NAME = /^\d{13}-[0-9a-f]{8}(\.[A-Za-z0-9]{1,5})?$/;
+
+/** Drop the oldest of Angelia's own files until the folder is within `limit`. `keep` (the file just
+ *  written) always stays. Anything else in the folder is left alone and not counted. */
 export function pruneInbox(dir: string, limit = INBOX_LIMIT, keep?: string): string[] {
+  // Still the folder it was a moment ago, and still not a link: checked again before each delete, so
+  // a link swapped in mid-prune stops it. What a swap can still reach in that instant is only files
+  // with an inbox name, another profile's downloads at worst.
+  const at = lstatSync(dir);
+  const same = () => { try { const now = lstatSync(dir); return now.isDirectory() && now.ino === at.ino && now.dev === at.dev; } catch { return false; } };
+  if (!at.isDirectory()) return [];
   const files = readdirSync(dir).flatMap((name) => {
+    if (!INBOX_NAME.test(name)) return [];
     const path = join(dir, name);
-    try { const st = statSync(path); return st.isFile() ? [{ path, size: st.size, at: st.mtimeMs }] : []; } catch { return []; }
+    try { const st = lstatSync(path); return st.isFile() ? [{ path, size: st.size, at: st.mtimeMs }] : []; } catch { return []; }
   }).sort((a, b) => b.at - a.at || (a.path === keep ? -1 : b.path === keep ? 1 : 0));
   const gone: string[] = [];
   let bytes = 0, count = 0;
   for (const f of files) {
     bytes += f.size; count++;
-    if (f.path !== keep && (bytes > limit.bytes || count > limit.files)) { rmSync(f.path, { force: true }); gone.push(f.path); }
+    if (f.path !== keep && (bytes > limit.bytes || count > limit.files)) {
+      if (!same()) break;
+      rmSync(f.path, { force: true }); gone.push(f.path);
+    }
   }
   return gone;
 }

@@ -2,16 +2,25 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { loadConfig } from '../instance/config/load.js';
-import type { Config } from '../instance/config/schema.js';
+import type { Config, Profile } from '../instance/config/schema.js';
 import { STATE_DIR, envFile } from '../daemon/daemon.js';
 import { configPath } from '../instance/instance.js';
 import { pathWithBins } from '../brain/locate.js';
 import { entry, servicePath, stableNode } from '../daemon/service.js';
-import { apiCall } from '../daemon/api/client.js';
+import { apiCall, ownerToken, post } from '../daemon/api/client.js';
+import { sessionToken } from '../daemon/api/server.js';
 import {
   buildJobPlist, installedJobs, jobChat, jobLabel, jobPin, jobLoaded, jobPlistPath, loadJob, logJob,
-  readJobs, runJob, sameJob, unloadJob, JOBS_FILE, type Job,
+  jobSandboxed, readJobs, runJob, sameJob, unloadJob, JOBS_FILE, type Job,
 } from './jobs.js';
+
+/** What a job delivers: its own definition (`send:`, `turn:`) with the owner's token, as written in
+ *  the table's folder and pinned at install; a command's output with the chat's token, so the daemon
+ *  holds its MEDIA: lines to the profile's rules like anything else the agent could have written. */
+const jobDeliver = async (kind: 'send' | 'turn', key: string, text: string, asChat?: boolean): Promise<void> => {
+  if (!asChat) return apiCall(kind, key, text);
+  await post(`/${kind}`, { token: sessionToken(ownerToken(), key), key, text });
+};
 
 const USAGE = `usage: angelia jobs [profile...]            list jobs and whether their timers match
        angelia jobs install [profile...]    write and load the timers (all profiles when none named)
@@ -29,7 +38,8 @@ function tableOf(argv: string[]): { table: string; words: string[] } {
  *  timer out of date merely because another shell looked at it. */
 const same = (a: string | undefined, b: string | undefined): boolean => !!a && !!b && sameJob(a, b);
 
-const what = (j: Job): string => (j.turn ? `turn "${j.turn.slice(0, 50)}"` : j.send ? `send "${j.send.slice(0, 50)}"` : `run ${j.run!.slice(0, 60)}`);
+/** What a job does; a command on a sandboxed profile says it runs in the agent's sandbox. */
+const what = (j: Job, p?: Profile): string => (j.turn ? `turn "${j.turn.slice(0, 50)}"` : j.send ? `send "${j.send.slice(0, 50)}"` : `run ${j.run!.slice(0, 60)}${p && jobSandboxed(p) ? ' (sandboxed)' : ''}`);
 const when = (j: Job): string => (j.every ? `every ${j.every}` : `cron ${j.schedule}`);
 
 function plan(cfg: Config, table: string, profile: string) {
@@ -68,7 +78,7 @@ export async function jobsCommand(argv: string[]): Promise<void> {
       const [profile, job] = rest;
       if (!profile || !job) throw new Error(USAGE);
       try {
-        const line = await runJob(cfg, profile, job, apiCall, { hash, secrets: envFile(STATE_DIR) });
+        const line = await runJob(cfg, profile, job, jobDeliver, { hash, secrets: envFile(STATE_DIR), stateDir: STATE_DIR, chatToken: (key) => sessionToken(ownerToken(), key) });
         logJob(STATE_DIR, `${profile}/${job} ${line}`);
         console.log(line);
       } catch (e) {
@@ -78,7 +88,9 @@ export async function jobsCommand(argv: string[]): Promise<void> {
         if (hash) {
           try {
             const j = readJobs(cfg, profile).jobs[job];
-            if (j) await apiCall('send', jobChat(cfg, profile, job, j), `Scheduled job ${job} did not run: ${msg}`);
+            // As the chat, never the owner: the message can echo text the job printed (a daemon error
+            // quoting a MEDIA: path), and the owner's token would attach it past the profile's rules.
+            if (j) await jobDeliver('send', jobChat(cfg, profile, job, j), `Scheduled job ${job} did not run: ${msg}`, true);
           } catch { /* the log line is all we can do */ }
         }
         throw e;
@@ -95,7 +107,7 @@ export async function jobsCommand(argv: string[]): Promise<void> {
           mkdirSync(dirname(jobPlistPath(label)), { recursive: true });
           writeFileSync(jobPlistPath(label), w.plist, { mode: 0o644 });
           loadJob(label);
-          console.log(`installed ${label}: ${when(w.j)} → ${jobChat(cfg, profile, w.name, w.j)}, ${what(w.j)}`);
+          console.log(`installed ${label}: ${when(w.j)} → ${jobChat(cfg, profile, w.name, w.j)}, ${what(w.j, cfg.profiles[profile])}`);
         }
       }
       console.log('Timers match the job files.');
@@ -134,7 +146,7 @@ export function jobsState(cfg: Config, table: string, profiles: string[]): { lin
       const label = jobLabel(profile, name);
       const state = !j.enabled ? 'disabled' : !p.have.has(label) ? 'not installed' : !same(p.have.get(label), p.want.get(label)?.plist) ? 'out of date' : 'installed';
       if (state === 'not installed' || state === 'out of date' || (state === 'disabled' && p.have.has(label))) drift++;
-      lines.push(`  ${name.padEnd(18)} ${when(j).padEnd(22)} ${state.padEnd(13)} ${what(j)}`);
+      lines.push(`  ${name.padEnd(18)} ${when(j).padEnd(22)} ${state.padEnd(13)} ${what(j, cfg.profiles[profile])}`);
     }
     for (const label of p.have.keys()) if (![...p.want.keys()].includes(label) && !Object.keys(p.jobs).some((n) => jobLabel(profile, n) === label)) { lines.push(`  ${label}: a timer with no job in the file (angelia jobs install removes it)`); drift++; }
   }

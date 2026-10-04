@@ -17,6 +17,8 @@ export interface ApiDeps {
   sendMedia(key: string, req: MediaRequest, byOwner: boolean): Promise<void>;
   /** Is `key` a routed chat? */
   routed(key: string): boolean;
+  /** Has the chat as many turns running and waiting as it may? A /turn is then refused with 429. */
+  queueFull?(key: string): boolean;
   /** May the agent of chat `from` message chat `to`, another profile's? Undefined: yes; else why not. */
   reach?(from: string, to: string): string | undefined;
   /** `/angelia-handoff` from a terminal. Rejects with a HandoffError whose message is for the terminal. */
@@ -116,6 +118,7 @@ export class ApiServer {
       catch (e) { if (e instanceof MediaError) return json(res, { error: e.message }, 400); throw e; }
       return json(res, { ok: true, ...(media.length ? { media: media.length } : {}) });
     }
+    if (this.d.queueFull?.(key)) return json(res, { error: 'this chat already has as many messages waiting as it takes; try again after it answers, or /stop it' }, 429);
     void this.d.turn(key, text, who !== 'owner', who === 'peer' ? from : undefined);
     return json(res, { ok: true, queued: true });
   }
