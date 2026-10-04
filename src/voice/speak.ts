@@ -49,9 +49,11 @@ export function parseArgs(argv: string[]): SpeakOptions {
   return out;
 }
 
-export function sayArgs({ text, voice, rate }: Pick<SpeakOptions, 'text' | 'voice' | 'rate'>, wav: string): string[] {
+/** The text goes on stdin (`-f -`), never on argv: `say` reads its options with getopt, so a text
+ *  such as `-f/path/to/file` from a chat made it read that file aloud, around every deny rule. */
+export function sayArgs({ voice, rate }: Pick<SpeakOptions, 'voice' | 'rate'>, wav: string): string[] {
   return [...(voice ? ['-v', voice] : []), ...(rate ? ['-r', rate] : []),
-    '-o', wav, '--data-format=LEI16@22050', text];
+    '-o', wav, '--data-format=LEI16@22050', '-f', '-'];
 }
 
 /** Voices this machine actually has, so a missing Hebrew voice degrades instead of reading salad. */
@@ -76,7 +78,7 @@ export function speak(argv: string[]): number {
     const voice = pickVoice(opts.text, opts.voice, installedVoices());
     if (isHebrew(opts.text) && !voice) console.error('note: no Hebrew voice installed; the default voice will read it badly');
     const wav = join(dir, 'reply.wav');
-    const said = spawnSync('say', sayArgs({ ...opts, voice }, wav), { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8', timeout: 120_000 });
+    const said = spawnSync('say', sayArgs({ ...opts, voice }, wav), { input: opts.text, stdio: ['pipe', 'ignore', 'pipe'], encoding: 'utf8', timeout: 120_000 });
     if (said.status !== 0 || !existsSync(wav)) { console.error(`say failed: ${(said.stderr || '').trim().split('\n').pop() || `exit ${said.status}`}`); return 2; }
 
     // ogg/opus is what both chat platforms render as a voice bubble. Without ffmpeg the wav is

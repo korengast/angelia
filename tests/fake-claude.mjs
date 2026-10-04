@@ -7,6 +7,7 @@
 //   text contains "CRASH"    -> exit 1 mid-turn
 //   text contains "EMPTY"    -> empty result
 //   text contains "SLOW"     -> the answer takes 3s, so a turn can be interrupted mid-flight
+//   text contains "SEPARATOR" -> the answer holds a raw U+2028 (JSON.stringify leaves it unescaped)
 //   text contains "BUSYTURN" -> forty progress lines, then the answer
 //   text contains "ENVDUMP"  -> the answer lists the canary variables it can see (CANARY_*, the bot token, API keys)
 //   text contains "AUTOMEMORY" -> the answer is CLAUDE_CODE_DISABLE_AUTO_MEMORY as the child sees it
@@ -73,6 +74,10 @@ rl.on('line', (line) => {
     pending = '6b480a6f-d386-4972-95d9-2eeaef82f3bc';
     out({ type: 'control_request', request_id: pending, request: { subtype: 'can_use_tool', tool_name: 'Bash',
           input: { command: 'rm -rf /tmp/x' }, description: 'remove x' } });
+    return;
+  }
+  if (text.includes('SEPARATOR')) {
+    out({ type: 'result', subtype: 'success', is_error: false, result: 'line one\u2028line two', session_id: sid });
     return;
   }
   if (text.includes('SLOW')) {

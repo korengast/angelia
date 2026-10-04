@@ -172,3 +172,39 @@ export function exitReason(failure: string): string {
   const line = failure.split('\n').map((l) => l.trim()).filter(Boolean).pop();
   return line ? `exit: ${line.slice(0, 200)}` : 'exit';
 }
+
+/**
+ * One JSON object per line of a child's stdout, split on `\n` only. Node's readline also ends a line
+ * at U+2028 and U+2029, which JSON.stringify leaves raw inside strings: a model answer holding one
+ * was cut in two, both halves failed to parse, and when that line was the result the turn never
+ * ended. Anything that is not a JSON object is skipped.
+ */
+export function onJsonLines(stdout: NodeJS.ReadableStream & { setEncoding(e: BufferEncoding): unknown }, fn: (obj: any) => void): void {
+  // The part of a line seen so far, in pieces: joined only when its newline comes, so one long line
+  // (a base64 image in a tool result) costs one pass, not one per chunk.
+  let parts: string[] = [];
+  const emit = (raw: string) => {
+    let m: unknown;
+    try { m = JSON.parse(raw.replace(/\r$/, '')); } catch { return; }
+    if (m && typeof m === 'object') fn(m);
+  };
+  stdout.setEncoding('utf8');
+  stdout.on('data', (s: string) => {
+    let from = 0, i: number;
+    while ((i = s.indexOf('\n', from)) !== -1) {
+      parts.push(s.slice(from, i));
+      emit(parts.join(''));
+      parts = [];
+      from = i + 1;
+    }
+    if (from < s.length) parts.push(s.slice(from));
+  });
+  // A last line with no newline, as readline would have given it.
+  stdout.on('end', () => { if (parts.length) emit(parts.join('')); parts = []; });
+}
+
+/** One JSON line for a CLI's stdin, with U+2028 and U+2029 escaped: JSON.stringify leaves them raw,
+ *  and a reader that splits lines the way Node's readline does would cut the message there. */
+export function jsonLine(obj: unknown): string {
+  return JSON.stringify(obj).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029') + '\n';
+}

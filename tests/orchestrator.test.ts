@@ -412,3 +412,9 @@ test('/new drops the waiting messages too, and /stop with nothing running says n
   assert.match(sent.map((s) => s.text).join('\n'), /^New session [0-9a-f]{8} started\. 1 waiting message dropped\.$/m);
   assert.ok(!sent.some((s) => /then one/.test(s.text)));
 });
+
+test('an answer holding a Unicode line separator (U+2028) arrives whole, and the turn ends', async (t) => {
+  const { o, sent } = setup(); t.after(() => o.shutdown());
+  await o.handle(dm('1', 'SEPARATOR please'));
+  assert.equal(sent.at(-1)?.text, 'line one\u2028line two');
+});

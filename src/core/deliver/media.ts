@@ -190,7 +190,9 @@ function short(p: string): string {
  */
 const TAG_RE = new RegExp(
   String.raw`[\`"']?MEDIA:[ \t]*` +
-  String.raw`(?<path>\`[^\`\n]+\`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)[^\n]*?\.(?:${TAG_EXTS.join('|')}))` +
+  // A path is at most PATH_MAX (1024 on macOS): the bound keeps a line of many "MEDIA:/" from making
+  // each one scan to the end of the line (quadratic: 256 KB took seconds on the daemon's thread).
+  String.raw`(?<path>\`[^\`\n]{1,1024}\`|"[^"\n]{1,1024}"|'[^'\n]{1,1024}'|(?:~/|/)[^\n]{0,1024}?\.(?:${TAG_EXTS.join('|')}))` +
   String.raw`(?=[\s\`"',;:)\]}]|$)[\`"']?`,
   'gi',
 );

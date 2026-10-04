@@ -9,7 +9,7 @@ import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent } from '../core/types.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession } from './brain.js';
-import { importsAccepted, importsDialogOpen, loadBuffer, paneIdle, pasteLanded, permissionDialog, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { importsAccepted, importsDialogOpen, loadBuffer, paneBusy, paneIdle, pasteLanded, permissionDialog, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { PermissionRelay, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { readRecord } from '../capabilities/compile.js';
@@ -28,6 +28,8 @@ const PROMPT_TIMEOUT_MS = 10 * 60_000;
  *  stuck one. Each full hour the chat gets one line saying so, so a silent turn is not taken for a
  *  crash. */
 const TURN_NOTICE_MS = 60 * 60_000;
+/** Said when a message reaches a session that is busy with something else, mostly a turn typed in the Claude app. */
+export const BUSY_PANE_LINE = 'The session is busy with another turn (in the Claude app or its pane); your message waits for it.';
 /** A pane and transcript unchanged this long: the hourly line says the turn may be stuck. A working
  *  CLI redraws its spinner and timer every second, so only a screen that waits on nothing is this still. */
 const STILL_MS = 30 * 60_000;
@@ -342,8 +344,12 @@ export class TuiBrain extends EventEmitter implements Brain {
   }
 
   /** Type one message into the pane: wait for a prompt, paste (newlines stay inside one message),
-   *  check it landed, then Enter. Never press Enter on an unverified box. */
-  private async paste(raw: string): Promise<boolean> {
+   *  check it landed, then Enter. Never press Enter on an unverified box. `submit` runs right before
+   *  Enter, once the pane is idle and the text has landed: whatever the turn measures from (the
+   *  transcript size, the Stop marker, the time) starts there, not before a wait in which someone
+   *  else's turn in the Claude app could finish. `gen`: the reader this paste is for; a handoff
+   *  during the wait takes the pane, and then nothing is typed into it. */
+  private async paste(raw: string, submit: () => void = () => {}, gen = this.gen): Promise<boolean> {
     // The last gate before text becomes keys: whoever called, no control character reaches the pane.
     const text = cleanText(raw);
     const deadline = Date.now() + PROMPT_TIMEOUT_MS;
@@ -356,7 +362,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     await this.tm(['paste-buffer', '-p', '-d', '-b', this.name, '-t', this.name]);
     for (let i = 0; i < 8; i++) {
       await sleep(300);
-      if (pasteLanded(await this.capture(20), text)) {
+      const pane = await this.capture(20);
+      if (pasteLanded(pane, text)) {
+        // A turn started in the app between the idle check and now: Claude would queue our text
+        // after it, and its answer would look like ours. Clear the box and say no.
+        if (gen !== this.gen || paneBusy(pane)) break;
+        submit();
         await this.tm(['send-keys', '-t', this.name, 'Enter']);
         return true;
       }
@@ -370,11 +381,18 @@ export class TuiBrain extends EventEmitter implements Brain {
     const problem = await (this.ready ?? Promise.resolve('brain not started'));
     if (problem) { yield { kind: 'result', text: '', isError: true, reason: problem }; return; }
     if (this.notice) { yield { kind: 'notice', text: this.notice }; this.notice = null; }
-    this.at = fileSize(this.transcript); // only rows written from here on are this turn's
-    rmSync(this.markerPath, { force: true });
-    const sentAt = Date.now();
+    // The session may be busy with a turn typed in the Claude app: the message waits for it, and the
+    // chat is told why nothing happens yet.
+    // An empty capture is a pane that is gone, which paste() reports; a dialog is not a turn.
+    if (paneBusy(await this.capture(30))) yield { kind: 'notice', text: BUSY_PANE_LINE };
+    let sentAt = Date.now();
     const gen = this.gen;
-    if (!(await this.paste(text))) {
+    const submit = () => {
+      this.at = fileSize(this.transcript); // only rows written from here on are this turn's
+      rmSync(this.markerPath, { force: true });
+      sentAt = Date.now();
+    };
+    if (!(await this.paste(text, submit, gen))) {
       yield { kind: 'result', text: '', isError: true, reason: this.up ? 'the session never came back to a prompt' : 'exit' };
       return;
     }

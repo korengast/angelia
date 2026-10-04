@@ -30,11 +30,23 @@ test('speak: Hebrew text picks the Hebrew voice, and degrades instead of reading
   assert.equal(pickVoice('hello', 'Daniel', ['Samantha']), 'Daniel');
 });
 
-test('speak: arguments keep the text last, where say expects it', () => {
+test('speak: the text goes to say on stdin, never as an argument', () => {
   assert.deepEqual(parseSay(['hi there', '--voice', 'Carmit', '--rate', '180']), { text: 'hi there', voice: 'Carmit', out: '', rate: '180' });
-  const args = sayArgs({ text: 'hi', voice: 'Carmit', rate: '' }, '/tmp/a.wav');
-  assert.deepEqual(args, ['-v', 'Carmit', '-o', '/tmp/a.wav', '--data-format=LEI16@22050', 'hi']);
-  assert.deepEqual(sayArgs({ text: 'hi', voice: '', rate: '' }, '/tmp/a.wav').slice(0, 2), ['-o', '/tmp/a.wav']);
+  const args = sayArgs({ voice: 'Carmit', rate: '' }, '/tmp/a.wav');
+  assert.deepEqual(args, ['-v', 'Carmit', '-o', '/tmp/a.wav', '--data-format=LEI16@22050', '-f', '-']);
+  assert.deepEqual(sayArgs({ voice: '', rate: '' }, '/tmp/a.wav').slice(0, 2), ['-o', '/tmp/a.wav']);
+});
+
+test('speak: a text that looks like an option is read out as text, not as a file to read', { skip: process.platform !== 'darwin' && 'say is macOS only' }, async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtempSync, statSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-say-'));
+  const said = (text: string, wav: string) => { spawnSync('say', sayArgs({ voice: '', rate: '' }, wav), { input: text, timeout: 60_000 }); return statSync(wav).size; };
+  // /etc/services is long: read aloud it would be minutes of audio; the eight characters a second or two.
+  const asText = said('-f/etc/services', join(dir, 'a.wav'));
+  assert.ok(asText < 400_000, `${asText} bytes: say read the file`);
 });
 
 test('both commands reach their own code from the CLI: no arguments prints the usage and exits 2', () => {

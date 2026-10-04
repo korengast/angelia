@@ -17,9 +17,10 @@ export function gate(i: Pick<Inbound, 'sender' | 'isGroup' | 'mentioned'>, route
  * by name (allow_from), or everyone with "*".
  */
 export function mayTalk(i: Pick<Inbound, 'sender' | 'isGroup'>, route: Route): boolean {
-  if (route.allow_from.includes(EVERYONE)) return true;
-  if (route.allow_from.length) return route.allow_from.includes(i.sender);
-  return isOwner(i, route);
+  // The owners always: allow_from names who else may talk ("besides the owners", as the docs say).
+  // An allow_from without them used to shut them out of their own group: no /stop, no answer to a
+  // permission prompt the others' turns raised.
+  return isOwner(i, route) || route.allow_from.includes(EVERYONE) || route.allow_from.includes(i.sender);
 }
 
 /** allow_from: ["*"]: every member of the chat. */

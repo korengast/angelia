@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { childEnv, versionAtLeast } from './argv.js';
-import { BrainExited, PermissionBook, exitReason, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 import { cacheEnv, profileCacheDir } from './cache.js';
 import { CODEX_PROFILE, codexApproval, codexConfigConflict, codexOverrides, codexSandboxNote, codexSandboxed } from './codex-config.js';
 import { profilePermissions, readRecord } from '../capabilities/compile.js';
@@ -113,19 +113,7 @@ export class CodexBrain extends EventEmitter implements Brain {
     child.stdin.on('error', () => {});
     // Kept, never logged as it arrives; the tail is the reason given when the child dies unanswered.
     child.stderr.on('data', (b: Buffer) => { this.failure = (this.failure + b.toString('utf8')).slice(-400); });
-    let buf = '';
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (s: string) => {
-      buf += s;
-      let i: number;
-      while ((i = buf.indexOf('\n')) !== -1) {
-        const raw = buf.slice(0, i).replace(/\r$/, '');
-        buf = buf.slice(i + 1);
-        let m: Msg;
-        try { m = JSON.parse(raw); } catch { continue; }
-        if (m && typeof m === 'object') this.dispatch(m);
-      }
-    });
+    onJsonLines(child.stdout, (m: Msg) => this.dispatch(m));
     this.ready = this.handshake(writable);
     this.ready.catch(() => {});
   }
@@ -165,7 +153,7 @@ export class CodexBrain extends EventEmitter implements Brain {
   }
 
   private write(obj: unknown): void {
-    this.child?.stdin.write(JSON.stringify(obj) + '\n');
+    this.child?.stdin.write(jsonLine(obj));
   }
 
   private reply(id: unknown, result: unknown): void { this.write({ id, result }); }

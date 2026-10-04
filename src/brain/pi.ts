@@ -7,7 +7,7 @@ import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { piArgv, childEnv, versionAtLeast } from './argv.js';
 import { profilePermissions } from '../capabilities/compile.js';
-import { BrainExited, PermissionBook, exitReason, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 import { PERMISSION_TITLE, type PiPolicy } from './pi-gate.js';
 import { LOST_SESSION_LINE } from './transcripts.js';
 import { tmuxSocketPath } from './tmux.js';
@@ -148,25 +148,14 @@ export class PiBrain extends EventEmitter implements Brain {
       // Tested on the kept tail, so a line split across two chunks is still seen.
       if (this.session.started && !this.lostSeen && NO_SESSION.test(this.failure)) this.lost = this.lostSeen = true;
     });
-    let buf = '';
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (s: string) => {
-      buf += s;
-      let i: number;
-      while ((i = buf.indexOf('\n')) !== -1) {
-        const raw = buf.slice(0, i).replace(/\r$/, '');
-        buf = buf.slice(i + 1);
-        let m: Msg;
-        try { m = JSON.parse(raw); } catch { continue; }
-        if (!m || typeof m !== 'object') continue;
-        if (!this.inTurn && m.type === 'extension_ui_request' && DIALOGS.includes(m.method)) { this.write({ type: 'extension_ui_response', id: m.id, cancelled: true }); continue; }
-        this.lines.emit('line', m);
-      }
+    onJsonLines(child.stdout, (m: Msg) => {
+      if (!this.inTurn && m.type === 'extension_ui_request' && DIALOGS.includes(m.method)) { this.write({ type: 'extension_ui_response', id: m.id, cancelled: true }); return; }
+      this.lines.emit('line', m);
     });
   }
 
   private write(obj: unknown): void {
-    this.child?.stdin.write(JSON.stringify(obj) + '\n');
+    this.child?.stdin.write(jsonLine(obj));
   }
 
   async *turn(text: string): AsyncGenerator<BrainEvent> {

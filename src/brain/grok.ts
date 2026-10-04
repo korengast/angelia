@@ -1,10 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { grokArgv, childEnv } from './argv.js';
-import { BrainExited, PermissionBook, exitReason, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 
 type Msg = Record<string, any>;
 
@@ -61,11 +60,7 @@ export class GrokBrain extends EventEmitter implements Brain {
     // Kept, never logged as it arrives (it can carry message text); the tail is the reason given when
     // the child dies without an answer, as ClaudeBrain does.
     child.stderr.on('data', (b: Buffer) => { this.failure = (this.failure + b.toString('utf8')).slice(-400); });
-    createInterface({ input: child.stdout }).on('line', (raw) => {
-      let m: Msg;
-      try { m = JSON.parse(raw); } catch { return; }
-      this.dispatch(m);
-    });
+    onJsonLines(child.stdout, (m: Msg) => this.dispatch(m));
     this.ready = this.handshake();
     this.ready.catch(() => {});
   }
@@ -88,7 +83,7 @@ export class GrokBrain extends EventEmitter implements Brain {
   }
 
   private write(obj: unknown): void {
-    this.child?.stdin.write(JSON.stringify(obj) + '\n');
+    this.child?.stdin.write(jsonLine(obj));
   }
 
   private call(method: string, params: unknown): Promise<Msg> {

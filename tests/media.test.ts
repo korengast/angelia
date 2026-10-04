@@ -149,3 +149,11 @@ test('the file sent is a copy taken at once: a swap under the checked name after
   symlinkSync(join(dir, 'secret'), f);
   assert.throws(() => snapshotMedia(m2), /changed before it could be sent/);
 });
+
+test('media tags: a long run of "MEDIA:/" is parsed in linear time, not stalling the daemon', async () => {
+  const { extractMediaTags } = await import('../src/core/deliver/media.js');
+  const t0 = Date.now();
+  extractMediaTags('MEDIA:/'.repeat(37_000)); // the API's body cap, about 256 KB
+  // Was about 2.8 s; well under a second now. A loose bound, for a slow CI runner.
+  assert.ok(Date.now() - t0 < 1500, `${Date.now() - t0} ms`);
+});

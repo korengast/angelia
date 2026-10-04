@@ -1,10 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { claudeArgv, childEnv, versionAtLeast, CLAUDE_ENV, MIN_CLAUDE_VERSION } from './argv.js';
-import { BrainExited, PermissionBook, exitReason, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 import { LOST_SESSION_LINE, placeTranscript } from './transcripts.js';
 
 export { BrainExited, exitReason, type BrainOptions } from './brain.js';
@@ -79,11 +78,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
     // is reported, and only when the child dies without an answer, because otherwise a deterministic
     // failure - not logged in, an unknown flag - is completely invisible.
     child.stderr.on('data', (b: Buffer) => { this.failure = (this.failure + b.toString('utf8')).slice(-400); });
-    createInterface({ input: child.stdout }).on('line', (raw) => {
-      let obj: Line;
-      try { obj = JSON.parse(raw); } catch { return; }
-      this.lines.emit('line', obj);
-    });
+    onJsonLines(child.stdout, (obj: Line) => this.lines.emit('line', obj));
     // Without this handshake the CLI never sends can_use_tool over stdio: it silently denies the tool
     // and the model tends to invent a result. Verified against claude 2.1.272.
     this.send({ type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize', hooks: {} } });
@@ -98,7 +93,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
   }
 
   private send(obj: unknown): void {
-    this.child?.stdin.write(JSON.stringify(obj) + '\n');
+    this.child?.stdin.write(jsonLine(obj));
   }
 
   /**

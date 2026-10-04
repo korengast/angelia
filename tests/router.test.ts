@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Config } from '../src/instance/config/schema.js';
 import { matchRoute } from '../src/core/router/match.js';
-import { gate } from '../src/core/router/gate.js';
+import { gate, mayTalk } from '../src/core/router/gate.js';
 import type { Inbound } from '../src/core/types.js';
 
 const cfg = Config.parse({
@@ -49,4 +49,11 @@ test('a session key parses back into chat and topic; a group is known from its i
   assert.deepEqual(parseSessionKey('whatsapp:120363000000000001@g.us'), { platform: 'whatsapp', chat: '120363000000000001@g.us' });
   assert.equal(sessionKey(parseSessionKey('telegram:-1001:5')), 'telegram:-1001:5');
   assert.deepEqual([isGroupChat('telegram', '-1001'), isGroupChat('telegram', '7'), isGroupChat('whatsapp', 'x@g.us'), isGroupChat('whatsapp', '15550000001@s.whatsapp.net')], [true, false, true, false]);
+});
+
+test('allow_from adds people besides the owners: an owner left off the list is still heard', () => {
+  const route = Config.parse({ profiles: { p: { cwd: '/p' } }, routes: [{ platform: 'whatsapp', chat: '9@g.us', profile: 'p', owners: ['1000'], allow_from: ['2000'] }] }).routes[0];
+  assert.equal(mayTalk({ sender: '1000', isGroup: true }, route), true, 'the owner');
+  assert.equal(mayTalk({ sender: '2000', isGroup: true }, route), true, 'the one allow_from names');
+  assert.equal(mayTalk({ sender: '3000', isGroup: true }, route), false, 'anyone else');
 });
