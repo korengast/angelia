@@ -14,10 +14,12 @@ import type { Inbound } from '../src/core/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FAKE = join(here, 'fake-claude.mjs');
+const FAKE_CODEX = join(here, 'fake-codex.mjs');
+const FAKE_PI = join(here, 'fake-pi.mjs');
 
 function setup(extra: Record<string, unknown> = {}) {
   const cfg = Config.parse({
-    profiles: { home: { cwd: here, model: 'opus', add_dirs: ['/tmp'], answer_from: ['social'] }, social: { cwd: here, answer_from: ['home'] }, side: { cwd: here, backend: 'grok', answer_from: ['*'] }, quiet: { cwd: here } },
+    profiles: { home: { cwd: here, model: 'opus', add_dirs: ['/tmp'], answer_from: ['social'] }, social: { cwd: here, answer_from: ['home'] }, side: { cwd: here, backend: 'grok', answer_from: ['*'] }, quiet: { cwd: here }, cx: { cwd: here, backend: 'codex', answer_from: ['social'] }, pp: { cwd: here, backend: 'pi', answer_from: ['social'] } },
     routes: [
       { platform: 'telegram', chat: 1, profile: 'home' },
       { platform: 'telegram', chat: 2, profile: 'social' },
@@ -26,6 +28,8 @@ function setup(extra: Record<string, unknown> = {}) {
       { platform: 'telegram', chat: 4, profile: 'social' },
       { platform: 'telegram', chat: 5, profile: 'social' },
       { platform: 'telegram', chat: 6, profile: 'quiet' },
+      { platform: 'telegram', chat: 7, profile: 'cx' },
+      { platform: 'telegram', chat: 8, profile: 'pp' },
     ],
     defaults: { max_out_per_min: 1000 },
     onboard: { owners: ['1'] },
@@ -33,7 +37,7 @@ function setup(extra: Record<string, unknown> = {}) {
   });
   const sent: { chat: string; text: string }[] = [];
   const sender = { send: async (chat: string, text: string) => { sent.push({ chat, text }); } };
-  const o = new Orchestrator(cfg, { telegram: sender, whatsapp: sender }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-ask-')), bins: { 'claude-code': FAKE } });
+  const o = new Orchestrator(cfg, { telegram: sender, whatsapp: sender }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-ask-')), bins: { 'claude-code': FAKE, codex: FAKE_CODEX, pi: FAKE_PI } });
   return { o, sent, cfg };
 }
 const dm = (chat: string, text: string): Inbound => ({ platform: 'telegram', chat, sender: 'u1', senderName: 'Owner', text, isGroup: false, mentioned: false, media: [] });
@@ -143,4 +147,60 @@ test('ask: a profile answers only the profiles in its answer_from; the owner alw
   await assert.rejects(o.ask('telegram:1', 'x', 'telegram:-100'), (e: AskError) => e.status === 403, 'home asking home through another chat is not in its own list');
   assert.ok(parsed(await o.ask('telegram:6', 'from the owner')).prompt.endsWith('from the owner'), 'the owner, from a terminal, needs no list');
   await assert.rejects(o.ask('telegram:3', 'x', 'telegram:6'), (e: AskError) => e.status === 501, '"*" lets everyone ask');
+});
+
+test('ask a Codex chat: a fork of its thread in the read-only sandbox, no network, web search or session kept', async (t) => {
+  const { o } = setup(); t.after(() => o.shutdown());
+  await o.handle(dm('7', 'hello'));
+  const thread = o.map.getActive('telegram:7')!.id;
+  const a = parsed(await o.ask('telegram:7', 'what changed?', 'telegram:2'));
+  assert.deepEqual(a.argv.slice(0, 2), ['exec', '--ephemeral']);
+  for (const c of ['permissions.angelia.extends=":read-only"', 'permissions.angelia.network.enabled=false', 'web_search="disabled"', 'approval_policy="never"',
+    'features.apps=false', 'features.plugins=false', 'features.hooks=false', 'notify=[]', '--ignore-rules']) assert.ok(a.argv.includes(c), c);
+  // The profile's floor and the other profiles' caches reach the sandbox's filesystem rules.
+  const fsArg = a.argv.find((x) => x.startsWith('permissions.angelia.filesystem='))!;
+  assert.match(fsArg, /cache\/codex/);
+  assert.ok(a.argv.some((x) => x.startsWith('developer_instructions=') && x.includes('read-only copy')));
+  assert.deepEqual(a.argv.slice(-3), ['fork', thread, '-']);
+  assert.match(a.prompt, /^\[telegram dm 7 · profile social/);
+});
+
+test('ask: work files live under the state folder\'s closed compiled/ and are gone afterwards; a project Codex config refuses', async (t) => {
+  const { o } = setup(); t.after(() => o.shutdown());
+  const state = (o as unknown as { opts: { stateDir: string } }).opts.stateDir;
+  await o.ask('telegram:7', 'one', 'telegram:2');
+  await o.ask('telegram:1', 'two', 'telegram:2');
+  const { readdirSync, mkdirSync, writeFileSync } = await import('node:fs');
+  assert.deepEqual(readdirSync(join(state, 'compiled', 'ask')), []);
+  const cwd = mkdtempSync(join(tmpdir(), 'angelia-ask-cx-'));
+  mkdirSync(join(cwd, '.codex'));
+  writeFileSync(join(cwd, '.codex', 'config.toml'), 'model = "x"\n');
+  const cfg = Config.parse({ profiles: { cx: { cwd, backend: 'codex', answer_from: ['*'] }, s: { cwd: here } }, routes: [{ platform: 'telegram', chat: 7, profile: 'cx' }, { platform: 'telegram', chat: 2, profile: 's' }] });
+  const o2 = new Orchestrator(cfg, { telegram: { send: async () => {} } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-ask-')), bins: { codex: FAKE_CODEX } });
+  t.after(() => o2.shutdown());
+  await assert.rejects(o2.ask('telegram:7', 'q', 'telegram:2'), (e: AskError) => e.status === 409);
+});
+
+test('ask a pi chat: read tools only, Angelia\'s gate in plan mode, nothing kept', async (t) => {
+  const { o } = setup(); t.after(() => o.shutdown());
+  const a = parsed(await o.ask('telegram:8', 'what is here?', 'telegram:2')) as ReturnType<typeof parsed> & { policy: { mode: string } };
+  assert.equal(a.argv[a.argv.indexOf('--tools') + 1], 'read,grep,find,ls');
+  for (const f of ['-p', '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates']) assert.ok(a.argv.includes(f), f);
+  assert.match(a.argv[a.argv.indexOf('-e') + 1], /pi-gate/);
+  assert.equal(a.policy.mode, 'plan');
+});
+
+test('pi: a chat\'s session file is found by its id, and a fork goes into a folder of its own', async () => {
+  const { piSessionFile, piAskArgv } = await import('../src/brain/ask.js');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const home = mkdtempSync(join(tmpdir(), 'angelia-ask-home-'));
+  const dir = join(home, '.pi', 'agent', 'sessions', '--Users-x-p--');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, '2026-10-04T10-00-00-000Z_aaaa-bbbb.jsonl'), '{}\n');
+  assert.equal(piSessionFile('aaaa-bbbb', home), join(dir, '2026-10-04T10-00-00-000Z_aaaa-bbbb.jsonl'));
+  assert.equal(piSessionFile('nope', home), undefined);
+  const p = Config.parse({ profiles: { x: { cwd: '/x', backend: 'pi' } }, routes: [] }).profiles.x;
+  const argv = piAskArgv(p, { file: '/s/f.jsonl', into: '/t/fork' }, 'pi', undefined, '/g.ts');
+  assert.ok(!argv.includes('--no-session'), 'pi refuses --fork with --no-session');
+  assert.deepEqual(argv.slice(argv.indexOf('--fork'), argv.indexOf('--fork') + 4), ['--fork', '/s/f.jsonl', '--session-dir', '/t/fork']);
 });

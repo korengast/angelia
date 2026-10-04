@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import type { Config, Profile } from '../instance/config/schema.js';
 import type { Inbound, BrainEvent, Platform, SessionRow } from './types.js';
@@ -10,7 +10,9 @@ import { SessionMap } from './session/map.js';
 import { KeyedQueue } from './session/queue.js';
 import { createBrain, locateBin, profileBin, type Brain, type BackendName } from '../brain/index.js';
 import { projectsDir } from '../brain/transcripts.js';
-import { AskError, claudeAskArgv, runAsk } from '../brain/ask.js';
+import { AskError, claudeAskArgv, codexAskArgv, fileAnswer, piAskArgv, piSessionFile, runAsk, textAnswer, type AskReader } from '../brain/ask.js';
+import { gatePath, piPolicy, piSandboxed } from '../brain/pi.js';
+import { profileCacheDir } from '../brain/cache.js';
 import { START_EXIT } from '../brain/tui.js';
 import { remoteControlName } from '../brain/argv.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
@@ -23,7 +25,7 @@ import { runShell } from './shell.js';
 import { catalog as askCatalog, effortsFor, LABELS, type Catalog } from '../brain/catalog.js';
 import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
-import { agentDenyRules } from '../capabilities/compile.js';
+import { agentDenyRules, profilePermissions } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
 
 export interface Sender {
@@ -560,7 +562,8 @@ export class Orchestrator {
       const no = this.peerAllowed('ask', fromKey, key);
       if (no) throw new AskError(no, 403);
     }
-    if (profile.backend !== 'claude-code') throw new AskError(`asking a ${profile.backend} profile is not supported yet; give it a task with angelia turn`, 501);
+    // Grok Build cannot be held read-only by its flags (measured 2026-10-04): later, in an OS sandbox.
+    if (profile.backend === 'grok') throw new AskError('asking a grok profile is not supported yet; give it a task with angelia turn', 501);
     const bin = this.binFor(profile);
     if (!bin) throw new AskError(`profile ${route.profile} cannot answer here now`, 502, `${profileBin(profile)} not installed`);
     const refused = this.opts.launchGuard?.(route.profile) ?? [];
@@ -570,7 +573,45 @@ export class Orchestrator {
     const row = this.map.getActive(canon);
     // The session's own /model and /effort, as its turns use them.
     const effective = row ? { ...profile, ...(row.model ? { model: row.model } : {}), ...(row.effort ? { effort: row.effort as Profile['effort'] } : {}) } : profile;
-    const argv = claudeAskArgv(effective, row?.started ? row.id : undefined, bin, this.opts.selfPrompt?.(route.profile));
+    const session = row?.started ? row.id : undefined;
+    const system = this.opts.selfPrompt?.(route.profile);
+    // No capability secrets: the copy has no shell to use them with.
+    const env = this.childEnv().env;
+    // Work files of a copy (Codex's answer, pi's fork of the session) go in the state folder, which
+    // every agent's rules close: never temp, where any sandboxed agent may read a transcript copy.
+    const state = this.opts.stateDir ?? join(homedir(), '.angelia');
+    let argv: string[], read: AskReader | undefined;
+    const work = mkdtempSync(join(askRoot(state), 'q-'));
+    try {
+      if (profile.backend === 'codex') {
+        // A project .codex/config.toml merges with these overrides (measured: it can open a writable
+        // folder) and its MCP servers are not switched off here; the chat itself checks it at start.
+        if (existsSync(join(profile.cwd, '.codex', 'config.toml'))) throw new AskError(`profile ${route.profile} cannot answer here now`, 409, 'a project .codex/config.toml');
+        // Other profiles' cache folders stay closed, as for the chat's own agent (codex.ts start()).
+        const cache = dirname(profileCacheDir(state, 'codex', route.profile));
+        const out = join(work, 'answer.txt');
+        try { argv = codexAskArgv(effective, session, bin, system, [...profilePermissions(profile.cwd).deny, `Read(${cache})`, `Edit(${cache})`], out); }
+        catch (e) { throw e instanceof AskError ? e : new AskError(`profile ${route.profile} cannot answer here now`, 502, (e as Error).message); }
+        read = fileAnswer(out);
+      } else if (profile.backend === 'pi') {
+        const file = session ? piSessionFile(session) : undefined;
+        // A chat with a session whose file cannot be found would be answered blind: say so instead.
+        if (session && !file) throw new AskError(`profile ${route.profile} cannot answer here now`, 409, 'its pi session file was not found');
+        argv = piAskArgv(effective, file ? { file, into: join(work, 'fork') } : undefined, bin, system, gatePath());
+        // The gate in plan mode: reads only, held to the profile's deny rules (in its sandbox, if any),
+        // and, as for the chat's own agent, the other profiles' caches closed.
+        const policy = piPolicy({ ...profile, permission_mode: 'plan' }, piSandboxed(profile) ? profileCacheDir(state, 'pi', route.profile) : undefined);
+        Object.assign(env, { ANGELIA_PI_POLICY: JSON.stringify(policy) });
+        if (policy.sandbox) delete env.SSH_AUTH_SOCK;
+        read = textAnswer;
+      } else {
+        argv = claudeAskArgv(effective, session, bin, system);
+      }
+    } catch (e) {
+      rmSync(work, { recursive: true, force: true });
+      if (e instanceof AskError && e.detail) this.log(`ask failed key=${canon} ${e.message}: ${e.detail}`);
+      throw e;
+    }
     const stop = new AbortController();
     const onAbort = () => stop.abort();
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -578,8 +619,7 @@ export class Orchestrator {
     this.asking.set(canon, (this.asking.get(canon) ?? 0) + 1);
     this.log(`ask key=${canon} from=${fromKey ?? 'owner'} session=${row?.started ? row.id.slice(0, 8) : 'fresh'}`);
     try {
-      // No capability secrets: the copy has no shell to use them with.
-      const answer = await runAsk(argv, profile.cwd, this.childEnv().env, agentText(i, false), undefined, stop.signal);
+      const answer = await runAsk(argv, profile.cwd, env, agentText(i, false), undefined, stop.signal, read);
       // A DM is with an owner when its chat id (the person's id, without the platform's suffix) is one
       // of the instance's or the route's owners. A DM nobody can place stays quiet.
       const bare = k.chat.replace(/@.*$/, '');
@@ -596,6 +636,7 @@ export class Orchestrator {
       if (e instanceof AskError && e.detail) this.log(`ask failed key=${canon} ${e.message}: ${e.detail}`);
       throw e;
     } finally {
+      rmSync(work, { recursive: true, force: true });
       signal?.removeEventListener('abort', onAbort);
       this.questions.delete(stop);
       const n = (this.asking.get(canon) ?? 1) - 1;
@@ -968,3 +1009,12 @@ export function envelope(i: Inbound): string {
   return `[${i.platform} ${kind} ${i.chat}${i.thread ? ` thread ${i.thread}` : ''} · ${who}]`;
 }
 
+/** Where questions keep their work files: under compiled/, which every profile's deny floor closes.
+ *  Emptied on first use in a process, so a daemon that died mid-question leaves nothing behind. */
+const cleared = new Set<string>();
+function askRoot(stateDir: string): string {
+  const root = join(stateDir, 'compiled', 'ask');
+  if (!cleared.has(root)) { rmSync(root, { recursive: true, force: true }); cleared.add(root); }
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  return root;
+}

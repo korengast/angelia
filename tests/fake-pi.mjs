@@ -19,6 +19,18 @@
 //   env FAKE_PI_BUSY_ONCE=1  -> the first get_state says compaction is running
 //   env FAKE_PI_LOST=1       -> stderr says the session was not found (a resume that starts fresh)
 import { randomUUID } from 'node:crypto';
+
+// `pi -p ...`: one question (`angelia ask`), the prompt on stdin; the answer on stdout echoes argv,
+// the prompt and the gate's policy.
+if (process.argv.includes('-p')) {
+  let prompt = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (d) => { prompt += d; });
+  process.stdin.on('end', () => {
+    process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), prompt, cwd: process.cwd(), policy: JSON.parse(process.env.ANGELIA_PI_POLICY ?? 'null') }) + '\n');
+    process.exit(0);
+  });
+} else {
 const argv = process.argv.slice(2);
 if (argv.includes('--version')) { process.stdout.write(`${process.env.FAKE_PI_VERSION ?? '0.86.1'}\n`); process.exit(0); }
 const flag = (f) => { const i = argv.indexOf(f); return i === -1 ? undefined : argv[i + 1]; };
@@ -111,3 +123,4 @@ process.stdin.on('data', (s) => {
   }
 });
 process.stdin.on('end', () => process.exit(0));
+}

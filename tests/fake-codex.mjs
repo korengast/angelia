@@ -20,6 +20,21 @@
 //   env FAKE_CODEX_NO_RESUME=1 -> thread/resume fails (the thread is gone)
 //   env FAKE_CODEX_VERSION     -> the version in initialize's userAgent (default 0.157.0)
 import { randomUUID } from 'node:crypto';
+
+// `codex exec ... -o <file> [fork <id>] -`: one question (`angelia ask`). The answer, written to the -o
+// file, echoes argv, the prompt read from stdin and the env the gate would read.
+if (process.argv[2] === 'exec') {
+  let prompt = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (d) => { prompt += d; });
+  process.stdin.on('end', () => {
+    const out = process.argv[process.argv.indexOf('-o') + 1];
+    void import('node:fs').then(({ writeFileSync }) => {
+      writeFileSync(out, JSON.stringify({ argv: process.argv.slice(2), prompt, cwd: process.cwd() }));
+      process.exit(0);
+    });
+  });
+} else {
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const note = (method, params) => out({ method, params });
 let threadId = null, threadParams = null, reqId = 5000, turnNo = 0, tid = 't0';
@@ -106,3 +121,4 @@ process.stdin.on('data', (s) => {
   }
 });
 process.stdin.on('end', () => process.exit(0));
+}
