@@ -3,7 +3,7 @@
 **Your coding agent. Your personal assistant.** The coding agent CLI you already trust becomes the brain of your personal assistant. You reach it from WhatsApp or Telegram; it runs on your own Mac.
 
 <p align="center">
-  <a href="https://useangelia.com/#demo"><img src="https://github.com/user-attachments/assets/d8a1cbed-6f6f-45d1-88e4-8cf74cdab3cd" alt="A message from a phone reaches Claude Code on the Mac; the answer comes back to the chat, and a commit waits for the owner's yes" width="100%"></a>
+  <a href="https://useangelia.com/#demo"><img src="https://useangelia.com/angelia-demo.gif" alt="A message from a phone reaches Claude Code on the Mac; the answer comes back to the chat, and a commit waits for the owner's yes" width="100%"></a>
 </p>
 
 ```bash

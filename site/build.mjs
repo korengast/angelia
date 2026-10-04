@@ -139,6 +139,8 @@ const MEDIA_RELEASE = `https://github.com/${REPO}/releases/download/site-media-1
 const MEDIA = {
   'angelia-demo.webm': '5c4022c3fc5bed8dbe262033e37f3f8120202a2ec91885ebf61886d53ac98633',
   'angelia-demo-muted.mp4': '95723b707888c9b961b8a9f5e05c3d2533762015ad692426b670135978568b31',
+  // The README's demo: a GIF, because GitHub shows images from a README, not videos from a site.
+  'angelia-demo.gif': '15db7aef78fb4abd4fe074d525a598f7e1ee6ae04a6360e8e7e0e00a6e2100e7',
 };
 const cache = join(here, '.media');
 mkdirSync(cache, { recursive: true });
