@@ -15,6 +15,21 @@
 // env FAKE_CLAUDE_VERSION   -> claude_code_version override
 import { createInterface } from 'node:readline';
 
+// `angelia ask`: one question, the prompt on stdin, one JSON result. The answer echoes what the copy
+// was started with, so a test can see the flags. "ASKSLOW" answers after 1.5 s, "ASKFAIL" fails.
+if (process.argv[process.argv.indexOf('--output-format') + 1] === 'json') {
+  let prompt = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (d) => { prompt += d; });
+  process.stdin.on('end', () => {
+    const answer = JSON.stringify({ argv: process.argv.slice(2), prompt, cwd: process.cwd() });
+    const say = () => process.stdout.write(JSON.stringify(prompt.includes('ASKFAIL')
+      ? { type: 'result', is_error: true, result: 'boom' }
+      : { type: 'result', subtype: 'success', is_error: false, result: answer }) + '\n');
+    if (prompt.includes('ASKSLOW')) setTimeout(say, 1500); else say();
+  });
+} else {
+
 const sid = process.argv.includes('--session-id') ? process.argv[process.argv.indexOf('--session-id') + 1]
           : process.argv.includes('--resume') ? process.argv[process.argv.indexOf('--resume') + 1] : 'no-session';
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
@@ -105,3 +120,4 @@ rl.on('line', (line) => {
   out({ type: 'result', subtype: 'success', is_error: false, result, session_id: sid });
 });
 rl.on('close', () => process.exit(0));
+}

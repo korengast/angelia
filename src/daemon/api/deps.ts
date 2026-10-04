@@ -10,6 +10,8 @@ export function apiDeps(orch: Orchestrator): ApiDeps {
     routed: (key) => orch.routed(key),
     queueFull: (key) => orch.queueFull(key),
     handoff: (req) => orch.handoff(req),
+    peerAllowed: (kind, from, to) => orch.peerAllowed(kind, from, to),
+    ask: (key, text, fromKey, signal) => orch.ask(key, text, fromKey, signal),
     reach: (from, to) => orch.reach(from, to),
     sendMedia: (key, m, byOwner) => orch.sendMediaTo(key, m, byOwner),
   };

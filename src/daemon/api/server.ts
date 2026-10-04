@@ -1,3 +1,4 @@
+import { AskError } from '../../brain/ask.js';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -19,6 +20,12 @@ export interface ApiDeps {
   routed(key: string): boolean;
   /** Has the chat as many turns running and waiting as it may? A /turn is then refused with 429. */
   queueFull?(key: string): boolean;
+  /** May the agent of chat `from` ask chat `to` (answer_from) or give it a task (accept_from)?
+   *  Undefined: yes; else why not. Checked before `reach`. */
+  peerAllowed?(kind: 'ask' | 'turn', from: string, to: string): string | undefined;
+  /** A question for chat `key`, answered in a read-only copy of its session (`angelia ask`). `fromKey`:
+   *  another profile's agent asked. Rejects with an AskError whose message is safe to show. */
+  ask?(key: string, text: string, fromKey?: string, signal?: AbortSignal): Promise<string>;
   /** May the agent of chat `from` message chat `to`, another profile's? Undefined: yes; else why not. */
   reach?(from: string, to: string): string | undefined;
   /** `/angelia-handoff` from a terminal. Rejects with a HandoffError whose message is for the terminal. */
@@ -67,7 +74,7 @@ export class ApiServer {
     const url = new URL(req.url ?? '/', 'http://x');
     if (req.method === 'GET' && url.pathname === '/healthz') return json(res, { ok: true });
     const route = req.method === 'POST' ? url.pathname : '';
-    if (route !== '/send' && route !== '/turn' && route !== '/send-media' && route !== '/handoff') return json(res, { error: 'not found' }, 404);
+    if (route !== '/send' && route !== '/turn' && route !== '/ask' && route !== '/send-media' && route !== '/handoff') return json(res, { error: 'not found' }, 404);
     const body = await readJson(req);
     if (route === '/handoff') {
       // The owner's token only: an agent that could hand a session to a chat could pick any chat.
@@ -91,6 +98,10 @@ export class ApiServer {
     if (who === 'peer') {
       if (route === '/send-media') return json(res, { error: 'files go only into your own chat; send the other profile a path in a message instead' }, 403);
       if (!this.d.routed(key)) return json(res, { error: 'not a routed chat' }, 404);
+      // Whether this profile may ask or task that one at all, before the hourly count: a refusal is free.
+      const kind = route === '/ask' ? 'ask' : route === '/turn' ? 'turn' : undefined;
+      const denied = kind ? (this.d.peerAllowed ? this.d.peerAllowed(kind, from, key) : 'profiles cannot message each other here') : undefined;
+      if (denied) return json(res, { error: denied }, 403);
       const no = this.d.reach ? this.d.reach(from, key) : 'profiles cannot message each other here';
       if (no) return json(res, { error: no }, 403);
     }
@@ -109,6 +120,16 @@ export class ApiServer {
     const text = String(body.text ?? '');
     if (!key || !text) return json(res, { error: 'key and text required' }, 400);
     if (!this.d.routed(key)) return json(res, { error: 'not a routed chat' }, 404);
+    if (route === '/ask') {
+      // A question answered in a read-only copy of the chat's session; the answer is this response.
+      if (!this.d.ask) return json(res, { error: 'this daemon cannot answer questions' }, 404);
+      if (who === 'chat') return json(res, { error: 'ask another chat; your own session is you' }, 400);
+      // The asker's command stopped waiting: its copy is stopped too.
+      const gone = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) gone.abort(); });
+      try { return json(res, { answer: await this.d.ask(key, text, who === 'peer' ? from : undefined, gone.signal) }); }
+      catch (e) { if (e instanceof AskError) return json(res, { error: e.message }, e.status); throw e; }
+    }
     if (route === '/send') {
       // `MEDIA:<absolute path>` lines are honoured here too, so a script that already writes them
       // can post text and files in one call.

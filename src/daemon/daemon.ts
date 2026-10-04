@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, statSync } from 'node:fs';
 import { workspaceDir } from '../instance/instance.js';
 import { join, resolve } from 'node:path';
@@ -102,7 +103,14 @@ export async function runDaemon(configPath: string): Promise<void> {
   // The owner's API token; each agent gets one derived from it that works only for its own chat.
   const apiToken = loadOrMintToken(join(STATE_DIR, 'api.token'), (mode) => logLine(`api.token was mode ${mode.toString(8)}; set back to 600`));
   const restart = {
-    check: () => { try { loadConfig(configPath); return undefined; } catch (e) { return (e as Error).message; } },
+    // Checked by the code the new daemon will run: after `angelia update` this process is the old
+    // version, and a key the update added (answer_from) would refuse every /restart. The installed
+    // CLI is the same file this process was started from, now holding the new code.
+    check: () => {
+      const r = spawnSync(process.execPath, [process.argv[1], 'check-config', configPath], { encoding: 'utf8', timeout: 30_000 });
+      if (r.status === 0) return undefined;
+      return (r.stderr || r.stdout || `check-config failed (${r.error?.message ?? `exit ${r.status}`})`).trim().split('\n').filter((l) => !l.startsWith('warning:')).slice(-4).join('\n');
+    },
     launch: (key: string) => launchChatRestart(key, table, (why) => {
       logLine(`restart failed key=${key}: ${why}`);
       void orch.notify(key, `The restart failed. Angelia is still running as before (pid ${process.pid}).\n${why}`)

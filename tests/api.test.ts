@@ -187,8 +187,8 @@ test('/model and /effort: session-only overrides reach the next spawn, /status s
 test('api: profiles message each other with their own token and their own chat as from, labelled, unless one is isolated', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'angelia-api-'));
   const cfg = Config.parse({
-    profiles: { a: { cwd: here }, b: { cwd: here }, walled: { cwd: here, isolated: true } },
-    routes: [{ platform: 'telegram', chat: 1, profile: 'a' }, { platform: 'telegram', chat: 2, profile: 'b' }, { platform: 'telegram', chat: 3, profile: 'walled' }],
+    profiles: { a: { cwd: here }, b: { cwd: here, accept_from: ['a'] }, walled: { cwd: here, isolated: true, accept_from: ['*'] }, closed: { cwd: here } },
+    routes: [{ platform: 'telegram', chat: 1, profile: 'a' }, { platform: 'telegram', chat: 2, profile: 'b' }, { platform: 'telegram', chat: 3, profile: 'walled' }, { platform: 'telegram', chat: 4, profile: 'closed' }],
     defaults: { max_out_per_min: 1000 },
   });
   const sent: { chat: string; text: string }[] = [];
@@ -196,11 +196,19 @@ test('api: profiles message each other with their own token and their own chat a
   const o = new Orchestrator(cfg, { telegram: { send: async (chat: string, text: string) => { sent.push({ chat, text }); } } },
     { stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs') }, sessionToken: (k) => sessionToken(token, k) });
   t.after(() => o.shutdown());
-  const api = new ApiServer({ send: (k, x, f) => o.notify(k, x, f), turn: (k, x, a, f) => o.injectTurn(k, x, a, f), sendMedia: (k, m) => o.sendMediaTo(k, m), routed: (k) => o.routed(k), reach: (f, to) => o.reach(f, to) }, token);
+  const { apiDeps } = await import('../src/daemon/api/deps.js');
+  const api = new ApiServer(apiDeps(o), token);
   const socket = join(dir, API_SOCKET);
   await api.listen(socket); t.after(() => api.close());
   const call = caller(socket);
   const a = sessionToken(token, 'telegram:1');
+
+  // A task only to a profile that lists the sender in accept_from; refusals cost no hourly slot.
+  for (let i = 0; i < 35; i++) {
+    const r = await call('/turn', { token: a, key: 'telegram:4', from: 'telegram:1', text: 'do this' });
+    assert.equal(r.status, 403);
+    if (i === 0) assert.match(String(r.body.error), /closed does not take tasks from a; ask it a question with angelia ask, or its owner can add a to accept_from/);
+  }
 
   assert.equal((await call('/send', { token: a, key: 'telegram:2', text: 'no from' })).status, 403, 'without from, a token is its own chat\'s only');
   assert.equal((await call('/send', { token: a, key: 'telegram:2', from: 'telegram:3', text: 'posing as walled' })).status, 403, 'from must be the token\'s own chat');

@@ -74,6 +74,15 @@ export const Profile = z.object({
   /** Cut off from the other profiles: it cannot message them and they cannot message it, and it does
    *  not get the shared co-working folder (workspace/_common). For a profile other people talk to. */
   isolated: z.boolean().default(false),
+  /** Profiles whose agents may ask this one a question (`angelia ask`), answered in a read-only copy
+   *  of its session; "*" for every profile. Default none: an answer goes back to the asker, so a
+   *  profile that was talked into it could otherwise pull this one's history and files out quietly.
+   *  The owner may always ask, from a terminal. */
+  answer_from: z.array(z.string()).default([]),
+  /** Profiles whose agents may give this one a task (`angelia turn`): a turn in its own session, which
+   *  can act. "*" for every profile; default none. The owner, jobs and this chat's own agent are not
+   *  limited. A line (`angelia send`) needs no listing: the chat sees it, labelled. */
+  accept_from: z.array(z.string()).default([]),
 }).strict();
 
 const Id = z.union([z.string(), z.number()]).transform(String);

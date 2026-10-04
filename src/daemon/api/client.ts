@@ -53,6 +53,19 @@ export async function localCall(kind: 'send' | 'turn', argv: string[]): Promise<
   console.log(kind === 'send' ? 'sent' : 'queued');
 }
 
+/** `angelia ask <platform:chat> <text | - | @file>`: a question another chat's agent answers in a
+ *  read-only copy of its session. Returns the answer; waits up to ten minutes. */
+export async function askCall(argv: string[]): Promise<string> {
+  const [key, ...rest] = argv;
+  if (!key || !rest.length) throw new Error('usage: angelia ask <platform:chat> <question | - | @file>');
+  let text = rest.join(' ');
+  if (text === '-') text = readFileSync(0, 'utf8');
+  else if (text.startsWith('@')) text = readFileSync(text.slice(1), 'utf8');
+  const from = process.env.ANGELIA_API_TOKEN ? process.env.ANGELIA_SESSION_KEY : undefined;
+  const r = await post('/ask', { token: token(), key, text, ...(from && from !== key ? { from } : {}) });
+  return String(r.answer ?? '');
+}
+
 /** One send or turn through the running daemon's API. An agent says which chat it is (its session
  *  key), so its token also works toward another profile's chat when the daemon allows that. */
 export async function apiCall(kind: 'send' | 'turn', key: string, text: string): Promise<void> {

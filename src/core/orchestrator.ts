@@ -10,6 +10,7 @@ import { SessionMap } from './session/map.js';
 import { KeyedQueue } from './session/queue.js';
 import { createBrain, locateBin, profileBin, type Brain, type BackendName } from '../brain/index.js';
 import { projectsDir } from '../brain/transcripts.js';
+import { AskError, claudeAskArgv, runAsk } from '../brain/ask.js';
 import { START_EXIT } from '../brain/tui.js';
 import { remoteControlName } from '../brain/argv.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
@@ -73,6 +74,10 @@ const CATALOG_MS = 10 * 60_000;
 const DROP_LOG_MS = 10 * 60_000;
 /** Messages that may wait behind a chat's running turn. Past it, the chat is told once, and the rest dropped. */
 const QUEUE_MAX = 10;
+/** Questions (`angelia ask`) one chat answers at the same time; each is a CLI process. */
+const ASK_MAX = 2;
+/** Questions answered at the same time across all chats. */
+const ASK_TOTAL = 4;
 /** The tail of a /stop or /new answer that also took back waiting messages. */
 function waitingDropped(n: number): string {
   return n ? ` ${n} waiting message${n === 1 ? '' : 's'} dropped.` : '';
@@ -108,6 +113,10 @@ export class Orchestrator {
    *  that was running at the time sees its era go stale, and knows the failure it is about to
    *  report was the user pulling the plug rather than the agent crashing. */
   private era = new Map<string, number>();
+  /** Questions being answered per chat (`ask`), each in its own read-only copy. */
+  private asking = new Map<string, number>();
+  /** Every question being answered, to stop at shutdown. */
+  private questions = new Set<AbortController>();
   private catalogs = new Map<string, { at: number; c: Catalog }>();
   private log: (line: string) => void;
 
@@ -529,6 +538,95 @@ export class Orchestrator {
       .catch((e) => this.log(`injected turn failed key=${key}: ${(e as Error).message}`));
   }
 
+  /**
+   * `angelia ask`: a question answered in a read-only copy of the chat's session, beside whatever the
+   * chat is doing, and returned to the asker (src/brain/ask.ts). Not queued: a question must not
+   * wait behind a long turn, and the copy changes nothing the turn could trip on. At most ASK_MAX at
+   * once per chat and ASK_TOTAL in all. The chat hears one line only in a DM with one of the
+   * instance's owners; anywhere else (a group, a DM with someone else) the question stays in the
+   * log, so one profile's topic does not reach other people. `signal`: the asker went away.
+   */
+  async ask(key: string, text: string, fromKey?: string, signal?: AbortSignal): Promise<string> {
+    // Counted on the chat the key reaches: a made-up thread on a chat-wide route is the same chat.
+    const canon = this.chatKey(key);
+    if (!canon) throw new AskError('not a routed chat', 404);
+    if (fromKey && this.chatKey(fromKey) === canon) throw new AskError('ask another chat; your own session is you', 400);
+    const k = parseSessionKey(key);
+    const sender = fromKey ? `profile ${this.profileName(fromKey) ?? '?'} (${fromKey})` : 'the owner, from this machine';
+    const i: Inbound = { ...k, sender: fromKey ? 'profile' : 'local', senderName: sender, text: cleanText(text), isGroup: isGroupChat(k.platform, k.chat), mentioned: true, media: [] };
+    const route = matchRoute(this.cfg, i)!;
+    const profile = this.cfg.profiles[route.profile];
+    if (fromKey) {
+      const no = this.peerAllowed('ask', fromKey, key);
+      if (no) throw new AskError(no, 403);
+    }
+    if (profile.backend !== 'claude-code') throw new AskError(`asking a ${profile.backend} profile is not supported yet; give it a task with angelia turn`, 501);
+    const bin = this.binFor(profile);
+    if (!bin) throw new AskError(`profile ${route.profile} cannot answer here now`, 502, `${profileBin(profile)} not installed`);
+    const refused = this.opts.launchGuard?.(route.profile) ?? [];
+    if (refused.length) throw new AskError(`profile ${route.profile} cannot answer here now`, 409, refused.join('; '));
+    if ((this.asking.get(canon) ?? 0) >= ASK_MAX) throw new AskError(`this chat is already answering ${ASK_MAX} questions; ask again in a minute`, 429);
+    if (this.questions.size >= ASK_TOTAL) throw new AskError(`${ASK_TOTAL} questions are being answered already; ask again in a minute`, 429);
+    const row = this.map.getActive(canon);
+    // The session's own /model and /effort, as its turns use them.
+    const effective = row ? { ...profile, ...(row.model ? { model: row.model } : {}), ...(row.effort ? { effort: row.effort as Profile['effort'] } : {}) } : profile;
+    const argv = claudeAskArgv(effective, row?.started ? row.id : undefined, bin, this.opts.selfPrompt?.(route.profile));
+    const stop = new AbortController();
+    const onAbort = () => stop.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    this.questions.add(stop);
+    this.asking.set(canon, (this.asking.get(canon) ?? 0) + 1);
+    this.log(`ask key=${canon} from=${fromKey ?? 'owner'} session=${row?.started ? row.id.slice(0, 8) : 'fresh'}`);
+    try {
+      // No capability secrets: the copy has no shell to use them with.
+      const answer = await runAsk(argv, profile.cwd, this.childEnv().env, agentText(i, false), undefined, stop.signal);
+      // A DM is with an owner when its chat id (the person's id, without the platform's suffix) is one
+      // of the instance's or the route's owners. A DM nobody can place stays quiet.
+      const bare = k.chat.replace(/@.*$/, '');
+      const owner = [...(this.cfg.onboard?.owners ?? []), ...route.owners].map(String).includes(bare);
+      if (fromKey && !i.isGroup && owner) {
+        // Format characters (bidi overrides, zero-width) out, cut by character, never mid-emoji.
+        const short = Array.from(new Intl.Segmenter().segment(i.text.replace(/\p{Cf}/gu, '').replace(/\s+/g, ' ').trim()), (g) => g.segment);
+        const line = `📨 ${this.profileName(fromKey) ?? 'another profile'} asked: ${short.length > 80 ? `${short.slice(0, 79).join('')}…` : short.join('')} (answered)`;
+        // Not awaited: a paced outbox must not hold the answer.
+        void this.notify(canon, line).catch((e) => this.log(`ask note failed key=${canon} ${(e as Error).message}`));
+      }
+      return answer;
+    } catch (e) {
+      if (e instanceof AskError && e.detail) this.log(`ask failed key=${canon} ${e.message}: ${e.detail}`);
+      throw e;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      this.questions.delete(stop);
+      const n = (this.asking.get(canon) ?? 1) - 1;
+      if (n > 0) this.asking.set(canon, n); else this.asking.delete(canon);
+    }
+  }
+
+  /**
+   * May the agent of chat `from` ask chat `to` a question (`answer_from`) or give it a task
+   * (`accept_from`)? Undefined: yes; else why not, for the asker. Checked before the hourly count, so
+   * a refusal costs the pair nothing.
+   */
+  peerAllowed(kind: 'ask' | 'turn', from: string, to: string): string | undefined {
+    const a = this.profileName(from), b = this.profileName(to);
+    if (!a || !b) return 'not a routed chat';
+    const list = kind === 'ask' ? this.cfg.profiles[b].answer_from : this.cfg.profiles[b].accept_from;
+    if (list.includes('*') || list.includes(a)) return undefined;
+    this.log(`${kind} refused key=${this.chatKey(to) ?? to} from=${from} reason=not-in-${kind === 'ask' ? 'answer_from' : 'accept_from'}`);
+    return kind === 'ask'
+      ? `profile ${b} does not answer questions from ${a}; its owner can add it to answer_from`
+      : `profile ${b} does not take tasks from ${a}; ask it a question with angelia ask, or its owner can add ${a} to accept_from`;
+  }
+
+  /** The session key of the chat `key` reaches: its thread only when the route names that thread.
+   *  Undefined when no route takes it. */
+  private chatKey(key: string): string | undefined {
+    const k = parseSessionKey(key);
+    const route = matchRoute(this.cfg, k);
+    return route ? sessionKey({ platform: k.platform, chat: k.chat, ...(route.thread !== undefined ? { thread: k.thread } : {}) }) : undefined;
+  }
+
   /** True when the chat already has QUEUE_MAX turns running and waiting. */
   queueFull(key: string): boolean {
     return this.queue.queued(key) >= QUEUE_MAX;
@@ -645,7 +743,8 @@ export class Orchestrator {
     if (!a || !b) return 'not a routed chat';
     if (this.cfg.profiles[a].isolated) return `profile ${a} is isolated: it cannot message other profiles`;
     if (this.cfg.profiles[b].isolated) return `profile ${b} is isolated: other profiles cannot message it`;
-    const k = `${from}>${to}`;
+    // The chats the keys reach: a made-up thread on a chat-wide route must not get its own count.
+    const k = `${this.chatKey(from) ?? from}>${this.chatKey(to) ?? to}`;
     const recent = (this.peerSends.get(k) ?? []).filter((t) => t > now - 3600_000);
     if (recent.length >= PEER_PER_HOUR) { this.log(`peer message refused from=${from} to=${to} reason=hourly-limit`); return `${PEER_PER_HOUR} messages to ${b} in the last hour; wait`; }
     recent.push(now);
@@ -798,6 +897,7 @@ export class Orchestrator {
   }
 
   async shutdown(): Promise<void> {
+    for (const a of this.questions) a.abort();
     await Promise.all([...this.brains.keys()].map((k) => this.dropBrain(k, false)));
   }
 }

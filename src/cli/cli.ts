@@ -64,6 +64,11 @@ try {
       await localCall(cmd, rest);
       break;
     }
+    case 'ask': {
+      const { askCall } = await import('../daemon/api/client.js');
+      console.log(await askCall(rest));
+      break;
+    }
     case 'handoff': {
       const { handoffCommand } = await import('./handoff-cli.js');
       console.log(await handoffCommand(rest));
