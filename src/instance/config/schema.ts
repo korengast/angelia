@@ -143,6 +143,10 @@ export const Config = z.object({
       max_out_per_min: z.number().int().positive().default(10),
       idle_exit_minutes: z.number().positive().default(30),
       permission_timeout_minutes: z.number().positive().default(10),
+      /** A turn in print mode with no output from its CLI this long is stuck: the chat is told at half
+       *  of it, and at the full time the CLI is stopped and the chat told so. 0: never. tmux turns
+       *  have their own hourly line and are not stopped. */
+      turn_stall_minutes: z.number().nonnegative().default(60),
       /** Capabilities every profile gets, unless it lists them under except. */
       capabilities: z.array(z.string()).default([]),
       /** Denied to every profile, unless it lists them under its own capabilities. */

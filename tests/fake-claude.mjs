@@ -7,6 +7,8 @@
 //   text contains "CRASH"    -> exit 1 mid-turn
 //   text contains "EMPTY"    -> empty result
 //   text contains "SLOW"     -> the answer takes 3s, so a turn can be interrupted mid-flight
+//   text contains "HANG"     -> no output at all, ever (a stuck CLI)
+//   text contains "QUIETWORK" -> 1.2 s of system lines (work with no text), then the answer
 //   text contains "SEPARATOR" -> the answer holds a raw U+2028 (JSON.stringify leaves it unescaped)
 //   text contains "BUSYTURN" -> forty progress lines, then the answer
 //   text contains "ENVDUMP"  -> the answer lists the canary variables it can see (CANARY_*, the bot token, API keys)
@@ -93,6 +95,16 @@ rl.on('line', (line) => {
   }
   if (text.includes('SEPARATOR')) {
     out({ type: 'result', subtype: 'success', is_error: false, result: 'line one\u2028line two', session_id: sid });
+    return;
+  }
+  if (text.includes('HANG')) return;
+  if (text.includes('QUIETWORK')) {
+    let n = 0;
+    const t = setInterval(() => {
+      if (++n < 12) return out({ type: 'system', subtype: 'status' });
+      clearInterval(t);
+      out({ type: 'result', subtype: 'success', is_error: false, result: 'worked quietly', session_id: sid });
+    }, 100);
     return;
   }
   if (text.includes('SLOW')) {

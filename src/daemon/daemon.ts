@@ -1,3 +1,4 @@
+import { isDaemonPid, pidAlive } from './pid.js';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, statSync } from 'node:fs';
 import { workspaceDir } from '../instance/instance.js';
@@ -24,10 +25,6 @@ import type { Inbound } from '../core/types.js';
 
 export const STATE_DIR = process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia');
 
-function pidAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' && !!process.env.CODEX_SANDBOX; }
-}
-
 /** `~/.angelia/env`: the bot token and the secrets capabilities name. See core/env.ts. */
 export function envFile(stateDir = STATE_DIR): Record<string, string> {
   return readEnvFile(join(stateDir, 'env'));
@@ -49,6 +46,24 @@ export function logLine(line: string): void {
   if (process.stdout.isTTY) console.log(`${stamp} ${line}`);
 }
 
+/** Backoff for a platform that failed to start: 30 s, then doubling, at most 5 minutes. */
+const START_RETRY_MS = [30_000, 60_000, 120_000, 300_000];
+let stopping = false;
+
+/**
+ * Start one platform. A failure (Wi-Fi not up yet at login, the platform down for a moment) used to
+ * end the whole daemon, and the other platform with it; now it is logged and tried again in the
+ * background, while everything else runs.
+ */
+async function startPlatform(name: string, start: () => Promise<void>, n = 0): Promise<void> {
+  try { await start(); }
+  catch (e) {
+    const wait = START_RETRY_MS[Math.min(n, START_RETRY_MS.length - 1)];
+    logLine(`${name}: start failed (${(e as Error).message}); trying again in ${Math.round(wait / 1000)} s`);
+    setTimeout(() => { if (!stopping) void startPlatform(name, start, n + 1); }, wait).unref();
+  }
+}
+
 export async function runDaemon(configPath: string): Promise<void> {
   mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
   // A folder that existed before keeps whatever mode it had; the secrets inside are only as private as it is.
@@ -57,7 +72,8 @@ export async function runDaemon(configPath: string): Promise<void> {
   const pidFile = join(STATE_DIR, 'daemon.pid');
   if (existsSync(pidFile)) {
     const old = Number(readFileSync(pidFile, 'utf8'));
-    if (old && pidAlive(old)) throw new Error(`another angelia daemon is running (pid ${old})`);
+    if (isDaemonPid(old)) throw new Error(`another angelia daemon is running (pid ${old})`);
+    if (old) logLine(`daemon.pid named pid ${old}, which is not a running angelia daemon (left by a crash?); replaced`);
   }
   writeFileSync(pidFile, String(process.pid));
 
@@ -146,8 +162,8 @@ export async function runDaemon(configPath: string): Promise<void> {
     const tg = new TelegramAdapter({ token, log: logLine, inboxFor, onInbound, menuChats: cfg.routes.filter((r) => r.platform === 'telegram').map((r) => r.chat) });
     senders.telegram = tg;
     telegram = tg;
-    await tg.start();
     adapters.push(tg);
+    await startPlatform('telegram', () => tg.start());
   }
   let waState = 'off';
   let waAdapter: WhatsAppAdapter | undefined;
@@ -157,8 +173,8 @@ export async function runDaemon(configPath: string): Promise<void> {
     waAdapter = wa;
     wa.on('open', () => { waState = 'connected'; });
     wa.on('logged-out', () => { waState = 'logged out: run angelia pair'; });
-    await wa.start();
     adapters.push(wa);
+    await startPlatform('whatsapp', () => wa.start());
     waState = wa.connected ? 'connected' : 'connecting (pairing code on the terminal if not paired yet)';
   }
 
@@ -198,6 +214,10 @@ export async function runDaemon(configPath: string): Promise<void> {
   logLine(`daemon up pid=${process.pid} profiles=${Object.keys(cfg.profiles).length} routes=${cfg.routes.length} tg=${tgState()} wa=${waState} api=${API_SOCKET}${missing.length ? ` cli_missing=${missing.length}` : ''}`);
 
   const shutdown = async (sig: string) => {
+    // Once: a restart under launchd sends SIGTERM twice (the service stop and the restart itself), and
+    // the second would run the whole shutdown again beside the first.
+    if (stopping) return;
+    stopping = true;
     logLine(`shutdown on ${sig}`);
     clearInterval(statusTimer); clearInterval(reapTimer);
     await Promise.allSettled(adapters.map((a) => a.stop()));

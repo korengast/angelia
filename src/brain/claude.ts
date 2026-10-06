@@ -24,6 +24,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
   /** One line for the chat before the first turn's answer, when the launch had to say something (a lost conversation). */
   private notice: string | null = null;
   lastUsedAt = Date.now();
+  lastOutputAt?: number;
   version = '';
   /** Claude Code accepts the id Angelia mints, so the backend id is the session id. */
   backendSessionId?: string;
@@ -78,7 +79,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
     // is reported, and only when the child dies without an answer, because otherwise a deterministic
     // failure - not logged in, an unknown flag - is completely invisible.
     child.stderr.on('data', (b: Buffer) => { this.failure = (this.failure + b.toString('utf8')).slice(-400); });
-    onJsonLines(child.stdout, (obj: Line) => this.lines.emit('line', obj));
+    onJsonLines(child.stdout, (obj: Line) => { this.lastOutputAt = Date.now(); this.lines.emit('line', obj); });
     // Without this handshake the CLI never sends can_use_tool over stdio: it silently denies the tool
     // and the model tends to invent a result. Verified against claude 2.1.272.
     this.send({ type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize', hooks: {} } });

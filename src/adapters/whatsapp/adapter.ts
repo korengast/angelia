@@ -69,6 +69,9 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     if (this.stopping) return;
     this.state = 'connecting';
     const { state, saveCreds } = await useMultiFileAuthState(this.opts.authDir);
+    // Checked before any socket exists: a setup that cannot pair would otherwise leave a socket and
+    // its reconnects behind at every retry of the start.
+    if (!(state.creds.registered || state.creds.me) && this.opts.pairing === 'code' && !(this.opts.phone ?? '').replace(/\D/g, '')) throw new Error('whatsapp: pairing by code needs whatsapp.phone in routing.yaml (E.164, e.g. +15551234567)');
     const version = await this.waVersion();
     // ANGELIA_WA_DEBUG=<file>: full Baileys debug log to that file (pairing diagnostics). Never on by default: it contains message payloads.
     const debugFile = process.env.ANGELIA_WA_DEBUG;
@@ -95,7 +98,6 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     });
     // A QR link sets `me` and never `registered`; a code link sets both.
     this.registered = !!(state.creds.registered || state.creds.me);
-    if (!this.registered && this.opts.pairing === 'code' && !(this.opts.phone ?? '').replace(/\D/g, '')) throw new Error('whatsapp: pairing by code needs whatsapp.phone in routing.yaml (E.164, e.g. +15551234567)');
     if (!this.registered && this.opts.pairing === 'qr') this.say('Scan the QR below with WhatsApp > Linked devices > Link a device.');
   }
 

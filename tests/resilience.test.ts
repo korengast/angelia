@@ -64,17 +64,42 @@ test('/stop mid-turn is not reported as a crash', async (t) => {
   assert.ok(log.some((l) => l.includes('stopped by the user')));
 });
 
-test('a send that throws mid-turn does not leave the agent running', async (t) => {
+test('a send that keeps failing does not reject the turn or leave the agent running; the answer goes out with the next line', async (t) => {
   const cfg = Config.parse({ profiles: { a: { cwd: here } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000 } });
-  let fail = false;
-  const sender = { send: async () => { if (fail) throw new Error('chat is gone'); } };
+  let fail = false, tries = 0;
+  const sent: string[] = [];
+  const sender = { send: async (_c: string, text: string) => { if (fail) { tries++; throw new Error('chat is gone'); } sent.push(text); } };
   const o = new Orchestrator(cfg, { telegram: sender, whatsapp: sender },
-    { stateDir: mkdtempSync(join(tmpdir(), 'angelia-res-')), bins: { 'claude-code': FAKE } });
+    { stateDir: mkdtempSync(join(tmpdir(), 'angelia-res-')), bins: { 'claude-code': FAKE }, sendRetryMs: [10, 10] });
   t.after(() => o.shutdown());
   await o.handle(msg('warm up'));
   fail = true;
   await o.handle(msg('hello')); // must not reject: the queue entry would carry the throw
+  assert.equal(tries, 3, 'tried, then twice again');
   assert.equal(o.status().filter((s) => s.alive).length, 1, 'still exactly one brain, still owned');
+  fail = false; sent.length = 0;
+  await o.handle(msg('/status'));
+  assert.match(sent.at(-1)!, /^An answer that could not be delivered earlier:\n\necho: .*hello/s);
+});
+
+test('a send that fails for a moment is tried again and delivered once; a 403 is not tried again', async (t) => {
+  const cfg = Config.parse({ profiles: { a: { cwd: here } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000 } });
+  let failures = 0, forbidden = false, tries = 0;
+  const sent: string[] = [];
+  const sender = { send: async (_c: string, text: string) => {
+    tries++;
+    if (forbidden) throw Object.assign(new Error('Forbidden: bot was blocked by the user'), { error_code: 403 });
+    if (failures-- > 0) throw new Error('whatsapp: not connected');
+    sent.push(text);
+  } };
+  const o = new Orchestrator(cfg, { telegram: sender }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-res-')), bins: { 'claude-code': FAKE }, sendRetryMs: [10, 10, 10] });
+  t.after(() => o.shutdown());
+  failures = 2;
+  await o.handle(msg('hello'));
+  assert.equal(sent.length, 1, 'the answer, once');
+  forbidden = true; tries = 0;
+  await o.handle(msg('again'));
+  assert.equal(tries, 1, 'a refusal that will not change is not tried again');
 });
 
 test('router commands that change the session are owners-only in a group', async (t) => {

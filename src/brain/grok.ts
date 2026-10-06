@@ -16,6 +16,7 @@ type Msg = Record<string, any>;
  * the client answers with an option id. `--always-approve` on argv is the bypass stance.
  */
 export class GrokBrain extends EventEmitter implements Brain {
+  static startTimeoutMs = 60_000;
   private child?: ChildProcessWithoutNullStreams;
   private lines = new EventEmitter();
   private exited = false;
@@ -28,6 +29,7 @@ export class GrokBrain extends EventEmitter implements Brain {
   private permissionRequests = new Map<string, { rpcId: unknown; allow?: string; deny?: string }>();
   private ready?: Promise<string>;
   lastUsedAt = Date.now();
+  lastOutputAt?: number;
   version = '';
   backendSessionId?: string;
 
@@ -60,8 +62,15 @@ export class GrokBrain extends EventEmitter implements Brain {
     // Kept, never logged as it arrives (it can carry message text); the tail is the reason given when
     // the child dies without an answer, as ClaudeBrain does.
     child.stderr.on('data', (b: Buffer) => { this.failure = (this.failure + b.toString('utf8')).slice(-400); });
-    onJsonLines(child.stdout, (m: Msg) => this.dispatch(m));
-    this.ready = this.handshake();
+    onJsonLines(child.stdout, (m: Msg) => { this.lastOutputAt = Date.now(); this.dispatch(m); });
+    // A grok that never answers initialize would hold the chat's first turn for good (Codex has the
+    // same guard). Stopped then, so the next message starts a fresh process; the timer is cleared as
+    // soon as the handshake ends, or it would kill a healthy brain later.
+    let timer: NodeJS.Timeout | undefined;
+    this.ready = Promise.race([this.handshake(), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { this.kill(); reject(new Error(`grok did not answer within ${Math.round(GrokBrain.startTimeoutMs / 1000)} s of starting; check that \`grok --version\` runs in a terminal`)); }, GrokBrain.startTimeoutMs);
+      timer.unref?.();
+    })]).finally(() => clearTimeout(timer));
     this.ready.catch(() => {});
   }
 

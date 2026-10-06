@@ -101,6 +101,9 @@ profile. Profiles never read each other's folders: they ask, or share files in _
   owners: sender ids that may use /new /stop /resume /model /effort /backend /sh /restart, send the CLI's own
           slash commands, and answer permission prompts
 
+A turn whose CLI gives no output for defaults.turn_stall_minutes (60; 0 for never) is stopped and the
+chat told; at half of it the chat hears that it may be stuck. tmux turns are not stopped.
+
 An unknown chat is dropped (defaults.unmatched), or with unmatched: onboard an owner's first message
 there (in a group, one that mentions the bot) makes its profile (\`angelia guide onboard\`). The daemon reads the table only at start:
 after any edit run \`angelia check-config\`, then an owner sends /restart in the chat (it checks the

@@ -68,6 +68,7 @@ export class CodexBrain extends EventEmitter implements Brain {
   private ready?: Promise<string>;
   private turnId?: string;
   lastUsedAt = Date.now();
+  lastOutputAt?: number;
   version = '';
   backendSessionId?: string;
 
@@ -113,7 +114,7 @@ export class CodexBrain extends EventEmitter implements Brain {
     child.stdin.on('error', () => {});
     // Kept, never logged as it arrives; the tail is the reason given when the child dies unanswered.
     child.stderr.on('data', (b: Buffer) => { this.failure = (this.failure + b.toString('utf8')).slice(-400); });
-    onJsonLines(child.stdout, (m: Msg) => this.dispatch(m));
+    onJsonLines(child.stdout, (m: Msg) => { this.lastOutputAt = Date.now(); this.dispatch(m); });
     this.ready = this.handshake(writable);
     this.ready.catch(() => {});
   }

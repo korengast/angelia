@@ -1,28 +1,49 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, chmodSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { SessionMapFile, ChatSessions, SessionRow } from '../types.js';
 
 const LABEL_MAX = 60;
 const LIST_LIMIT = 10;
+/** Rows kept per chat: past this the oldest that are neither active nor in the background go. Every
+ *  turn rewrites the whole file, and /resume shows ten. */
+const HISTORY_MAX = 200;
 
 export class SessionMap {
   private data: SessionMapFile;
 
-  constructor(private readonly path: string) {
+  /** `warn`: told when a damaged file was moved aside, so the daemon can log it. */
+  constructor(private readonly path: string, private readonly warn: (line: string) => void = () => {}) {
     this.data = this.read();
   }
 
+  /** A file that cannot be read (half written by a power cut, edited by hand) is moved aside and the
+   *  map starts empty: one lost list of sessions, instead of a daemon that never starts again. */
   private read(): SessionMapFile {
     if (!existsSync(this.path)) return { version: 1, chats: {} };
-    const raw = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<SessionMapFile>;
-    return { version: 1, chats: raw.chats ?? {} };
+    try {
+      const raw = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<SessionMapFile>;
+      const chats = raw.chats ?? {};
+      if (typeof chats !== 'object' || Array.isArray(chats) || Object.values(chats).some((c) => !c || !Array.isArray((c as ChatSessions).history))) throw new Error('not a session map');
+      return { version: 1, chats };
+    } catch (e) {
+      // Only a file that is not a session map is set aside: a read error (permissions, the disk) is
+      // not damage, and moving the file would lose every session for nothing.
+      if (!(e instanceof SyntaxError) && (e as Error).message !== 'not a session map') throw e;
+      const aside = `${this.path}.damaged-${Date.now()}`;
+      renameSync(this.path, aside);
+      this.warn(`sessions.json could not be read (${(e as Error).message}); moved to ${aside}, starting with no sessions`);
+      return { version: 1, chats: {} };
+    }
   }
 
+  /** Written aside, flushed to disk, then renamed into place: neither a crash nor a power cut leaves
+   *  half a file under the real name. */
   private write(): void {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     const tmp = `${this.path}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+    const fd = openSync(tmp, 'w', 0o600);
+    try { writeFileSync(fd, JSON.stringify(this.data)); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(tmp, this.path);
     chmodSync(this.path, 0o600);
   }
@@ -44,6 +65,12 @@ export class SessionMap {
     const row: SessionRow = { id: randomUUID(), created_at: now, last_used_at: now, turns: 0, started: false, label: cleanLabel(label) };
     c.history.push(row);
     c.active = row.id;
+    if (c.history.length > HISTORY_MAX) {
+      const keep = new Set([c.active, ...c.history.filter((r) => r.background_since).map((r) => r.id)]);
+      // The least recently used go, not the oldest made: /resume brings an old session back to use.
+      const drop = new Set(c.history.filter((r) => !keep.has(r.id)).sort((a, b) => a.last_used_at.localeCompare(b.last_used_at)).slice(0, c.history.length - HISTORY_MAX).map((r) => r.id));
+      c.history = c.history.filter((r) => !drop.has(r.id));
+    }
     this.write();
     return row;
   }

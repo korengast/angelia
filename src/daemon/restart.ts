@@ -1,3 +1,4 @@
+import { isDaemonPid, pidAlive } from './pid.js';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -35,6 +36,8 @@ async function restart(argv: string[]): Promise<void> {
   if (fromDaemon) await wait(3000);
   const pidFile = join(STATE_DIR, 'daemon.pid');
   const old = readPid(pidFile);
+  // The daemon the pid file names, if it really is one: a file left by a crash can name a stranger.
+  const running = isDaemonPid(old) ? old : 0;
 
   // Two ways the caller can be the daemon's own agent, and both must be refused.
   // In print mode the agent is a child process, so the pid chain shows it. In tui mode the chain
@@ -48,7 +51,7 @@ async function restart(argv: string[]): Promise<void> {
         'Run angelia restart from a terminal of your own, or pass --force and accept losing this turn\'s reply.',
       );
     }
-    if (old && alive(old) && ancestors(process.pid).includes(old)) {
+    if (old && pidAlive(old) && ancestors(process.pid).includes(old)) {
       throw new Error(`this shell runs under daemon ${old}: stopping it would kill this command too.\nRun angelia restart from a terminal of your own.`);
     }
   }
@@ -71,24 +74,24 @@ async function restart(argv: string[]): Promise<void> {
   // is how `angelia service install` hands over to the service.
   if (plist !== undefined) {
     serviceStop();
-    if (old && alive(old)) process.kill(old, 'SIGTERM');
-    for (let i = 0; i < 80 && old && alive(old); i++) await wait(250);
-    if (old && alive(old)) throw new Error(`daemon ${old} did not stop; not starting a second one`);
-    if (old) console.log(`stopped ${old}`);
+    if (running) signal(running);
+    for (let i = 0; i < 80 && running && pidAlive(running); i++) await wait(250);
+    if (running && pidAlive(running)) throw new Error(`daemon ${running} did not stop; not starting a second one`);
+    if (running) console.log(`stopped ${running}`);
     serviceStart();
     for (let i = 0; i < 60; i++) {
       const now = readPid(pidFile);
-      if (now && now !== old && alive(now) && serviceLoaded()) { console.log(`angelia is up under launchd, pid ${now}`); return; }
+      if (now && now !== old && pidAlive(now) && serviceLoaded()) { console.log(`angelia is up under launchd, pid ${now}`); return; }
       await wait(250);
     }
     throw new Error(`the service did not bring the daemon up within 15s. Last lines are in ${join(STATE_DIR, 'daemon.out')}`);
   }
 
-  if (old && alive(old)) {
-    process.kill(old, 'SIGTERM');
-    for (let i = 0; i < 40 && alive(old); i++) await wait(250);
-    if (alive(old)) throw new Error(`daemon ${old} did not stop; not starting a second one`);
-    console.log(`stopped ${old}`);
+  if (running) {
+    signal(running);
+    for (let i = 0; i < 40 && pidAlive(running); i++) await wait(250);
+    if (pidAlive(running)) throw new Error(`daemon ${running} did not stop; not starting a second one`);
+    console.log(`stopped ${running}`);
   }
 
   const out = openSync(join(STATE_DIR, 'daemon.out'), 'a');
@@ -105,7 +108,7 @@ async function restart(argv: string[]): Promise<void> {
   // The daemon writes its pid file as it comes up; wait for it so a failed start is not reported as a success.
   for (let i = 0; i < 40; i++) {
     const now = readPid(pidFile);
-    if (now && now !== old && alive(now)) { console.log(`angelia is up, pid ${now}`); return; }
+    if (now && now !== old && pidAlive(now)) { console.log(`angelia is up, pid ${now}`); return; }
     await wait(250);
   }
   throw new Error(`the new daemon did not come up within 10s. Last lines are in ${join(STATE_DIR, 'daemon.out')}`);
@@ -166,9 +169,6 @@ function readPid(path: string): number {
   try { return Number(readFileSync(path, 'utf8').trim()) || 0; } catch { return 0; }
 }
 
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' && !!process.env.CODEX_SANDBOX; }
-}
 
 /** The config the daemon was last started with, recorded in status.json. */
 /**
@@ -199,4 +199,10 @@ function ancestors(pid: number): number[] {
     pid = parent;
   }
   return out;
+}
+
+/** SIGTERM to a daemon that may already be on its way out (the service stop sent one first): gone
+ *  is fine, anything else is not. */
+function signal(pid: number): void {
+  try { process.kill(pid, 'SIGTERM'); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; }
 }

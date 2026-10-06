@@ -418,3 +418,26 @@ test('an answer holding a Unicode line separator (U+2028) arrives whole, and the
   await o.handle(dm('1', 'SEPARATOR please'));
   assert.equal(sent.at(-1)?.text, 'line one\u2028line two');
 });
+
+test('a print-mode CLI that gives no output is reported at half the stall time and stopped at all of it', async (t) => {
+  const cfg = Config.parse({ profiles: { a: { cwd: here } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000, turn_stall_minutes: 0.01 } });
+  const sent: string[] = [];
+  const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, stallTickMs: 50 });
+  t.after(() => o.shutdown());
+  await o.handle(dm('1', 'HANG forever'));
+  assert.match(sent[0], /^Nothing new from the agent for \d+ minutes\. It may be stuck/);
+  assert.match(sent.at(-1)!, /gave no output for 0\.01 minutes, so Angelia stopped it/);
+  sent.length = 0;
+  await o.handle(dm('1', 'hello again'));
+  assert.equal(sent.length, 1, 'the next message gets a fresh process and an answer');
+  assert.doesNotMatch(sent[0], /stopped it/);
+});
+
+test('a CLI that keeps writing lines with no text is working, not stalled', async (t) => {
+  const cfg = Config.parse({ profiles: { a: { cwd: here } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000, turn_stall_minutes: 0.01 } });
+  const sent: string[] = [];
+  const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, stallTickMs: 50 });
+  t.after(() => o.shutdown());
+  await o.handle(dm('1', 'QUIETWORK please'));
+  assert.deepEqual(sent, ['worked quietly']);
+});

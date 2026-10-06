@@ -38,6 +38,10 @@ export interface Sender {
 }
 
 export interface OrchestratorOptions {
+  /** Tests: how often a running turn is checked for a stall (default a minute). */
+  stallTickMs?: number;
+  /** Tests: the waits between attempts at a send that failed (default SEND_RETRY_MS). */
+  sendRetryMs?: number[];
   stateDir?: string;
   /** Executable per backend, when not the default on PATH (tests, odd installs). */
   bins?: Partial<Record<BackendName, string>>;
@@ -76,6 +80,10 @@ const CATALOG_MS = 10 * 60_000;
 const DROP_LOG_MS = 10 * 60_000;
 /** Messages that may wait behind a chat's running turn. Past it, the chat is told once, and the rest dropped. */
 const QUEUE_MAX = 10;
+/** The waits between attempts at a failed send: about two minutes in all, enough for a reconnect. */
+const SEND_RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
+/** Undelivered answers kept per chat. */
+const OWED_MAX = 5;
 /** Questions (`angelia ask`) one chat answers at the same time; each is a CLI process. */
 const ASK_MAX = 2;
 /** Questions answered at the same time across all chats. */
@@ -115,6 +123,8 @@ export class Orchestrator {
    *  that was running at the time sees its era go stale, and knows the failure it is about to
    *  report was the user pulling the plug rather than the agent crashing. */
   private era = new Map<string, number>();
+  /** Answers a chat could not be sent, to go out with the next thing it is told (at most OWED_MAX). */
+  private owed = new Map<string, string[]>();
   /** Questions being answered per chat (`ask`), each in its own read-only copy. */
   private asking = new Map<string, number>();
   /** Every question being answered, to stop at shutdown. */
@@ -124,8 +134,8 @@ export class Orchestrator {
 
   constructor(private readonly cfg: Config, private readonly senders: Partial<Record<Platform, Sender>>, private readonly opts: OrchestratorOptions = {}) {
     const dir = opts.stateDir ?? join(homedir(), '.angelia');
-    this.map = new SessionMap(join(dir, 'sessions.json'));
     this.log = opts.log ?? (() => {});
+    this.map = new SessionMap(join(dir, 'sessions.json'), (line) => this.log(line));
   }
 
   async handle(raw: Inbound): Promise<void> {
@@ -457,23 +467,55 @@ export class Orchestrator {
     // to the answer and to permission prompts (deliver/rate.ts).
     const progress = new ProgressOutbox(this.rateFor(i.platform), (t) => this.replyFromAgent(i, t, profile, true),
       (e) => this.log(`progress failed key=${key} ${(e as Error).message}`));
+    // A CLI that stops answering would hold the chat for good, typing, with every later message
+    // queued behind it. In print mode any event is a sign of life: none for half the stall time and
+    // the chat hears so; none for all of it and the CLI is stopped. tmux mode watches its own pane.
+    const stallMs = this.cfg.defaults.turn_stall_minutes * 60_000;
+    let lastEvent = Date.now(), told = false, stalled = false;
+    const watch = stallMs > 0 && !profile.tui && !follow ? setInterval(() => {
+      // A permission waiting on the owner is not a stall: the clock starts again once it is answered.
+      if (b.pendingPermissionCount > 0) { lastEvent = Date.now(); return; }
+      // Any line from the CLI counts, not only the ones that become chat events: a long run of tool
+      // calls with no text between them is work, not silence.
+      const idle = Date.now() - Math.max(lastEvent, b.lastOutputAt ?? 0);
+      if (idle >= stallMs && !stalled) {
+        stalled = true;
+        this.log(`turn stalled key=${key} after ${Math.round(idle / 60_000)} min without output`);
+        void this.dropBrain(key);
+      } else if (idle >= stallMs / 2 && !told) {
+        told = true;
+        void this.reply(i, `Nothing new from the agent for ${Math.round(idle / 60_000)} minutes. It may be stuck; Angelia stops it at ${this.cfg.defaults.turn_stall_minutes} minutes, or send /stop now.`).catch(() => {});
+      }
+    }, this.opts.stallTickMs ?? 60_000) : undefined;
+    watch?.unref?.();
     try {
       for await (const e of events) {
+        lastEvent = Date.now();
         if (e.kind === 'progress') progress.push(e.text);
-        else if (e.kind === 'notice') await this.reply(i, e.text);
+        // A line that cannot be delivered must not end the turn: the agent works on, the answer is
+        // what matters, and a permission line nobody saw times out as a no.
+        else if (e.kind === 'notice') await this.reply(i, e.text).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
         else if (e.kind === 'permission') {
-          if (e.detail) await this.reply(i, e.detail);
-          await this.reply(i, permissionLine(e.id, e.tool, e.preview));
+          try {
+            if (e.detail) await this.reply(i, e.detail);
+            await this.reply(i, permissionLine(e.id, e.tool, e.preview));
+          } catch (err) { this.log(`permission line failed key=${key} ${(err as Error).message}`); }
         }
         else result = e;
       }
     } catch (err) {
       this.log(`turn error key=${key} ${(err as Error).message}`);
     } finally {
+      if (watch) clearInterval(watch);
       await sender?.typing?.(i.chat, false);
     }
     // What the agent said along the way and the rate limit held back goes in front of the answer.
     const unsent = await progress.close();
+    if (stalled) {
+      if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
+      await this.reply(i, `The agent gave no output for ${this.cfg.defaults.turn_stall_minutes} minutes, so Angelia stopped it. Send your message again, or /new for a fresh session.`).catch(() => {});
+      return;
+    }
     if (!result || result.isError) {
       const stopped = (this.era.get(key) ?? 0) !== era;
       this.log(`turn failed key=${key} reason=${stopped ? 'stopped by the user' : result?.reason ?? 'exception'}`);
@@ -516,7 +558,11 @@ export class Orchestrator {
       else if (tail.length) await this.replyFromAgent(i, tail.join('\n\n'), profile);
       else if (!result.text && !progress.lastSent && bare) await this.reply(i, `${i.text.trim().split(/\s/)[0]} done.`);
     } catch (err) {
+      // Kept, and sent with the next thing this chat is told: the answer exists, the platform was down.
       this.log(`deliver failed key=${key} ${(err as Error).message}`);
+      const owed = this.owed.get(key) ?? [];
+      const rest = (err as { unsent?: string }).unsent ?? result.text;
+      if (rest && owed.length < OWED_MAX) this.owed.set(key, [...owed, rest]);
     }
   }
 
@@ -839,9 +885,17 @@ export class Orchestrator {
     // other chat behind it: the start goes as text, the whole of it as a file.
     const whole = parts.length > LONG_ANSWER_PARTS && sender.sendMedia ? text : undefined;
     if (whole) parts = [...parts.slice(0, LONG_ANSWER_PARTS - 1), `… ${parts.length - LONG_ANSWER_PARTS + 1} more messages' worth: the whole answer is in the attached file.`];
+    // Progress lines are not tried again: a later batch or the answer carries on, and a retry would
+    // hold the answer, and every message behind it, for minutes.
+    const send = <T>(f: () => Promise<T>) => (held ? f() : this.retrySend(f));
     for (let n = 0; n < parts.length; n++) {
       if (!(held && n === 0)) await this.rateFor(i.platform).acquire(n === 0);
-      await sender.send(i.chat, parts[n], i.thread);
+      try { await send(() => sender.send(i.chat, parts[n], i.thread)); }
+      catch (e) {
+        // What did not go out, so a kept answer is not sent twice.
+        (e as { unsent?: string }).unsent = parts.slice(n).join('\n\n');
+        throw e;
+      }
     }
     if (whole) {
       const dir = mkdtempSync(join(tmpdir(), 'angelia-answer-'));
@@ -849,8 +903,41 @@ export class Orchestrator {
       try {
         writeFileSync(path, whole, { mode: 0o600 });
         await this.rateFor(i.platform).acquire(true);
-        await sender.sendMedia!(i.chat, { path, kind: 'document', mime: 'text/markdown', bytes: Buffer.byteLength(whole), fileName: 'answer.md' }, i.thread);
+        await this.retrySend(() => sender.sendMedia!(i.chat, { path, kind: 'document', mime: 'text/markdown', bytes: Buffer.byteLength(whole), fileName: 'answer.md' }, i.thread));
       } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+    // Delivered: an answer this chat could not get earlier goes out now, once, as the agent's words
+    // (a MEDIA: line attaches its file, as it would have).
+    const owed = held ? undefined : this.owed.get(sessionKey(i));
+    if (owed?.length) {
+      this.owed.delete(sessionKey(i));
+      const route = matchRoute(this.cfg, i);
+      for (const t of owed) {
+        const late = `An answer that could not be delivered earlier:\n\n${t}`;
+        await (route ? this.replyFromAgent(i, late, this.cfg.profiles[route.profile]) : this.reply(i, late)).catch((e) => this.log(`late answer failed key=${sessionKey(i)} ${(e as Error).message}`));
+      }
+    }
+  }
+
+  /**
+   * One send, tried again when the platform is down for a moment: WhatsApp between a close and its
+   * reconnect, Telegram's network or its 429 (its own wait is used), a server error. A refusal that
+   * will not change (a 4xx other than 429: a chat that is gone, a bot that was blocked) is not.
+   */
+  private async retrySend<T>(send: () => Promise<T>): Promise<T> {
+    const waits = this.opts.sendRetryMs ?? SEND_RETRY_MS;
+    for (let n = 0; ; n++) {
+      try { return await send(); }
+      catch (e) {
+        // Telegram (grammY) gives error_code, WhatsApp (Baileys, a Boom error) output.statusCode.
+        const err = e as { error_code?: number; parameters?: { retry_after?: number }; output?: { statusCode?: number } };
+        const code = err.error_code ?? err.output?.statusCode;
+        const final = typeof code === 'number' && code >= 400 && code < 500 && code !== 429 && code !== 408;
+        if (final || n >= waits.length) throw e;
+        const wait = err.parameters?.retry_after ? Math.min(err.parameters.retry_after * 1000, 300_000) : waits[n];
+        this.log(`send failed, again in ${Math.round(wait / 1000)} s: ${(e as Error).message}`);
+        await new Promise((r) => setTimeout(r, wait));
+      }
     }
   }
 

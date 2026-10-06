@@ -133,3 +133,28 @@ test('grok: a child that dies without answering says why, from the tail of its s
   const ev = await collect(b, 'CRASH');
   assert.deepEqual(ev, [{ kind: 'result', text: '', isError: true, reason: 'exit: grok: the model is not available on this plan' }]);
 });
+
+test('grok: a CLI that never answers initialize fails the turn within the start timeout and is stopped', async (t) => {
+  const { GrokBrain } = await import('../src/brain/grok.js');
+  const was = GrokBrain.startTimeoutMs;
+  GrokBrain.startTimeoutMs = 300;
+  t.after(() => { GrokBrain.startTimeoutMs = was; });
+  const b = make('grok', false, 'acceptEdits', 'sess-silent', { FAKE_GROK_SILENT: '1' });
+  const events = [];
+  for await (const e of b.turn('hi')) events.push(e);
+  assert.match(String((events.at(-1) as { reason?: string }).reason), /did not answer within 0 s of starting/);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(b.alive, false, 'stopped, so the next message starts fresh');
+});
+
+test('grok: a healthy brain is not stopped when the start timeout runs out', async (t) => {
+  const { GrokBrain } = await import('../src/brain/grok.js');
+  const was = GrokBrain.startTimeoutMs;
+  GrokBrain.startTimeoutMs = 300;
+  t.after(() => { GrokBrain.startTimeoutMs = was; });
+  const b = make('grok', false, 'acceptEdits', 'sess-healthy');
+  t.after(() => b.kill()); // a live child would keep this test file from ending
+  await collect(b, 'hello');
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(b.alive, true, 'still running after the timeout would have fired');
+});

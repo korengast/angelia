@@ -43,6 +43,9 @@ export interface Brain extends EventEmitter {
   readonly profile: Profile;
   readonly session: BrainSession;
   lastUsedAt: number;
+  /** When the CLI last wrote anything on stdout (print mode): a sign of life, whatever the line was.
+   *  The stall watchdog reads it; undefined where the brain has no such stream (tmux). */
+  lastOutputAt?: number;
   /** Backend version when it reports one; empty otherwise. */
   version: string;
   /** The backend's own id for this conversation once known. Backends that mint their own ids

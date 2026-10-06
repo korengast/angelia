@@ -88,7 +88,8 @@ test('end to end: the detached restart outlives the daemon it stops and starts a
     setInterval(() => {}, 1000);`;
   const env = { ...process.env, ANGELIA_STATE_DIR: state };
   delete env.ANGELIA_SESSION_KEY;
-  const parent = spawn(process.execPath, ['--input-type=module', '-e', fakeDaemon], { env, stdio: 'ignore' });
+  // Its command line says `angelia ... daemon`, as the real one's does: restart stops only a daemon.
+  const parent = spawn(process.execPath, ['--input-type=module', '-e', fakeDaemon, 'angelia', 'daemon'], { env, stdio: 'ignore' });
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const pidNow = () => { try { return Number(readFileSync(join(state, 'daemon.pid'), 'utf8')); } catch { return 0; } };
   let next = 0;

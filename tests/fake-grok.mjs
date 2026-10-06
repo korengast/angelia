@@ -15,6 +15,7 @@ const chunk = (sid, text) => update(sid, { sessionUpdate: 'agent_message_chunk',
 let sid = null, reqId = 1000; const waiting = new Map(); // permission rpc id -> continuation
 createInterface({ input: process.stdin }).on('line', (line) => {
   const m = JSON.parse(line);
+  if (m.method === 'initialize' && process.env.FAKE_GROK_SILENT) return;
   if (m.method === 'initialize') return reply(m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true }, agentInfo: { name: 'fake-grok', version: '1.0.30' } });
   if (m.method === 'session/new') { sid = 'grok-' + randomUUID(); return reply(m.id, { sessionId: sid, models: { currentModelId: 'grok-4.6' } }); }
   if (m.method === 'session/load') {

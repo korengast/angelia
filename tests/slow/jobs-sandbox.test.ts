@@ -48,6 +48,8 @@ test('a sandboxed job reaches no launcher that would run its code outside the sa
     if (existsSync(marker)) { escaped.push(n); unlinkSync(marker); }
   }
   spawnSync('launchctl', ['remove', `test.angelia.jobprobe${process.pid}`]);
+  // An osascript blocked on an Automation prompt outlives its job: stop it, or it stays for hours.
+  spawnSync('pkill', ['-f', `launch-probe-${process.pid}`]);
   assert.deepEqual(escaped, []);
 });
 

@@ -102,6 +102,7 @@ export class PiBrain extends EventEmitter implements Brain {
   private nextId = 1;
   private permissions: PermissionBook;
   lastUsedAt = Date.now();
+  lastOutputAt?: number;
   version = '';
   /** pi accepts the id Angelia mints, so the backend id is the session id. */
   backendSessionId?: string;
@@ -149,6 +150,7 @@ export class PiBrain extends EventEmitter implements Brain {
       if (this.session.started && !this.lostSeen && NO_SESSION.test(this.failure)) this.lost = this.lostSeen = true;
     });
     onJsonLines(child.stdout, (m: Msg) => {
+      this.lastOutputAt = Date.now();
       if (!this.inTurn && m.type === 'extension_ui_request' && DIALOGS.includes(m.method)) { this.write({ type: 'extension_ui_response', id: m.id, cancelled: true }); return; }
       this.lines.emit('line', m);
     });

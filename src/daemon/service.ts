@@ -1,3 +1,4 @@
+import { isDaemonPid } from './pid.js';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
@@ -170,9 +171,6 @@ function readPid(): number {
   try { return Number(readFileSync(join(STATE_DIR, 'daemon.pid'), 'utf8').trim()) || 0; } catch { return 0; }
 }
 
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' && !!process.env.CODEX_SANDBOX; }
-}
 
 export async function serviceCommand(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
@@ -197,7 +195,7 @@ export async function serviceCommand(argv: string[]): Promise<void> {
       const pid = readPid();
       if (serviceLoaded()) {
         console.log('The service is already loaded. The new plist takes effect at the next angelia restart (or /restart from a chat).');
-      } else if (pid && alive(pid)) {
+      } else if (isDaemonPid(pid)) {
         console.log(`A daemon started by hand is running (pid ${pid}). angelia restart, or /restart from a chat, moves it onto the service.`);
       } else {
         serviceStart();
@@ -220,7 +218,7 @@ export async function serviceCommand(argv: string[]): Promise<void> {
       const pid = readPid();
       console.log(`plist   ${serviceInstalled() ? plistPath() : 'not installed'}`);
       console.log(`loaded  ${serviceLoaded() ? 'yes' : 'no'}`);
-      console.log(`daemon  ${pid && alive(pid) ? `pid ${pid}` : 'not running'}`);
+      console.log(`daemon  ${isDaemonPid(pid) ? `pid ${pid}` : 'not running'}`);
       break;
     }
     default:
