@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { O_NOFOLLOW_ANY } from '../core/paths.js';
 
 /** A file from a chat is downloaded up to this size, on both platforms (Telegram's Bot API serves no more). */
 export const MAX_INBOUND = 20 * 1024 * 1024;
@@ -34,7 +35,7 @@ export async function saveInbound(profileDir: string, ext: string, source: Async
   async function* capped() {
     for await (const c of source) { n += c.length; if (n > max) throw new TooBig(); yield c; }
   }
-  const file = await open(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW_ANY, 0o600);
+  const file = await open(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW_ANY, 0o600);
   try { await pipeline(Readable.from(capped()), file.createWriteStream()); }
   catch (e) { await file.close().catch(() => {}); rmSync(dest, { force: true }); if (e instanceof TooBig) return undefined; throw e; }
   pruneInbox(dir, limit, dest);
@@ -42,8 +43,6 @@ export async function saveInbound(profileDir: string, ext: string, source: Async
   return join(profileDir, '.inbox', name);
 }
 
-/** macOS: fail the open if any part of the path is a symbolic link (sys/fcntl.h, macOS 11+). */
-const NOFOLLOW_ANY = process.platform === 'darwin' ? 0x20000000 : 0;
 
 /** The profile's `.inbox`, made if missing, and refused unless it is a plain folder inside the profile. */
 export function inboxDir(profileDir: string): string {

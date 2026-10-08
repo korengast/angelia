@@ -138,3 +138,22 @@ test('a dialog on the pane that no request accounts for is told once, after it s
   assert.equal(s.see('Write\nx', false, 30_700), false, 'a new dialog waits again, even with the same text');
   assert.equal(s.see('Write\nx', false, 30_700 + SCREEN_ONLY_MS), true);
 });
+
+// Rows as Claude Code 2.1.287 writes them (trimmed), seen live on 2026-10-02.
+const use = (id: string, command: string) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command, description: 'Make a file' } }] } });
+const refused = (id: string) => JSON.stringify({ type: 'user', toolUseResult: 'User rejected tool use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed." }] } });
+const ran = (id: string) => JSON.stringify({ type: 'user', toolUseResult: { stdout: '', stderr: '', interrupted: false }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: '(Bash completed with no output)' }] } });
+
+test('paneVerdict: a refusal in the dialog, a call that ran, one still running, one not there', async () => {
+  const { paneVerdict } = await import('../src/brain/tui-permissions.js');
+  const input = { command: 'touch a', description: 'Make a file' };
+  assert.equal(paneVerdict([use('t1', 'touch a'), refused('t1')].join('\n'), 'Bash', input), false);
+  assert.equal(paneVerdict([use('t1', 'touch a'), ran('t1')].join('\n'), 'Bash', input), true);
+  assert.equal(paneVerdict(use('t1', 'touch a'), 'Bash', input), 'running');
+  assert.equal(paneVerdict(use('t1', 'touch b'), 'Bash', input), undefined, 'another command is not this request');
+  assert.equal(paneVerdict(use('t1', 'touch a'), 'Read', input), undefined, 'another tool is not this request');
+  assert.equal(paneVerdict([use('t1', 'touch a'), 'not json', ran('t1')].join('\n'), 'Bash', { description: 'Make a file', command: 'touch a' }), true, 'key order does not matter');
+  // The same command asked twice: the last call is the one the request belongs to.
+  assert.equal(paneVerdict([use('t1', 'touch a'), refused('t1'), use('t2', 'touch a')].join('\n'), 'Bash', input), 'running');
+  assert.equal(paneVerdict([use('t1', 'touch a'), ran('t1'), use('t2', 'touch a'), refused('t2')].join('\n'), 'Bash', input), false);
+});

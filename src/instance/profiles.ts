@@ -42,6 +42,22 @@ export function profilesJson(cfg: Config, sessions: SessionMapFile): { version: 
   return { version: 1, profiles };
 }
 
+/** The same list for a client that shows each profile's setup (the API's `/profiles`): the table's
+ *  settings for it too, in the table's order. Routes and secrets' values stay out; a capability is its name. */
+export function profilesDetail(cfg: Config, sessions: SessionMapFile): { version: 1; profiles: (ProfileJson & { settings: Record<string, unknown> })[] } {
+  const { profiles } = profilesJson(cfg, sessions);
+  return {
+    version: 1,
+    profiles: profiles.map((row) => {
+      const p = cfg.profiles[row.name];
+      return { ...row, settings: {
+        permission_mode: p.permission_mode, effort: p.effort ?? null, capabilities: p.capabilities, except: p.except, deny: p.deny,
+        add_dirs: p.add_dirs, sandbox: p.sandbox ?? null, isolated: p.isolated, chrome: p.chrome, shell: p.shell, media_tags: p.media_tags,
+      } };
+    }),
+  };
+}
+
 export function readSessions(path: string): SessionMapFile {
   if (!existsSync(path)) return { version: 1, chats: {} };
   const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<SessionMapFile>;

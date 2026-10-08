@@ -120,14 +120,18 @@ test('in the default folder the workspace repo is made if missing, and each new 
   assert.match(execFileSync('git', ['log', '--format=%s', 'main'], { cwd: remote, encoding: 'utf8' }), /^Onboard sent\n/);
 });
 
-test('a table that would not load is put back as it was', () => {
+test('a table that would not load is put back as it was', async () => {
   const t = table();
   const cfg = loadConfig(t.path);
+  // Its own instance: without one, onboarding reads (and could write) the real ~/.angelia.
+  const instance = join(t.dir, 'instance');
+  const { writeAccepted } = await import('../src/instance/accepted.js');
+  writeAccepted(cfg, instance);
   const before = readFileSync(t.path, 'utf8');
   // Written, then refused by the loader: bypassPermissions next to a folder holding .env.
   writeFileSync(join(t.dir, '.env'), '');
   cfg.onboard!.profile = { permission_mode: 'bypassPermissions', add_dirs: [t.dir] };
-  assert.throws(() => onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'n@g.us', chatName: 'X' }), /\.env/);
+  assert.throws(() => onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'n@g.us', chatName: 'X', instance }), /\.env/);
   assert.equal(readFileSync(t.path, 'utf8'), before);
   assert.ok(!('x' in cfg.profiles));
 });
@@ -194,4 +198,21 @@ test('a chat on the skip list is never onboarded, even for an owner', async (t) 
   assert.deepEqual(made, []);
   assert.equal(sent.length, 0);
   assert.throws(() => Config.parse({ profiles: {}, routes: [], onboard: { owners: ['1'], skip: ['new@g.us'] } }), /platform:chat/);
+});
+
+test('onboarding builds only on the accepted table, and records the table it wrote as accepted', async () => {
+  const { readAccepted, writeAccepted } = await import('../src/instance/accepted.js');
+  const t = table();
+  const instance = join(t.dir, 'instance');
+  const cfg = loadConfig(t.path);
+  writeAccepted(cfg, instance);
+  // An agent edits the table: onboarding would hand every new chat a shell.
+  writeFileSync(t.path, readFileSync(t.path, 'utf8').replace('profile: {permission_mode: acceptEdits, model: some-model}', 'profile: {permission_mode: acceptEdits, model: some-model, shell: true}'));
+  const before = readFileSync(t.path, 'utf8');
+  assert.throws(() => onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'n@g.us', chatName: 'Late', instance }), /not onboarding: the routing table has 1 change\(s\) the owner has not accepted/);
+  assert.equal(readFileSync(t.path, 'utf8'), before, 'the table is not touched');
+
+  writeAccepted(loadConfig(t.path), instance);
+  const made = onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'n@g.us', chatName: 'Late', instance });
+  assert.ok(readAccepted(instance)!.profiles[made.name], 'the new profile is part of the accepted table');
 });

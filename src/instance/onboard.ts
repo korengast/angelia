@@ -12,6 +12,7 @@ import { backupConfig, instructionFile } from './init.js';
 import { builtinVoiceTools } from '../voice/setup.js';
 import { planProfile } from '../capabilities/compile.js';
 import type { Platform } from '../core/types.js';
+import { beyond, pendingRefusal, writeAccepted } from './accepted.js';
 
 /**
  * A new profile for a chat nobody routed yet (`defaults.unmatched: onboard`).
@@ -81,6 +82,9 @@ export function onboardChat(o: OnboardOpts): Onboarded {
   const name = profileName(o.chatName, o.chat, (n) => n in o.cfg.profiles || existsSync(join(root, n)));
   const folder = join(root, name);
 
+  // Built on the table as it stands, so that table must be the accepted one (accepted.ts).
+  const pending = pendingRefusal(loadConfig(o.table), instance);
+  if (pending) throw new Error(`not onboarding: ${pending}`);
   const doc = parseDocument(readFileSync(o.table, 'utf8'));
   // No anchors (&a1 / *a1) when two fields hold the same list: the table stays plain to read and edit.
   const plain = { aliasDuplicateObjects: false };
@@ -107,6 +111,9 @@ export function onboardChat(o: OnboardOpts): Onboarded {
   let fresh: Config;
   try { fresh = loadConfig(o.table); } catch (e) { copyFileSync(backup, o.table); throw e; }
 
+  // Only the new profile and route may differ from the accepted table: anything else came in between.
+  const extra = beyond(instance, fresh, [`profiles.${name}`, `routes.${o.platform}:${o.chat}`]);
+  if (extra.length) { copyFileSync(backup, o.table); throw new Error(`not onboarding: the routing table changed while it was written (${extra.join('; ')})`); }
   const p = fresh.profiles[name];
   try {
     // An agent must not start before its deny rules are written, so a failure here undoes the route
@@ -117,6 +124,7 @@ export function onboardChat(o: OnboardOpts): Onboarded {
     plan.apply();
   } catch (e) { copyFileSync(backup, o.table); throw e; }
 
+  writeAccepted(fresh, instance);
   o.cfg.profiles[name] = p;
   o.cfg.routes.push(fresh.routes.find((r) => r.profile === name && r.chat === o.chat)!);
   const prompt = onboardingPrompt(ob.prompt ? resolve(expandHome(ob.prompt)) : DEFAULT_PROMPT, {

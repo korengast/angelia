@@ -1,10 +1,14 @@
 import type { SessionMap } from './session/map.js';
 
 export type Command =
-  | { name: 'new' } | { name: 'stop' } | { name: 'status' } | { name: 'help' } | { name: 'restart' }
+  | { name: 'new' } | { name: 'stop' } | { name: 'status' } | { name: 'help' } | { name: 'restart'; value?: string }
   | { name: 'resume'; selector?: string }
   | { name: 'model'; value?: string } | { name: 'effort'; value?: string } | { name: 'backend'; value?: string }
   | { name: 'sh'; script: string };
+
+/** The router commands the desk app has buttons for. */
+export const APP_COMMANDS = ['new', 'stop', 'status'] as const;
+export type AppCommand = typeof APP_COMMANDS[number];
 
 /** Router-handled commands (0 Claude tokens). Anything else starting with "/" is passed to Claude as text. */
 export function parseCommand(text: string): Command | null {
@@ -15,6 +19,7 @@ export function parseCommand(text: string): Command | null {
   const name = m[1].toLowerCase() as Exclude<Command['name'], 'sh'>;
   if (name === 'resume') return { name, selector: m[2] };
   if (name === 'model' || name === 'effort' || name === 'backend') return { name, value: m[2] };
+  if (name === 'restart') return m[2] ? { name, value: m[2] } : { name };
   return { name };
 }
 
@@ -28,13 +33,17 @@ export const COMMANDS: { command: string; args?: string; description: string }[]
   { command: 'effort', args: '[level | default]', description: 'the effort now and the levels to choose from; set it for this session only' },
   { command: 'backend', args: '[claude-code | grok | codex]', description: 'the CLI now and the ones installed; switch this profile to another (owner only)' },
   { command: 'sh', args: '<command>', description: 'run a shell command in the profile directory, no agent involved' },
-  { command: 'restart', description: 'check the routing table, then restart Angelia (owner only)' },
+  { command: 'restart', args: '[confirm]', description: 'check the routing table, then restart Angelia; confirm accepts new rights it lists (owner only)' },
   { command: 'help', description: 'this list' },
 ];
 
 export const HELP = COMMANDS.map((c) => `/${c.command}${c.args ? ' ' + c.args : ''} — ${c.description}`).join('\n');
 
-export function statusText(map: SessionMap, key: string, profile: string, alive: boolean, queued: number): string {
+/** What /status says before the line that takes a Claude Code chat's session to a terminal. */
+export const TERMINAL_LEAD = 'To go on in a terminal (/stop here first if warm; /exit there before you write here again):';
+
+/** `terminal`: the command that resumes the session at a terminal, given to an owner only. */
+export function statusText(map: SessionMap, key: string, profile: string, alive: boolean, queued: number, terminal?: string): string {
   const a = map.getActive(key);
   if (!a) return `angelia · profile ${profile} · no active session yet`;
   return [
@@ -42,6 +51,7 @@ export function statusText(map: SessionMap, key: string, profile: string, alive:
     `last used ${a.last_used_at.slice(0, 16).replace('T', ' ')} · ${alive ? 'warm' : 'cold'} · ${queued} queued`,
     `${map.list(key, 100).length} sessions in history`,
     ...map.background().filter((b) => b.key === key).map((b) => `session ${b.row.id.slice(0, 8)} is still working in the background: /resume ${map.position(key, b.row.id) || b.row.id.slice(0, 8)}`),
+    ...(terminal ? [TERMINAL_LEAD, terminal] : []),
   ].join('\n');
 }
 

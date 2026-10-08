@@ -100,7 +100,7 @@ function removedKeys(raw: unknown): string[] {
  * a table written before the removal must keep loading; removedKeys still reads the original to name
  * each leftover. Anything odd (an empty file, a list) comes back as it is, for Config to report.
  */
-function withoutRemoved(raw: unknown): unknown {
+export function withoutRemoved(raw: unknown): unknown {
   const isMap = (o: unknown): o is Record<string, unknown> => !!o && typeof o === 'object' && !Array.isArray(o);
   const drop = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !REMOVED_KEYS.includes(k)));
   if (!isMap(raw)) return raw;

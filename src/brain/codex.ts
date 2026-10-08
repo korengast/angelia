@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { childEnv, versionAtLeast } from './argv.js';
-import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
 import { cacheEnv, profileCacheDir } from './cache.js';
 import { CODEX_PROFILE, codexApproval, codexConfigConflict, codexOverrides, codexSandboxNote, codexSandboxed } from './codex-config.js';
 import { profilePermissions, readRecord } from '../capabilities/compile.js';
@@ -98,8 +98,9 @@ export class CodexBrain extends EventEmitter implements Brain {
     this.refused = launch.refuse;
     if (launch.skipped.length) this.emit('log', `codex: rules the sandbox cannot hold as written are not passed to it: ${launch.skipped.join(', ')}`);
     const env = { ...childEnv(this.opts.env), ...(cache ? cacheEnv(cache) : {}) };
-    const child = spawn(this.opts.bin ?? 'codex', [...launch.args, 'app-server'], { cwd: this.profile.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(this.opts.bin ?? 'codex', [...launch.args, 'app-server'], { cwd: this.profile.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], ...CHILD_GROUP });
     this.child = child;
+    trackGroup(child);
     const done = (code: number | null, signal: NodeJS.Signals | null) => {
       if (this.exited) return;
       this.exited = true;
@@ -348,5 +349,5 @@ export class CodexBrain extends EventEmitter implements Brain {
     if (this.child && !this.exited) await stopChild(this.child, this.lines, () => this.exited, graceMs);
   }
 
-  kill(): void { this.child?.kill('SIGKILL'); }
+  kill(): void { if (this.child && !this.exited) signalGroup(this.child, 'SIGKILL'); }
 }

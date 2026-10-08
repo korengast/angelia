@@ -8,6 +8,7 @@
 //   text contains "EMPTY"    -> empty result
 //   text contains "SLOW"     -> the answer takes 3s, so a turn can be interrupted mid-flight
 //   text contains "HANG"     -> no output at all, ever (a stuck CLI)
+//   text contains "GRANDCHILD" -> starts `sleep 300` (a long tool), answers with its pid, then ignores EOF
 //   text contains "QUIETWORK" -> 1.2 s of system lines (work with no text), then the answer
 //   text contains "SEPARATOR" -> the answer holds a raw U+2028 (JSON.stringify leaves it unescaped)
 //   text contains "BUSYTURN" -> forty progress lines, then the answer
@@ -16,6 +17,7 @@
 // env FAKE_CLAUDE_APIKEY=1  -> apiKeySource "ANTHROPIC_API_KEY" (billing refusal test)
 // env FAKE_CLAUDE_VERSION   -> claude_code_version override
 import { createInterface } from 'node:readline';
+import { spawn } from 'node:child_process';
 
 // `angelia ask`: one question, the prompt on stdin, one JSON result. The answer echoes what the copy
 // was started with, so a test can see the flags. "ASKSLOW" answers after 1.5 s, "ASKFAIL" fails.
@@ -98,6 +100,12 @@ rl.on('line', (line) => {
     return;
   }
   if (text.includes('HANG')) return;
+  if (text.includes('GRANDCHILD')) {
+    const tool = spawn('sleep', ['300'], { stdio: 'ignore' });
+    stubborn = true;
+    out({ type: 'result', subtype: 'success', is_error: false, result: String(tool.pid), session_id: sid });
+    return;
+  }
   if (text.includes('QUIETWORK')) {
     let n = 0;
     const t = setInterval(() => {
@@ -131,5 +139,6 @@ rl.on('line', (line) => {
   out({ type: 'assistant', message: { content: [{ type: 'text', text: result }] } });
   out({ type: 'result', subtype: 'success', is_error: false, result, session_id: sid });
 });
-rl.on('close', () => process.exit(0));
+let stubborn = false;
+rl.on('close', () => { if (!stubborn) process.exit(0); });
 }

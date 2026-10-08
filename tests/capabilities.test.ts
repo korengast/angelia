@@ -545,3 +545,64 @@ test('compile refuses a CLAUDE.md that is a link or a hard link, before writing 
     assert.equal(readFileSync(other, 'utf8'), 'kept\n');
   }
 });
+
+test('compile writes nothing through a link: a linked .claude or skills folder is a conflict, a linked file is refused', async () => {
+  const { linkSync, renameSync } = await import('node:fs');
+  const { writePlain } = await import('../src/capabilities/compile.js');
+  const r = rig();
+  const elsewhere = join(r.root, 'elsewhere');
+  mkdirSync(elsewhere);
+
+  // The agent swaps its .claude folder for a link: compile would write the settings and the skill links there.
+  symlinkSync(elsewhere, join(r.cwd, '.claude'));
+  const plan = planProfile(r.cfg(), 'home', { home: r.home, stateDir: join(r.home, '.angelia') });
+  assert.ok(plan.conflicts.some((c) => c.includes(`${join(r.cwd, '.claude')} is a link`)), plan.conflicts.join('\n'));
+  assert.throws(() => plan.apply(), /conflict/);
+  assert.deepEqual((await import('node:fs')).readdirSync(elsewhere), [], 'nothing written where the link points');
+  rmSync(join(r.cwd, '.claude'));
+
+  // A file that is a link, or a hard link, is not written either; a plain one is.
+  const target = join(elsewhere, 'login-item.json');
+  writeFileSync(target, 'theirs');
+  mkdirSync(join(r.cwd, '.claude'));
+  symlinkSync(target, join(r.cwd, '.mcp.json'));
+  assert.throws(() => writePlain(r.cwd, join(r.cwd, '.mcp.json'), 'ours'), /through a link/);
+  rmSync(join(r.cwd, '.mcp.json'));
+  linkSync(target, join(r.cwd, '.mcp.json'));
+  assert.throws(() => writePlain(r.cwd, join(r.cwd, '.mcp.json'), 'ours'), /one name/);
+  assert.equal(readFileSync(target, 'utf8'), 'theirs');
+  rmSync(join(r.cwd, '.mcp.json'));
+  // A FIFO in the file's place: refused at once, not waited on (the daemon compiles for /backend).
+  (await import('node:child_process')).spawnSync('mkfifo', [join(r.cwd, '.mcp.json')]);
+  assert.throws(() => writePlain(r.cwd, join(r.cwd, '.mcp.json'), 'ours'), /not a plain file/);
+  rmSync(join(r.cwd, '.mcp.json'));
+  writePlain(r.cwd, join(r.cwd, '.mcp.json'), 'ours');
+  assert.equal(readFileSync(join(r.cwd, '.mcp.json'), 'utf8'), 'ours');
+
+  // macOS refuses a link anywhere on the way, even one swapped in after the plan was made.
+  if (process.platform === 'darwin') {
+    renameSync(join(r.cwd, '.claude'), join(r.root, 'real-claude'));
+    symlinkSync(elsewhere, join(r.cwd, '.claude'));
+    assert.throws(() => writePlain(r.cwd, join(r.cwd, '.claude', 'settings.json'), '{}'), /through a link/);
+    assert.ok(!existsSync(join(elsewhere, 'settings.json')));
+  }
+});
+
+test('_shared and _capabilities are read-only for every profile but one with shared_write', async () => {
+  const { codexFilesystem } = await import('../src/brain/codex-config.js');
+  const { Config } = await import('../src/instance/config/schema.js');
+  const home = mkdtempSync(join(tmpdir(), 'angelia-shared-home-'));
+  const state = join(home, '.angelia');
+  const cwd = (n: string) => join(state, 'workspace', 'profiles', n);
+  const cfg = Config.parse({
+    profiles: { master: { cwd: cwd('master'), shared_write: true }, group: { cwd: cwd('group') }, x: { cwd: cwd('x'), backend: 'codex' }, p: { cwd: cwd('p'), backend: 'pi' } },
+    routes: [],
+  });
+  for (const d of ['_shared', '_capabilities']) {
+    assert.ok(profileFloor(cfg, 'group', state, home).includes(`Edit(~/.angelia/workspace/${d}/**)`), d);
+    assert.ok(!profileFloor(cfg, 'group', state, home).includes(`Read(~/.angelia/workspace/${d}/**)`), `${d} stays readable`);
+    assert.ok(!profileFloor(cfg, 'master', state, home).some((r) => r.includes(`/${d}/`)), `master may edit ${d}`);
+  }
+  assert.ok(profileFloor(cfg, 'p', state, home).some((r) => r.includes('_capabilities')), 'pi too');
+  assert.deepEqual(codexFilesystem(profileFloor(cfg, 'x', state, home), [], home).skipped, [], "and Codex's sandbox");
+});

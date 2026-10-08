@@ -11,3 +11,7 @@ export function isInside(path: string, dir: string, home = homedir()): boolean {
   const r = relative(resolve(expandHome(dir, home)), resolve(expandHome(path, home)));
   return r === '' || (!isAbsolute(r) && r !== '..' && !r.startsWith('..' + sep));
 }
+
+/** macOS: fail an open if any part of the path is a symbolic link (sys/fcntl.h, macOS 11+). Linux has
+ *  none: 0 there, and the callers' own checks are what holds. */
+export const O_NOFOLLOW_ANY = process.platform === 'darwin' ? 0x20000000 : 0;

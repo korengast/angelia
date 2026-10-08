@@ -138,6 +138,12 @@ test('switchBackend: the table keeps its layout, loses what belonged to the old 
   assert.equal(cfg.profiles.a.backend, 'codex');
   assert.ok(readdirSync(dir).some((f) => f.startsWith('routing.yaml.') && f.endsWith('.bak')), 'a backup is made');
   assert.ok(readdirSync(join(dir, 'compiled')).length, 'the profile is compiled for the new CLI');
+  // The switch builds on the table as it stands: an edit nobody accepted stops it, untouched.
+  const switched = readFileSync(table, 'utf8');
+  writeFileSync(table, switched.replace('permission_mode: acceptEdits', 'permission_mode: acceptEdits\n    shell: true'));
+  assert.throws(() => switchBackend({ table, cfg, profile: 'a', backend: 'pi', instance: dir }), /not switching: the routing table has 1 change/);
+  assert.equal(cfg.profiles.a.backend, 'codex');
+  writeFileSync(table, switched);
   // A table that would not load after the switch (bypass on a folder with a .env) is put back as it was.
   writeFileSync(join(cwd, '.env'), 'X=1\n');
   writeFileSync(table, now.replace('permission_mode: acceptEdits', 'permission_mode: bypassPermissions'));

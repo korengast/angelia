@@ -159,7 +159,12 @@ for (const [name, sha] of Object.entries(MEDIA)) {
 // the signed tag (it carries that release's key), because GitHub counts an asset's downloads.
 writeFileSync(join(out, '_redirects'),
   `/install https://github.com/${REPO}/releases/download/v${version}/install.sh 302\n` +
-  `/docs https://github.com/${REPO}#readme 302\n/docs/ https://github.com/${REPO}#readme 302\n`);
+  `/docs https://github.com/${REPO}#readme 302\n/docs/ https://github.com/${REPO}#readme 302\n` +
+  // Permanent, so search engines keep only the slash form. Cloudflare's own slash and index.html
+  // redirects are 307, which Search Console reports as "Page with redirect" for months.
+  ['/index.html /', ...(guides.length ? ['/guides /guides/', '/guides/index.html /guides/'] : []),
+    ...guides.flatMap((g) => [`/guides/${g.slug} /guides/${g.slug}/`, `/guides/${g.slug}/index.html /guides/${g.slug}/`])]
+    .map((r) => `${r} 301\n`).join(''));
 writeFileSync(join(out, '_headers'), [
   '/*',
   '  X-Content-Type-Options: nosniff',

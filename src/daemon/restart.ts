@@ -8,6 +8,7 @@ import { SESSION_ENV } from '../core/env.js';
 import { entry, plistConfig, plistPath, serviceInstalled, serviceLoaded, serviceStart, serviceStop, tableMismatch } from './service.js';
 import { configPath } from '../instance/instance.js';
 import { loadConfig } from '../instance/config/load.js';
+import { effectiveTable } from '../instance/accepted.js';
 
 /**
  * Stop the running daemon and start a new one in its OWN session.
@@ -65,8 +66,16 @@ async function restart(argv: string[]): Promise<void> {
   // Loaded here, by the code the new daemon will run, before anything is stopped. The check behind
   // /restart runs in the old daemon, with the old code: after `angelia update` a table that one
   // accepts can fail in the new one, and the daemon would be stopped for a start that cannot work.
-  try { loadConfig(config); } catch (e) {
+  let live;
+  try { live = loadConfig(config); } catch (e) {
     throw new Error(`the routing table does not load with this version, so nothing was stopped:\n${(e as Error).message}\nFix what angelia check-config names, then restart again.`);
+  }
+  // From a terminal nobody saw the list /restart shows: say the new daemon keeps the accepted table.
+  if (!fromDaemon) {
+    try {
+      const { pending } = effectiveTable(live, STATE_DIR);
+      if (pending.length) console.log(`note: ${pending.length} change(s) to the routing table are not accepted, so the daemon keeps the accepted table. angelia accept --check lists them; angelia accept takes them.`);
+    } catch { /* the daemon says so in its log */ }
   }
 
   // Under launchd the service owns the daemon: stop the job, then load it again from the plist on

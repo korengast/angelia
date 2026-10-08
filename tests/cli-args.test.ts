@@ -39,7 +39,7 @@ test('send and turn carry free text: only a leading --help is help', () => {
 test('every flag a command reads in its own parser is in the table', () => {
   // The parsers read flags by literal: a flag missing here would be refused before it could work.
   const read: Record<string, string> = {
-    workspace: 'src/cli/cli.ts', restart: 'src/daemon/restart.ts', service: 'src/daemon/service.ts', compile: 'src/capabilities/cli.ts',
+    workspace: 'src/cli/cli.ts', restart: 'src/daemon/restart.ts', service: 'src/daemon/service.ts', compile: 'src/capabilities/cli.ts', accept: 'src/instance/accept-cli.ts',
     jobs: 'src/jobs/jobs-cli.ts', update: 'src/daemon/update.ts', 'send-media': 'src/daemon/api/client.ts',
     transcribe: 'src/voice/transcribe.ts', speak: 'src/voice/speak.ts',
   };

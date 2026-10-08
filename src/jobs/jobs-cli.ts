@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { loadConfig } from '../instance/config/load.js';
+import { effectiveTable } from '../instance/accepted.js';
 import type { Config, Profile } from '../instance/config/schema.js';
 import { STATE_DIR, envFile } from '../daemon/daemon.js';
 import { configPath } from '../instance/instance.js';
@@ -66,7 +67,10 @@ export async function jobsCommand(argv: string[]): Promise<void> {
   const hash = hashAt >= 0 ? all[hashAt + 1] : undefined;
   const rest = all.filter((_, i) => !(hashAt >= 0 && (i === hashAt || i === hashAt + 1)));
   if (hashAt >= 0 && sub !== 'run') throw new Error(`--hash is what a timer passes to angelia jobs run; it means nothing to jobs ${sub ?? ''}`.trim());
-  const cfg = loadConfig(table);
+  // A job runs on the table the owner accepted, as the daemon does (instance/accepted.ts): a timer
+  // must not take a sandbox an agent switched off in the table, or a secret it added.
+  const live = loadConfig(table);
+  const cfg = sub === 'run' ? effectiveTable(live, STATE_DIR).cfg : live;
   const names = (list: string[]) => {
     for (const n of list) if (!cfg.profiles[n]) throw new Error(`unknown profile "${n}"`);
     return list.length ? list : Object.keys(cfg.profiles);

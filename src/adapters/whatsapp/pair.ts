@@ -4,11 +4,14 @@ import { spawn } from 'node:child_process';
 import QRCode from 'qrcode';
 import { join } from 'node:path';
 import { loadConfig } from '../../instance/config/load.js';
+import { effectiveTable } from '../../instance/accepted.js';
+import { INSTANCE_DIR as STATE_DIR } from '../../instance/instance.js';
 import { WhatsAppAdapter } from './adapter.js';
 
 /** `angelia unpair [routing.yaml]`: log Angelia's linked device out of the WhatsApp account and delete its credentials. Nothing else on that number changes. */
 export async function unpairWhatsApp(configPath: string): Promise<void> {
-  const cfg = loadConfig(configPath);
+  // The accepted table (instance/accepted.ts): an agent must not point the login at a folder it reads.
+  const cfg = effectiveTable(loadConfig(configPath), STATE_DIR).cfg;
   if (!cfg.whatsapp) throw new Error('no whatsapp block in the config');
   const dir = cfg.whatsapp.auth_dir;
   if (!existsSync(join(dir, 'creds.json'))) { console.log('not paired (no credentials); nothing to do'); return; }
@@ -53,11 +56,18 @@ async function servePairPage(view: PairView): Promise<{ url: string; close: () =
 
 /** `angelia pair [routing.yaml]`: link this daemon to the WhatsApp account named in the config, then exit. */
 export async function pairWhatsApp(configPath: string): Promise<void> {
-  const cfg = loadConfig(configPath);
+  // The accepted table (instance/accepted.ts): an agent must not point the login at a folder it reads.
+  const cfg = effectiveTable(loadConfig(configPath), STATE_DIR).cfg;
   if (!cfg.whatsapp) throw new Error('no whatsapp block in the config');
+  await linkWhatsApp(cfg.whatsapp);
+  console.log('Start the daemon, or restart it if it runs.');
+}
+
+/** Link a WhatsApp account as a device, by the live QR page or a code; resolves once it is linked. `angelia init` calls it before a table exists. */
+export async function linkWhatsApp(link: { auth_dir: string; pairing: 'code' | 'qr'; phone?: string }): Promise<void> {
   const view: PairView = { stage: 'starting', note: 'Connecting to WhatsApp…', n: 0 };
   const wa = new WhatsAppAdapter({
-    authDir: cfg.whatsapp.auth_dir, pairing: cfg.whatsapp.pairing, phone: cfg.whatsapp.phone, pairOnly: true,
+    authDir: link.auth_dir, pairing: link.pairing, phone: link.phone, pairOnly: true,
     inboxFor: () => undefined, onInbound: async () => {}, log: (l) => console.log(l),
   });
   const done = new Promise<void>((resolve, reject) => {
@@ -88,9 +98,9 @@ export async function pairWhatsApp(configPath: string): Promise<void> {
   await wa.start();
   try {
     await done;
-    view.stage = 'linked'; view.note = 'Linked. You can close this tab and start the daemon.';
+    view.stage = 'linked'; view.note = 'Linked. You can close this tab.';
     await new Promise((r) => setTimeout(r, 2500)); // let the page show the result
-    console.log('WhatsApp linked. Start the daemon.');
+    console.log('WhatsApp linked.');
   } catch (e) {
     view.stage = 'failed'; view.note = (e as Error).message;
     throw e;
@@ -98,4 +108,38 @@ export async function pairWhatsApp(configPath: string): Promise<void> {
     await wa.stop();
     page?.close();
   }
+}
+
+/** Messages that arrive this soon after the link opens are the backlog of while it was offline, not the one being waited for. */
+const BACKLOG_MS = 5000;
+
+/** What `angelia init` needs from the first message that reaches the linked account. */
+export interface FirstChat { id: string; title: string; isGroup: boolean; sender: string }
+
+/**
+ * Wait for someone to write to the linked account, in a DM or a group it is in, and return that
+ * chat as the router will see it: the chat id a route matches and the sender id an owner list holds.
+ * Nothing is downloaded and nothing is answered. The setup wizard asks the person to confirm the
+ * chat, since anyone could write to the number in the meantime.
+ */
+export function waitForWhatsAppChat(authDir: string): Promise<FirstChat> {
+  return new Promise((resolve, reject) => {
+    let openedAt = Infinity;
+    let done = false;
+    const wa: WhatsAppAdapter = new WhatsAppAdapter({
+      authDir, pairing: 'qr', say: () => {},
+      inboxFor: () => undefined,
+      onInbound: async (i) => {
+        if (done || Date.now() - openedAt < BACKLOG_MS) return;
+        done = true;
+        const name = i.isGroup ? await wa.chatName(i.chat).catch(() => undefined) : undefined;
+        await wa.stop();
+        const who = i.senderName ? `${i.senderName} (${i.sender})` : i.sender;
+        resolve({ id: i.chat, title: i.isGroup ? (name ?? i.chat) : who, isGroup: i.isGroup, sender: i.sender });
+      },
+    });
+    wa.once('open', () => { openedAt = Date.now(); });
+    wa.once('logged-out', () => { done = true; void wa.stop(); reject(new Error('WhatsApp logged this device out. Run angelia pair, then try again.')); });
+    void wa.start().catch((e: Error) => { done = true; reject(e); });
+  });
 }

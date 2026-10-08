@@ -7,7 +7,7 @@ import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { piArgv, childEnv, versionAtLeast } from './argv.js';
 import { profilePermissions } from '../capabilities/compile.js';
-import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
 import { PERMISSION_TITLE, type PiPolicy } from './pi-gate.js';
 import { LOST_SESSION_LINE } from './transcripts.js';
 import { tmuxSocketPath } from './tmux.js';
@@ -130,8 +130,9 @@ export class PiBrain extends EventEmitter implements Brain {
     // The ssh agent would sign as the owner for a sandboxed command that cannot read ~/.ssh.
     if (policy.sandbox) delete env.SSH_AUTH_SOCK;
     this.versionCheck = piVersion(bin, env).then((v) => (this.version = v));
-    const child = spawn(bin, args, { cwd: this.profile.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { cwd: this.profile.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], ...CHILD_GROUP });
     this.child = child;
+    trackGroup(child);
     this.backendSessionId = this.session.id;
     const done = (code: number | null, signal: NodeJS.Signals | null) => {
       if (this.exited) return;
@@ -285,5 +286,5 @@ export class PiBrain extends EventEmitter implements Brain {
     if (this.child && !this.exited) await stopChild(this.child, this.lines, () => this.exited, graceMs);
   }
 
-  kill(): void { this.child?.kill('SIGKILL'); }
+  kill(): void { if (this.child && !this.exited) signalGroup(this.child, 'SIGKILL'); }
 }

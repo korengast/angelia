@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdtempSync } from 'node:fs';
+import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { Config } from '../src/instance/config/schema.js';
 import { createBrain, type Brain } from '../src/brain/index.js';
-import { GrokBrain } from '../src/brain/grok.js';
+import { GrokBrain, trustFolder } from '../src/brain/grok.js';
 import { ClaudeBrain } from '../src/brain/claude.js';
 import { grokArgv } from '../src/brain/argv.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
@@ -134,6 +134,16 @@ test('grok: a child that dies without answering says why, from the tail of its s
   assert.deepEqual(ev, [{ kind: 'result', text: '', isError: true, reason: 'exit: grok: the model is not available on this plan' }]);
 });
 
+test('trustFolder: grok --trust inspect in the folder, true only when grok then says the folder is trusted', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'grok-trust-')));
+  const bin = (name: string, body: string) => { const p = join(dir, name); writeFileSync(p, `#!/bin/sh\n${body}\n`); chmodSync(p, 0o755); return p; };
+  const yes = bin('yes', `[ "$1 $2" = "--trust inspect" ] && [ "$PWD" = "${dir}" ] && echo "  └ Project trusted: yes" && exit 0; exit 2`);
+  assert.equal(await trustFolder(yes, dir), true);
+  assert.equal(await trustFolder(bin('no', 'echo "  └ Project trusted: no"'), dir), false);
+  assert.equal(await trustFolder(bin('slow', 'sleep 5'), dir, 300), false, 'a grok that does not answer is given up on');
+  assert.equal(await trustFolder(join(dir, 'missing'), dir), false);
+});
+
 test('grok: a CLI that never answers initialize fails the turn within the start timeout and is stopped', async (t) => {
   const { GrokBrain } = await import('../src/brain/grok.js');
   const was = GrokBrain.startTimeoutMs;
@@ -157,4 +167,19 @@ test('grok: a healthy brain is not stopped when the start timeout runs out', asy
   await collect(b, 'hello');
   await new Promise((r) => setTimeout(r, 600));
   assert.equal(b.alive, true, 'still running after the timeout would have fired');
+});
+
+test('claude: a forced stop ends the tools the CLI started too, not only the CLI', async (t) => {
+  const b = createBrain(profile('claude-code'), { id: 'grandchild', started: false }, { bin: FAKE_CLAUDE, env: process.env });
+  t.after(() => b.kill());
+  b.start();
+  const [r] = await collect(b, 'GRANDCHILD');
+  const tool = Number((r as { text: string }).text);
+  assert.ok(tool > 0);
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  assert.ok(alive(tool), 'the tool runs');
+  await b.stop(200); // the CLI ignores EOF, so this is the forced path
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(b.alive, false);
+  assert.equal(alive(tool), false, 'the long tool was stopped with its CLI');
 });

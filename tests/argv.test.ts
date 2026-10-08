@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { remoteControlName, claudeArgv, childEnv, versionAtLeast } from '../src/brain/argv.js';
+import { remoteControlName, claudeArgv, claudeTerminalLine, childEnv, versionAtLeast } from '../src/brain/argv.js';
 
 const p = { cwd: '/x', permission_mode: 'acceptEdits' as const, add_dirs: ['/y'], unsafe_ok: false, model: 'sonnet', effort: 'low' as const };
 
@@ -69,4 +69,12 @@ test('no tool that waits for a click on a screen the chat does not have', async 
   const { Profile } = await import('../src/instance/config/schema.js');
   const p = Profile.parse({ cwd: '/tmp' });
   assert.ok(claudeArgv(p, { id: 'x', started: false }).includes('--disallowed-tools=AskUserQuestion'));
+});
+
+test('the terminal line resumes the chat\'s session with its folder and stance, home paths short and odd ones quoted', () => {
+  const line = claudeTerminalLine({ ...p, cwd: '/h/me/work/bot', add_dirs: ["/h/me/my project's", '/opt/x'], bin: '/usr/local/bin/claude' }, 'u1', '/h/me');
+  assert.equal(line, "cd ~/work/bot && CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 /usr/local/bin/claude --permission-mode acceptEdits --resume u1 --model sonnet --effort low --add-dir ~/'my project'\\''s' --add-dir /opt/x");
+  const bare = claudeTerminalLine({ ...p, permission_mode: 'default', model: undefined, effort: undefined, add_dirs: [] }, 'u2', '/h/me');
+  assert.equal(bare, 'cd /x && CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 claude --resume u2');
+  assert.match(claudeTerminalLine({ ...p, permission_mode: 'bypassPermissions' }, 'u3', '/h/me'), / claude --dangerously-skip-permissions --resume u3 /);
 });

@@ -1,5 +1,6 @@
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainSession } from './brain.js';
+import { homedir } from 'node:os';
 import { readRecord, strictMcpArgs } from '../capabilities/compile.js';
 
 /** Variables that switch a CLI from the user's subscription to per-token API billing, or send it
@@ -63,6 +64,31 @@ export function claudeTuiArgv(p: Profile, s: BrainSession, bin: string, settings
   a.push(...strictMcpArgs(p.cwd));
   if (system) a.push('--append-system-prompt', system);
   return a;
+}
+
+/** A word the shell takes as it is: an argument with a space or a quote is quoted, and a path
+ *  under home is written from `~/`, which keeps a line for the phone short. */
+function shellWord(v: string, home: string): string {
+  const q = (x: string) => (/^[\w@%+=:,./-]+$/.test(x) ? x : `'${x.replace(/'/g, `'\\''`)}'`);
+  return v === home ? '~' : v.startsWith(`${home}/`) ? `~/${q(v.slice(home.length + 1))}` : q(v);
+}
+
+/** The chat's Claude Code session, for the owner at a terminal: `/status` prints it, so the work goes
+ *  on at the desk. What the chat runs comes along (its folder, permissions, model, effort, extra
+ *  folders, MCP servers, no auto memory); what only a chat needs stays out (print mode, the self
+ *  prompt, the Stop hook, Remote Control, the screen tools refused). */
+export function claudeTerminalLine(p: Profile, id: string, home = homedir()): string {
+  const w = (v: string) => shellWord(v, home);
+  const a = [`cd ${w(p.cwd)}`, '&&', ...Object.entries(CLAUDE_ENV).map(([k, v]) => `${k}=${v}`), w(p.bin ?? 'claude')];
+  if (p.permission_mode === 'bypassPermissions') a.push('--dangerously-skip-permissions');
+  else if (p.permission_mode !== 'default') a.push('--permission-mode', p.permission_mode);
+  a.push('--resume', id);
+  if (p.model) a.push('--model', w(p.model));
+  if (p.effort) a.push('--effort', p.effort);
+  for (const d of p.add_dirs) a.push('--add-dir', w(d));
+  if (p.chrome) a.push('--chrome');
+  a.push(...strictMcpArgs(p.cwd).map(w));
+  return a.join(' ');
 }
 
 /** Set for every Claude Code session Angelia starts, in print and tmux mode alike. Claude's auto

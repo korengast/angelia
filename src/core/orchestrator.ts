@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, extname, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import type { Config, Profile } from '../instance/config/schema.js';
 import type { Inbound, BrainEvent, Platform, SessionRow } from './types.js';
@@ -10,16 +11,19 @@ import { SessionMap } from './session/map.js';
 import { KeyedQueue } from './session/queue.js';
 import { createBrain, locateBin, profileBin, type Brain, type BackendName } from '../brain/index.js';
 import { projectsDir } from '../brain/transcripts.js';
+import { START_EXIT } from '../brain/tui.js';
+import { claudeHistory, claudeTranscriptFor, piHistory, type HistoryItem, type HistoryPage } from '../brain/history.js';
+import { grokPage, grokReplay } from '../brain/grok-history.js';
+import { codexCursorFor, codexHistory } from '../brain/codex-history.js';
+import { claudeTerminalLine, remoteControlName } from '../brain/argv.js';
 import { AskError, claudeAskArgv, codexAskArgv, fileAnswer, piAskArgv, piSessionFile, runAsk, textAnswer, type AskReader } from '../brain/ask.js';
 import { gatePath, piPolicy, piSandboxed } from '../brain/pi.js';
 import { profileCacheDir } from '../brain/cache.js';
-import { START_EXIT } from '../brain/tui.js';
-import { remoteControlName } from '../brain/argv.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
-import { extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
+import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
 import { failureLine, isLimitText, limitHint, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
-import { parseCommand, HELP, statusText, resumeListText } from './commands.js';
+import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
 import { catalog as askCatalog, effortsFor, LABELS, type Catalog } from '../brain/catalog.js';
@@ -27,6 +31,8 @@ import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
 import { agentDenyRules, profilePermissions } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
+import { MAX_INBOUND, saveInbound } from '../adapters/inbox.js';
+import type { ChatEventBody, ChatListener } from './events.js';
 
 export interface Sender {
   send(chat: string, text: string, thread?: string): Promise<void>;
@@ -37,17 +43,26 @@ export interface Sender {
   chatName?(chat: string): Promise<string | undefined>;
 }
 
+/** A profile made for a new chat: its name, the first turn's prompt, and the workspace commit, which settles later. */
+export interface Onboarded { name: string; prompt: string; git?: Promise<string> }
+/** A backend switch: what was removed from the profile's folder, and notes for the owner. */
+export interface Switched { removed: string[]; notes: string[] }
+
 export interface OrchestratorOptions {
   /** Tests: how often a running turn is checked for a stall (default a minute). */
   stallTickMs?: number;
   /** Tests: the waits between attempts at a send that failed (default SEND_RETRY_MS). */
   sendRetryMs?: number[];
+  /** Tests: the random gap between the chunks of one long answer (default 1.5 to 4 s). */
+  chunkGapMs?: [number, number];
   stateDir?: string;
   /** Executable per backend, when not the default on PATH (tests, odd installs). */
   bins?: Partial<Record<BackendName, string>>;
   /** Claude Code's projects folder, for placing transcripts before a resume (brain.ts). `true` means the
    *  real one; absent (tests) means no placement and no fresh start for a lost conversation. */
   transcripts?: true | string;
+  /** Tests: the home folder where pi keeps its sessions (default the real one). */
+  cliHome?: string;
   env?: NodeJS.ProcessEnv;
   /** What `~/.angelia/env` holds. Kept here and never put in `process.env`: a child gets only the
    *  variables its own profile's capabilities declare (core/env.ts). */
@@ -62,15 +77,23 @@ export interface OrchestratorOptions {
   selfPrompt?: (profileName: string) => string;
   /** /restart. check() loads the routing table and returns its error, if any; launch() starts the
    *  detached restart. Absent in tests and anywhere the daemon cannot restart itself. */
-  restart?: { check(): string | undefined; launch(key: string): void };
+  restart?: {
+    check(): string | undefined; launch(key: string): void;
+    /** The table's changes since the owner last accepted it, one line each (`angelia accept --check`);
+     *  throws when that cannot be told. accept() takes the table, only while its changes still have the
+     *  fingerprint given (instance/accepted.ts); returns its error, if any. */
+    wider?(): { lines: string[]; fingerprint: string }; accept?(fingerprint: string): string | undefined;
+  };
   /** defaults.unmatched: onboard. Makes the profile and route for a new chat, adds them to the live
    *  config, and returns the new profile's name and the prompt for its first turn (onboard.ts). */
-  onboard?: (i: Inbound, chatName?: string) => { name: string; prompt: string; git?: Promise<string> };
+  onboard?: (i: Inbound, chatName?: string) => Onboarded | Promise<Onboarded>;
   /** /backend: moves a profile to another CLI in the table, compiled, and in the live config (switch-backend.ts). */
-  switchBackend?: (profile: string, backend: BackendName) => { removed: string[]; notes: string[] };
+  switchBackend?: (profile: string, backend: BackendName) => Switched | Promise<Switched>;
   /** What a backend offers for /model and /effort (catalog.ts); a test passes its own. */
   catalog?: (backend: BackendName, bin: string | undefined, env: NodeJS.ProcessEnv) => Promise<Catalog>;
 }
+
+type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; follow?: AsyncGenerator<BrainEvent> };
 
 /** The backends /backend offers. */
 const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex', 'pi'];
@@ -97,8 +120,24 @@ const BUSY_LINE = 'Still working through earlier messages in this chat, so this 
 const LONG_ANSWER_PARTS = 4;
 /** Messages one chat's agent may send another profile's chat in an hour. */
 const PEER_PER_HOUR = 30;
+/** How long a replayed grok conversation is served from memory when no turn of its chat ended. */
+const GROK_HISTORY_TTL_MS = 10 * 60_000;
+/** History readers that start a CLI, at once, in the whole daemon. */
+const HISTORY_SLOTS = 2;
+
+/** A history the CLI could not give (it did not answer, or does not know the session); `status` for the API. */
+export class HistoryError extends Error {
+  constructor(message: string, readonly status = 502) { super(message); }
+}
+/** One page of a chat's history as the API sends it. `supported: false` for a CLI Angelia cannot read yet. */
+export type ChatHistory = HistoryPage & { session: string | null; supported: boolean };
 
 /** inbound -> route -> gate -> command or turn -> deliver. One instance per daemon. */
+/** The profile as one session runs it: its /model and /effort overrides on top. */
+function withOverrides(p: Profile, row: SessionRow): Profile {
+  return { ...p, ...(row.model ? { model: row.model } : {}), ...(row.effort ? { effort: row.effort as Profile['effort'] } : {}) };
+}
+
 export class Orchestrator {
   readonly map: SessionMap;
   private queue = new KeyedQueue();
@@ -123,13 +162,22 @@ export class Orchestrator {
    *  that was running at the time sees its era go stale, and knows the failure it is about to
    *  report was the user pulling the plug rather than the agent crashing. */
   private era = new Map<string, number>();
+  /** The grants /restart last listed per chat, so /restart confirm accepts only what the owner saw. */
+  private shownWider = new Map<string, string>();
   /** Answers a chat could not be sent, to go out with the next thing it is told (at most OWED_MAX). */
   private owed = new Map<string, string[]>();
+  private catalogs = new Map<string, { at: number; c: Catalog }>();
+  /** Clients watching the chats live (the API's event stream), and the message each chat's running
+   *  turn answers, so a permission answered from a client can tell the chat it was. */
+  private listeners = new Set<ChatListener>();
+  private running = new Map<string, Inbound>();
   /** Questions being answered per chat (`ask`), each in its own read-only copy. */
   private asking = new Map<string, number>();
   /** Every question being answered, to stop at shutdown. */
   private questions = new Set<AbortController>();
-  private catalogs = new Map<string, { at: number; c: Catalog }>();
+  /** Each chat's open permission requests by full id, so an answer by prefix (the chat's `y abcde`)
+   *  is evented under the id the client was given, and a client that connects later can list them. */
+  private asks = new Map<string, Map<string, WaitingPermission>>();
   private log: (line: string) => void;
 
   constructor(private readonly cfg: Config, private readonly senders: Partial<Record<Platform, Sender>>, private readonly opts: OrchestratorOptions = {}) {
@@ -164,7 +212,9 @@ export class Orchestrator {
       const b = this.brains.get(key);
       if (b?.hasPendingPermission(perm.id)) {
         if (!isOwner(i, route)) { this.log(`permission reply ignored key=${key} sender=${i.sender} reason=not-owner`); return this.reply(i, NOT_OWNER_LINE); }
-        if (!b.answerPermission(perm.id, perm.allow)) return this.reply(i, LATE_ANSWER_LINE);
+        const full = this.askId(key, perm.id);
+        if (b.answerPermission(perm.id, perm.allow)) this.answered(key, full ?? perm.id, perm.allow, 'chat');
+        else return this.reply(i, LATE_ANSWER_LINE);
         return;
       }
     }
@@ -174,7 +224,7 @@ export class Orchestrator {
       return this.reply(i, NOT_OWNER_LINE);
     }
     if (cmd?.name === 'sh') return this.shell(i, key, route.profile, profile, cmd.script);
-    if (cmd) return this.command(i, key, route.profile, cmd);
+    if (cmd) return this.command(i, key, route.profile, cmd, isOwner(i, route));
     // A slash at the start goes to the CLI as its own command (`/compact`, `/clear`, `/add-dir`, a
     // custom one) only from an owner, or for a command the profile opens to everyone. From anyone else
     // it is a message like any other, in the envelope: in tmux mode the CLI's commands reach plugins,
@@ -191,7 +241,7 @@ export class Orchestrator {
     await this.queue.enqueue(key, () => this.turn(i, key, route.profile, { bare }));
   }
 
-  private async command(i: Inbound, key: string, profileName: string, cmd: NonNullable<ReturnType<typeof parseCommand>>): Promise<void> {
+  private async command(i: Inbound, key: string, profileName: string, cmd: NonNullable<ReturnType<typeof parseCommand>>, owner: boolean): Promise<void> {
     switch (cmd.name) {
       case 'help': return this.reply(i, HELP);
       case 'restart': {
@@ -199,25 +249,33 @@ export class Orchestrator {
         const err = this.opts.restart.check();
         // A table that does not load would leave nothing running and nothing to reply with.
         if (err) return this.reply(i, `Not restarting: the routing table does not load.\n${err}`);
+        // The daemon runs on the table the owner accepted, and an agent with the workspace in its
+        // add_dirs can edit the table: show the changes, and take them on /restart confirm, which
+        // accepts exactly what was shown (instance/accepted.ts).
+        if (this.opts.restart.wider) {
+          let wider: string[], fingerprint: string;
+          try { ({ lines: wider, fingerprint } = this.opts.restart.wider()); } catch (e) { return this.reply(i, `Not restarting: could not compare the table with what you accepted.\n${(e as Error).message}`); }
+          const shown = wider.join('\n');
+          if (wider.length && (cmd.value?.toLowerCase() !== 'confirm' || this.shownWider.get(key) !== shown)) {
+            this.shownWider.set(key, shown);
+            return this.reply(i, `Not restarting yet. The routing table changed since you last accepted it:\n${wider.map((l) => `• ${l}`).join('\n')}\nIf you made these changes, send /restart confirm to accept them and restart.`);
+          }
+          this.shownWider.delete(key);
+          if (wider.length) {
+            const no = this.opts.restart.accept?.(fingerprint);
+            if (no) return this.reply(i, `Not restarting: accepting the table failed.\n${no}`);
+            this.log(`table accepted key=${key} sender=${i.sender}: ${wider.join('; ')}`);
+          }
+        }
         const busy = [...this.brains.entries()].filter(([k, b]) => k !== key && b.alive).length;
         this.log(`restart requested key=${key} sender=${i.sender}`);
         await this.reply(i, `Routing table ok. Restarting now; I will post here when I am back.${busy ? ` ${busy} other running session${busy > 1 ? 's' : ''} will be cut and resume on the next message.` : ''}`);
         this.opts.restart.launch(key);
         return;
       }
-      case 'status': return this.reply(i, statusText(this.map, key, profileName, this.brains.get(key)?.alive ?? false, this.queue.queued(key)));
-      case 'new': {
-        const n = this.queue.drop(key);
-        await this.dropBrain(key);
-        const row = this.map.startNew(key);
-        return this.reply(i, `New session ${row.id.slice(0, 8)} started.${waitingDropped(n)}`);
-      }
-      case 'stop': {
-        const n = this.queue.drop(key);
-        const running = !!this.brains.get(key)?.alive;
-        if (running) await this.dropBrain(key);
-        return this.reply(i, running || n ? 'Stopped.' + waitingDropped(n) : 'Nothing running.');
-      }
+      case 'status': return this.reply(i, this.statusOf(key, profileName, owner));
+      case 'new': { const n = this.queue.drop(key); return this.reply(i, await this.newSession(key) + waitingDropped(n)); }
+      case 'stop': { const n = this.queue.drop(key); return this.reply(i, await this.stop(key) || n ? 'Stopped.' + waitingDropped(n) : 'Nothing running.'); }
       case 'model': return this.modelCommand(i, key, profileName, cmd.value);
       case 'effort': return this.effortCommand(i, key, profileName, cmd.value);
       case 'backend': return this.backendCommand(i, key, profileName, cmd.value);
@@ -240,6 +298,57 @@ export class Orchestrator {
     }
   }
 
+  /** `owner`: also the line that resumes a Claude Code session at a terminal. It names folders on
+   *  this machine, and /status is open to everyone in a group. */
+  private statusOf(key: string, profileName: string, owner: boolean): string {
+    const row = this.map.getActive(key);
+    const p = this.cfg.profiles[profileName];
+    const terminal = owner && row?.started && p && (row.backend ?? p.backend) === 'claude-code'
+      ? claudeTerminalLine(withOverrides(p, row), row.id)
+      : undefined;
+    return statusText(this.map, key, profileName, this.brains.get(key)?.alive ?? false, this.queue.queued(key), terminal);
+  }
+
+  private async newSession(key: string): Promise<string> {
+    await this.dropBrain(key);
+    return `New session ${this.map.startNew(key).id.slice(0, 8)} started.`;
+  }
+
+  /** End the chat's agent, and with it any turn it runs. False when nothing was running. */
+  private async stop(key: string): Promise<boolean> {
+    if (!this.brains.get(key)?.alive) return false;
+    await this.dropBrain(key);
+    return true;
+  }
+
+  /**
+   * /new, /stop or /status pressed in the desk app. The answer goes back to the app. A change the
+   * chat would otherwise not understand (its session replaced, its turn cut) is also said there.
+   * Not queued, as in the chat: a /stop must not wait behind the turn it stops.
+   */
+  async appCommand(key: string, name: AppCommand): Promise<string> {
+    const profile = this.profileName(key);
+    if (!profile) throw new Error(`not a routed chat: ${key}`);
+    const tell = (line: string) => this.notify(key, line).catch((e) => this.log(`app command note failed key=${key} ${(e as Error).message}`));
+    this.log(`app command key=${key} ${name}`);
+    switch (name) {
+      case 'status': return this.statusOf(key, profile, true);
+      case 'new': {
+        const n = this.queue.drop(key);
+        const said = await this.newSession(key);
+        await tell(`${said.slice(0, -1)} from the desk app.${waitingDropped(n)}`);
+        return said + waitingDropped(n);
+      }
+      case 'stop': {
+        const chatTurn = this.running.get(key)?.surface !== 'app' && this.running.has(key);
+        const n = this.queue.drop(key);
+        if (!await this.stop(key) && !n) return 'Nothing running.';
+        if (chatTurn || n) await tell('Stopped from the desk app.' + waitingDropped(n));
+        return 'Stopped.' + waitingDropped(n);
+      }
+    }
+  }
+
   /** A drop line, at most one per chat and reason every ten minutes, with the count it held back: a
    *  stranger who writes all day must not fill the disk one line per message. */
   private dropped(key: string, what: string): void {
@@ -255,10 +364,10 @@ export class Orchestrator {
     // A second message that queued behind the first finds the route already made.
     const route = matchRoute(this.cfg, i);
     if (route) return this.turn(i, key, route.profile, { bare: isAgentCommand(i) });
-    let made: { name: string; prompt: string; git?: Promise<string> };
+    let made: Onboarded;
     try {
       const chatName = await this.senders[i.platform]?.chatName?.(i.chat).catch(() => undefined);
-      made = this.opts.onboard!(i, chatName);
+      made = await this.opts.onboard!(i, chatName);
     } catch (e) {
       this.log(`onboard failed key=${key} ${(e as Error).message}`);
       return this.reply(i, `Could not set up an agent for this chat: ${(e as Error).message}`);
@@ -346,8 +455,8 @@ export class Orchestrator {
     if (!installed(b)) return this.reply(i, `${LABELS[b]} is not installed on this computer, so nothing changed.`);
     if (!this.opts.switchBackend) return this.reply(i, 'This daemon cannot change the routing table. Edit backend in routing.yaml, then angelia compile and angelia restart.');
     const from = p.backend;
-    let done: { removed: string[]; notes: string[] };
-    try { done = this.opts.switchBackend(profileName, b); }
+    let done: Switched;
+    try { done = await this.opts.switchBackend(profileName, b); }
     catch (e) {
       this.log(`backend switch failed key=${key} profile=${profileName} to=${b} ${(e as Error).message}`);
       return this.reply(i, `Nothing changed: ${(e as Error).message}`);
@@ -409,7 +518,7 @@ export class Orchestrator {
   /** A brain for one session of a chat, with its listeners, not started. */
   private makeBrain(key: string, name: string, row: SessionRow): Brain {
     const profile = this.cfg.profiles[name];
-    const effective = { ...profile, ...(row.model ? { model: row.model } : {}), ...(row.effort ? { effort: row.effort as Profile['effort'] } : {}) };
+    const effective = withOverrides(profile, row);
     const env = this.childEnv(name);
     // The chat's own API token is a secret like the capability ones: in tmux mode it reaches the
     // pane through the private file, never a command line.
@@ -427,6 +536,9 @@ export class Orchestrator {
     // A prompt nobody answered is denied; the chat hears it, or the turn just seems to go wrong.
     b.on('permission-timeout', (id: string) => {
       this.log(`permission timed out key=${key} id=${id.slice(0, 8)}`);
+      this.answered(key, id, false, 'timeout');
+      // An app turn's request was never in the chat, so neither is its timeout; the client has the event.
+      if (this.running.get(key)?.surface === 'app') return;
       void this.notify(key, `${PERMISSION_TIMEOUT_LINE} (${id.slice(0, 8)})`).catch((e) => this.log(`permission timeout note: ${(e as Error).message}`));
     });
     return b;
@@ -436,8 +548,22 @@ export class Orchestrator {
    *  the message, to the agent only (the onboarding prompt); the session label stays the message. */
   /** `follow`: no message goes in; the events are those of a turn already running (a /resume of a
    *  session sent to the background), delivered as any turn's are. */
-  private async turn(i: Inbound, key: string, name: string, o: { bare?: boolean; preface?: string; retried?: boolean; follow?: AsyncGenerator<BrainEvent> } = {}): Promise<void> {
+  private async turn(i: Inbound, key: string, name: string, o: TurnOptions = {}): Promise<void> {
+    this.running.set(key, i);
+    const turn = i.turnId ?? randomUUID();
+    this.emit(key, { type: 'turn', turn, text: i.text, sender: i.senderName ?? i.sender, surface: i.surface ?? 'chat', queued: this.queue.queued(key) });
+    let failed: string | undefined = 'exception';
+    try { failed = await this.runTurn(i, key, name, o); }
+    finally {
+      if (this.running.get(key) === i) { this.running.delete(key); this.asks.delete(key); }
+      this.emit(key, { type: 'turn-end', turn, ok: !failed, ...(failed ? { reason: failed } : {}), queued: this.queue.queued(key) });
+    }
+  }
+
+  /** One turn; returns why it failed, or undefined when the agent answered. */
+  private async runTurn(i: Inbound, key: string, name: string, o: TurnOptions = {}): Promise<string | undefined> {
     const { bare = false, preface, retried = false, follow } = o;
+    const app = i.surface === 'app';
     const profile = this.cfg.profiles[name];
     const sender = this.senders[i.platform];
     const era = this.era.get(key) ?? 0;
@@ -446,7 +572,8 @@ export class Orchestrator {
       // Said plainly, not as the generic failure line: nothing is wrong with the chat or the session,
       // and no retry will help until the CLI is installed or `bin:` points at it.
       this.log(`turn failed key=${key} reason=${profileBin(profile)} not found`);
-      return this.reply(i, `This chat's agent (${profileBin(profile)}) is not installed where Angelia can find it. Nothing was sent to it. Run angelia check-config on the host.`);
+      await this.reply(i, `This chat's agent (${profileBin(profile)}) is not installed where Angelia can find it. Nothing was sent to it. Run angelia check-config on the host.`);
+      return 'cli not found';
     }
     // A session starts only with the protections its last compile wrote. An edit that removed a deny
     // rule or turned the sandbox off, by an agent or by hand, stops here instead of widening the next launch.
@@ -456,12 +583,13 @@ export class Orchestrator {
       const why = refused[0] === 'never compiled' ? 'its profile was never compiled, so it has no deny rules yet'
         : refused.every((r) => r.startsWith('deny ') || r.startsWith('sandbox off')) ? `${refused.length} of its protections were changed outside Angelia`
         : refused[0];
-      return this.reply(i, `This chat's agent was not started: ${why}. Nothing was sent to it. The owner can fix it with: angelia compile --write ${name}`);
+      await this.reply(i, `This chat's agent was not started: ${why}. Nothing was sent to it. The owner can fix it with: angelia compile --write ${name}`);
+      return 'launch refused';
     }
     const b = await this.brainFor(key, name);
     const text = preface ? `${preface}\n\n${agentText(i, bare)}` : agentText(i, bare);
     const events = follow ?? b.turn(text);
-    await sender?.typing?.(i.chat, true);
+    if (!app) await sender?.typing?.(i.chat, true);
     let result: Extract<BrainEvent, { kind: 'result' }> | undefined;
     // Progress lines never hold the turn: they queue, merge while the bucket is full, and give way
     // to the answer and to permission prompts (deliver/rate.ts).
@@ -491,15 +619,31 @@ export class Orchestrator {
     try {
       for await (const e of events) {
         lastEvent = Date.now();
-        if (e.kind === 'progress') progress.push(e.text);
+        if (e.kind === 'progress') {
+          // A client sees each line at once; the chat gets them through the rate limit. An app turn's
+          // lines go to the client only, so they never reach the outbox.
+          this.emit(key, { type: 'progress', text: e.text });
+          if (!app) progress.push(e.text);
+        }
         // A line that cannot be delivered must not end the turn: the agent works on, the answer is
         // what matters, and a permission line nobody saw times out as a no.
         else if (e.kind === 'notice') await this.reply(i, e.text).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
         else if (e.kind === 'permission') {
+          let open = this.asks.get(key);
+          if (!open) this.asks.set(key, open = new Map());
+          const ask = { key, at: new Date().toISOString(), id: e.id, tool: e.tool, preview: e.preview, ...(e.detail ? { detail: e.detail } : {}) };
+          open.set(e.id, ask);
+          this.emit(key, { type: 'permission', id: e.id, tool: e.tool, preview: e.preview, ...(e.detail ? { detail: e.detail } : {}) });
+          if (app) continue;
           try {
             if (e.detail) await this.reply(i, e.detail);
             await this.reply(i, permissionLine(e.id, e.tool, e.preview));
           } catch (err) { this.log(`permission line failed key=${key} ${(err as Error).message}`); }
+        }
+        else if (e.kind === 'permission-answered') {
+          if (!this.asks.get(key)?.has(e.id)) continue;
+          this.answered(key, e.id, e.allow, 'terminal');
+          if (!app) await this.reply(i, `Permission ${e.allow ? 'allowed' : 'denied'} in the Claude app or the pane.`).catch(() => {});
         }
         else result = e;
       }
@@ -507,21 +651,21 @@ export class Orchestrator {
       this.log(`turn error key=${key} ${(err as Error).message}`);
     } finally {
       if (watch) clearInterval(watch);
-      await sender?.typing?.(i.chat, false);
+      if (!app) await sender?.typing?.(i.chat, false);
     }
     // What the agent said along the way and the rate limit held back goes in front of the answer.
     const unsent = await progress.close();
     if (stalled) {
       if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
       await this.reply(i, `The agent gave no output for ${this.cfg.defaults.turn_stall_minutes} minutes, so Angelia stopped it. Send your message again, or /new for a fresh session.`).catch(() => {});
-      return;
+      return 'stalled';
     }
     if (!result || result.isError) {
       const stopped = (this.era.get(key) ?? 0) !== era;
       this.log(`turn failed key=${key} reason=${stopped ? 'stopped by the user' : result?.reason ?? 'exception'}`);
       // /stop, /new and a model change all kill the child mid-turn on purpose. The chat was already
       // told what happened; a failure line on top of it reads like a bug that is not there.
-      if (stopped) return;
+      if (stopped) return 'stopped';
       if (!retried && !row.started && freshRetry(result?.reason)) {
         // First turn of a brand-new session died: retry exactly once with a fresh id, per plan E.
         // Once. A deterministic failure - not logged in, a flag this build rejects, no tmux - fails
@@ -530,13 +674,14 @@ export class Orchestrator {
         await this.forget(key);
         this.map.startNew(key, i.text);
         this.log(`retry with fresh session key=${key}`);
-        return this.turn(i, key, name, { ...o, retried: true });
+        return this.runTurn(i, key, name, { ...o, retried: true });
       }
       await this.forget(key);
       if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile);
       // Out of usage: say so, and how to switch model, instead of "something broke".
-      if (result?.text && isLimitText(result.text)) return this.reply(i, `${result.text}\n${limitHint(profile.backend)}`);
-      return this.reply(i, failureLine(result?.reason, homedir(), i.isGroup));
+      if (result?.text && isLimitText(result.text)) await this.reply(i, `${result.text}\n${limitHint(profile.backend)}`);
+      else await this.reply(i, failureLine(result?.reason, homedir(), i.isGroup));
+      return result?.reason ?? 'exception';
     }
     // Backends that mint their own conversation id (grok) report it after the first turn;
     // the row takes that id so the next spawn can resume it.
@@ -564,18 +709,186 @@ export class Orchestrator {
       const rest = (err as { unsent?: string }).unsent ?? result.text;
       if (rest && owed.length < OWED_MAX) this.owed.set(key, [...owed, rest]);
     }
+    return undefined;
   }
 
   /** Is this key a routed chat? */
   routed(key: string): boolean { return this.profileFor(key) !== undefined; }
 
+  /** A chat's sessions for a client: the active id, and every session it has had, last used first. */
+  sessionsOf(key: string): { active: string | null; sessions: SessionRow[] } {
+    return { active: this.map.getActive(key)?.id ?? null, sessions: this.map.list(key, Number.MAX_SAFE_INTEGER) };
+  }
+
+  /** A chat's conversation, from the CLI's own transcript: `session` (the active one when absent), last
+   *  `limit` messages. Undefined when the chat never had that session: an id from anywhere else is never
+   *  turned into a path. `supported: false` for a CLI whose transcripts Angelia cannot read yet. */
+  historyOf(key: string, session?: string, limit?: number, before?: string): ChatHistory | undefined | Promise<ChatHistory | undefined> {
+    const p = this.profileFor(key);
+    if (!p) return undefined;
+    const id = session ?? this.map.getActive(key)?.id;
+    if (!id) return { session: null, supported: true, items: [], more: false };
+    const row = this.map.list(key, Number.MAX_SAFE_INTEGER).find((r) => r.id === id);
+    if (!row) return undefined;
+    const backend = row.backend ?? p.backend;
+    if (backend === 'grok') {
+      if (!row.started) return { session: id, supported: true, items: [], more: false };
+      return this.grokHistory(key, row).then((r) => ({ session: id, supported: true, ...grokPage(r.items, { limit, before, cut: r.cut }) }));
+    }
+    if (backend === 'codex') {
+      if (!row.started) return { session: id, supported: true, items: [], more: false };
+      if (before !== undefined && !codexCursorFor(before, id)) return Promise.reject(new HistoryError('that cursor is not one for this session', 400));
+      const route = matchRoute(this.cfg, parseSessionKey(key))!;
+      const profile = this.cfg.profiles[route.profile];
+      return this.historySlot(() => codexHistory(withOverrides(profile, row), id, { limit, before, bin: this.binFor(profile), env: this.childEnv(route.profile).env }))
+        .then((page) => {
+          if (!page) throw new HistoryError('Codex did not give this session\'s history');
+          return { session: id, supported: true, ...page };
+        });
+    }
+    if (backend === 'pi') {
+      const path = piSessionFile(id, this.opts.cliHome);
+      return { session: id, supported: true, ...(path ? piHistory(path, { limit, before }) : { items: [], more: false }) };
+    }
+    if (backend !== 'claude-code') return { session: id, supported: false, items: [], more: false };
+    const root = typeof this.opts.transcripts === 'string' ? this.opts.transcripts : projectsDir();
+    const path = claudeTranscriptFor(p.cwd, id, root);
+    return { session: id, supported: true, ...(path ? claudeHistory(path, { limit, before }) : { items: [], more: false }) };
+  }
+
+  /** Replayed grok conversations by session id, kept until a turn of that chat ends (a replay starts
+   *  grok and takes seconds), or GROK_HISTORY_TTL_MS. One replay at a time per session; `grokGen` moves
+   *  on at every turn end, and a replay that started before it is not kept. */
+  private grokCache = new Map<string, { items: HistoryItem[]; cut: boolean; at: number }>();
+  private grokLoads = new Map<string, Promise<{ items: HistoryItem[]; cut: boolean }>>();
+  private grokGen = new Map<string, number>();
+
+  private grokHistory(key: string, row: SessionRow): Promise<{ items: HistoryItem[]; cut: boolean }> {
+    const id = row.id;
+    const hit = this.grokCache.get(id);
+    // A terminal resume can add to a session the daemon never sees: a cached copy goes stale after a while.
+    if (hit && Date.now() - hit.at < GROK_HISTORY_TTL_MS) return Promise.resolve(hit);
+    let load = this.grokLoads.get(id);
+    if (!load) {
+      const route = matchRoute(this.cfg, parseSessionKey(key))!;
+      const profile = this.cfg.profiles[route.profile];
+      const gen = this.grokGen.get(id) ?? 0;
+      const started = this.historySlot(() => grokReplay(withOverrides(profile, row), id, { bin: this.binFor(profile), env: this.childEnv(route.profile).env }))
+        .then((r) => {
+          if (!r) { this.log(`grok history: no replay key=${key} session=${id.slice(0, 8)}`); throw new HistoryError('grok did not replay this session'); }
+          if ((this.grokGen.get(id) ?? 0) === gen) this.grokCache.set(id, { ...r, at: Date.now() });
+          return r;
+        })
+        .finally(() => { if (this.grokLoads.get(id) === started) this.grokLoads.delete(id); });
+      this.grokLoads.set(id, load = started);
+    }
+    return load;
+  }
+
+  /** A turn of this chat ended: every grok session it has may have changed (the turn's own, after a
+   *  rename or a /new during the turn, too). */
+  private dropGrokHistory(key: string): void {
+    for (const r of this.map.list(key, Number.MAX_SAFE_INTEGER)) {
+      if (!this.grokCache.has(r.id) && !this.grokLoads.has(r.id)) continue;
+      this.grokGen.set(r.id, (this.grokGen.get(r.id) ?? 0) + 1);
+      this.grokCache.delete(r.id);
+      this.grokLoads.delete(r.id);
+    }
+  }
+
+  /** History readers that start a CLI (grok, Codex) run HISTORY_SLOTS at a time in the whole daemon. */
+  private historyRunning = 0;
+  private historyWaiting: (() => void)[] = [];
+  private async historySlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.historyRunning >= HISTORY_SLOTS) await new Promise<void>((r) => this.historyWaiting.push(r));
+    this.historyRunning++;
+    try { return await fn(); } finally { this.historyRunning--; this.historyWaiting.shift()?.(); }
+  }
+
+  /** Watch every chat live (core/events.ts). Returns the way to stop. */
+  onEvent(fn: ChatListener): () => void {
+    this.listeners.add(fn);
+    return () => { this.listeners.delete(fn); };
+  }
+
+  /** The full id of an open request of this chat that `prefix` names, as the brains match it. */
+  private askId(key: string, prefix: string): string | undefined {
+    const p = prefix.toLowerCase();
+    const hits = [...(this.asks.get(key)?.keys() ?? [])].filter((id) => id.toLowerCase().startsWith(p));
+    return hits.length === 1 ? hits[0] : undefined;
+  }
+
+  private answered(key: string, id: string, allow: boolean, by: 'chat' | 'app' | 'timeout' | 'terminal'): void {
+    this.asks.get(key)?.delete(id);
+    this.emit(key, { type: 'permission-answered', id, allow, by });
+  }
+
+  private emit(key: string, body: ChatEventBody): void {
+    if (body.type === 'turn-end') this.dropGrokHistory(key);
+    if (!this.listeners.size) return;
+    const e = { key, at: new Date().toISOString(), ...body } as Parameters<ChatListener>[0];
+    for (const fn of this.listeners) {
+      try { fn(e); } catch (err) { this.log(`event listener failed key=${key} ${(err as Error).message}`); }
+    }
+  }
+
+  /** A permission request answered from a client on this machine (the owner). The first answer wins,
+   *  from here or from the chat; a chat whose turn it was is told it was answered elsewhere. False when
+   *  nothing with that id is waiting. */
+  answerPermission(key: string, id: string, allow: boolean): boolean {
+    const b = this.brains.get(key);
+    if (!b?.hasPendingPermission(id)) return false;
+    const full = this.askId(key, id);
+    if (!b.answerPermission(id, allow)) return false;
+    this.answered(key, full ?? id, allow, 'app');
+    const i = this.running.get(key);
+    if (i && i.surface !== 'app') void this.reply(i, `Permission ${allow ? 'allowed' : 'denied'} from the desk app.`).catch((e) => this.log(`permission note failed key=${key} ${(e as Error).message}`));
+    return true;
+  }
+
+  /**
+   * Files the owner dropped in the desk app, copied into the chat's profile inbox, where a chat's own
+   * files land: the agent reads them there, whatever its rules say about the folder they came from.
+   * The send checks hold (no credential location, a real file), and a chat's size limit. `from`: the
+   * file is a copy the app made (it can read where the person dropped it from; this daemon may not),
+   * and the place it came from is checked too. Throws a MediaError whose message is safe to show; on a
+   * throw no copy is left behind.
+   */
+  async attach(key: string, files: AttachFile[]): Promise<string[]> {
+    const profile = this.profileName(key);
+    if (!profile) throw new MediaError('not a routed chat');
+    const { platform } = parseSessionKey(key);
+    const where = { stateDir: this.opts.stateDir };
+    const checked = files.map(({ path, from }) => {
+      if (from !== undefined) assertOrigin(from, where);
+      const m = resolveMedia({ path }, platform, where);
+      if (m.bytes > MAX_INBOUND) throw new MediaError(`too big: ${Math.round(m.bytes / 1e6)} MB, limit ${MAX_INBOUND >> 20} MB`);
+      return m.path;
+    });
+    const saved: string[] = [];
+    try {
+      for (const path of checked) {
+        const dest = await saveInbound(this.cfg.profiles[profile].cwd, extname(path), createReadStream(path));
+        if (!dest) throw new MediaError(`too big: limit ${MAX_INBOUND >> 20} MB`);
+        saved.push(dest);
+      }
+    } catch (e) {
+      for (const f of saved) rmSync(f, { force: true });
+      throw e;
+    }
+    this.log(`attach key=${key} files=${saved.length}`);
+    return saved;
+  }
+
   /** A prompt from this machine (`angelia turn`, a job). `fromAgent`: the chat's own agent asked, with
    *  its own token. That one is labelled as such and never runs as a CLI command: an agent a member
    *  talked into it must not reach /model or /logout, which only an owner may send. */
-  async injectTurn(key: string, text: string, fromAgent = false, fromKey?: string, label = 'scheduled'): Promise<void> {
+  /** `media`: files already in the profile's inbox (`attach`), given to the agent as a chat's are. */
+  async injectTurn(key: string, text: string, fromAgent = false, fromKey?: string, label = 'scheduled', surface?: 'app', turnId?: string, media: string[] = []): Promise<void> {
     const k = parseSessionKey(key);
-    const senderName = fromKey ? `profile ${this.profileName(fromKey) ?? '?'} (${fromKey})` : fromAgent ? 'this chat\'s agent' : label;
-    const i: Inbound = { ...k, sender: fromKey ? 'profile' : 'local', senderName, text: cleanText(text), isGroup: isGroupChat(k.platform, k.chat), mentioned: true, media: [] };
+    const app = surface === 'app' && !fromAgent && !fromKey;
+    const senderName = fromKey ? `profile ${this.profileName(fromKey) ?? '?'} (${fromKey})` : fromAgent ? 'this chat\'s agent' : app ? 'the owner, in the desk app' : label;
+    const i: Inbound = { ...k, sender: fromKey ? 'profile' : 'local', senderName, text: cleanText(text), isGroup: isGroupChat(k.platform, k.chat), mentioned: true, media, ...(app ? { surface: 'app' as const } : {}), ...(turnId ? { turnId } : {}) };
     const route = matchRoute(this.cfg, i);
     if (!route) return;
     // The same cap a chat's own messages have: an agent or a job looping `angelia turn` must not
@@ -617,8 +930,7 @@ export class Orchestrator {
     if ((this.asking.get(canon) ?? 0) >= ASK_MAX) throw new AskError(`this chat is already answering ${ASK_MAX} questions; ask again in a minute`, 429);
     if (this.questions.size >= ASK_TOTAL) throw new AskError(`${ASK_TOTAL} questions are being answered already; ask again in a minute`, 429);
     const row = this.map.getActive(canon);
-    // The session's own /model and /effort, as its turns use them.
-    const effective = row ? { ...profile, ...(row.model ? { model: row.model } : {}), ...(row.effort ? { effort: row.effort as Profile['effort'] } : {}) } : profile;
+    const effective = row ? withOverrides(profile, row) : profile;
     const session = row?.started ? row.id : undefined;
     const system = this.opts.selfPrompt?.(route.profile);
     // No capability secrets: the copy has no shell to use them with.
@@ -752,6 +1064,8 @@ export class Orchestrator {
    *  the background, and its session id comes back. A CLI that cannot go on alone refuses the handoff. */
   private async clearForHandoff(key: string): Promise<string | undefined> {
     if (this.queue.queued(key) === 0) { await this.dropBrain(key); return undefined; }
+    // A turn in the background asks its permissions in the chat; one the owner typed in the app must not.
+    if (this.running.get(key)?.surface === 'app') throw new HandoffError(`${key} is answering a turn typed in the desk app. Wait for the answer, or stop it there, then try again.`);
     const b = this.brains.get(key);
     const row = this.map.getActive(key);
     if (!b?.alive || !b.release || !b.backgroundTurn || !row) {
@@ -872,12 +1186,15 @@ export class Orchestrator {
 
   private rateFor(p: Platform): RateLimiter {
     let r = this.rates.get(p);
-    if (!r) this.rates.set(p, r = new RateLimiter(this.cfg.defaults.max_out_per_min));
+    if (!r) this.rates.set(p, r = new RateLimiter(this.cfg.defaults.max_out_per_min, this.opts.chunkGapMs));
     return r;
   }
 
   /** `held`: the caller already took the first chunk's slot (a progress batch). */
   private async reply(i: Inbound, text: string, held = false): Promise<void> {
+    // `held` is a batch of progress lines, which a client already saw as they came.
+    if (!held) this.emit(sessionKey(i), { type: 'out', text });
+    if (i.surface === 'app') return;
     const sender = this.senders[i.platform];
     if (!sender) throw new Error(`${i.platform} is not set up in the routing table`);
     let parts = chunk(text, LIMITS[i.platform]);
@@ -947,7 +1264,8 @@ export class Orchestrator {
    * read meaning into the brain's text unless this chat asked it to.
    */
   private async replyFromAgent(i: Inbound, text: string, profile: Profile, held = false): Promise<void> {
-    if (!profile.media_tags) return this.reply(i, text, held);
+    // An app turn's answer stays with the client; a file line in it is left as text there.
+    if (!profile.media_tags || i.surface === 'app') return this.reply(i, text, held);
     const { text: rest, media } = extractMediaTags(text);
     if (rest) await this.reply(i, rest, held);
     for (const req of media) {
@@ -1020,8 +1338,14 @@ export class Orchestrator {
     }
   }
 
-  status(): { key: string; alive: boolean; queued: number }[] {
-    return [...this.brains].map(([key, b]) => ({ key, alive: b.alive, queued: this.queue.queued(key) }));
+  /** `running`: a turn is being answered now, so a client that connects mid-turn can show it. */
+  status(): { key: string; alive: boolean; queued: number; running: boolean }[] {
+    return [...this.brains].map(([key, b]) => ({ key, alive: b.alive, queued: this.queue.queued(key), running: this.running.has(key) }));
+  }
+
+  /** The permission requests waiting for an answer now, every chat, oldest first. */
+  waitingPermissions(): WaitingPermission[] {
+    return [...this.asks.values()].flatMap((m) => [...m.values()]).sort((a, b) => a.at.localeCompare(b.at));
   }
 
   async shutdown(): Promise<void> {
@@ -1029,6 +1353,12 @@ export class Orchestrator {
     await Promise.all([...this.brains.keys()].map((k) => this.dropBrain(k, false)));
   }
 }
+
+/** A permission request that waits for an answer, as `GET /permissions` lists it. */
+/** A file for `attach`: its path, and where the person picked it when the path is the app's copy. */
+export interface AttachFile { path: string; from?: string }
+
+export interface WaitingPermission { key: string; at: string; id: string; tool: string; preview: string; detail?: string }
 
 export interface HandoffRequest {
   /** The terminal's folder: it decides the profile (core/handoff.ts). */

@@ -97,6 +97,43 @@ export class PermissionRelay {
   }
 }
 
+/** What Claude Code writes as the result of a tool use a person refused in its dialog (No or Esc).
+ *  Seen on 2.1.287: `toolUseResult` is this string, and the tool_result has `is_error: true`. */
+export const REJECTED = 'User rejected tool use';
+
+/**
+ * How a request answered in Claude's own dialog went, read from a slice of the transcript: the last
+ * call of `tool` with exactly `input`, then its result. False: refused. True: it ran (any other
+ * result). 'running': the call is there with no result yet; a refusal is written at once, so after a
+ * moment this means it was allowed. Undefined: no such call in the slice.
+ */
+export function paneVerdict(chunk: string, tool: string, input: unknown): boolean | 'running' | undefined {
+  const want = canonical(input);
+  let call: string | undefined;
+  let verdict: boolean | undefined;
+  for (const line of chunk.split('\n')) {
+    let row: { type?: string; toolUseResult?: unknown; message?: { content?: unknown } };
+    try { row = JSON.parse(line); } catch { continue; }
+    const content = row?.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content as { type?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; is_error?: boolean; content?: unknown }[]) {
+      if (row.type === 'assistant' && b?.type === 'tool_use' && b.name === tool && canonical(b.input) === want) { call = b.id; verdict = undefined; }
+      else if (row.type === 'user' && b?.type === 'tool_result' && call && b.tool_use_id === call) {
+        verdict = !(row.toolUseResult === REJECTED || (b.is_error === true && (typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? '')).startsWith("The user doesn't want to proceed")));
+      }
+    }
+  }
+  if (!call) return undefined;
+  return verdict ?? 'running';
+}
+
+/** JSON with keys in order, so two spellings of one input compare equal. */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  return JSON.stringify(v ?? null);
+}
+
 /** The chat's view of a request: its tool and its whole input, cut the way print mode cuts it. */
 export function relayedPermission(r: RelayedRequest): Extract<BrainEvent, { kind: 'permission' }> {
   return { kind: 'permission', id: r.id, tool: r.tool, ...permissionPreview(r.input) };

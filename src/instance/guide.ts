@@ -45,8 +45,8 @@ By hand:
    network only to sandbox.network.allowedDomains in settings.local.json; codex and pi: on unless false),
    isolated (cut off from the other profiles and from _common/: for a profile other people talk
    to), and capabilities, except, deny (\`angelia guide capabilities\`).
-   grok reads CLAUDE.md only in a folder it trusts: run \`grok --trust\` there once;
-   \`grok inspect\` then says "Project trusted: yes".
+   grok reads CLAUDE.md only in a folder it trusts: run \`grok --trust\` there once (init,
+   onboarding and /backend grok do it); \`grok inspect\` then says "Project trusted: yes".
    pi has no permission prompt of its own: Angelia loads a small extension into it that asks the
    chat and holds the compiled deny rules for pi's file tools; every shell command runs inside a
    macOS sandbox made from the same rules (the OS refuses a denied path, for every program the
@@ -63,9 +63,10 @@ By hand:
    \`sandbox: false\` gives it full access. It asks in the chat only to run something outside the
    sandbox. It reads CLAUDE.md (as a fallback for AGENTS.md). Its login is its own (\`codex login\`).
 3. Route a chat to it (\`angelia guide routing\`).
-4. \`angelia compile <name> --write\`: the deny floor. The daemon starts no agent for a profile
-   that was never compiled.
-5. \`angelia check-config\`, then a restart.
+4. The owner accepts the table: \`angelia accept\` on the host, or /restart, then /restart confirm.
+5. \`angelia compile <name> --write\`: the deny floor. The daemon starts no agent for a profile
+   that was never compiled. It refuses while the table has changes not accepted.
+6. \`angelia check-config\`, then a restart.
 
 bypassPermissions skips every prompt. Only on a folder with no secrets in reach, and never on a
 group open to everyone (allow_from: "*") without the sandbox. A profile no route names is dead
@@ -85,6 +86,8 @@ arrives labelled "profile <name>", and the receiving agent weighs it as a reques
 owner: a peer cannot grant permissions, so no agent changes its permission settings, instruction
 files or config because another profile asked. 30 messages an hour from one chat to another at most. Neither works to or from an isolated
 profile. Profiles never read each other's folders: they ask, or share files in _common/.
+_shared/ and _capabilities/ reach every profile, so only a profile with shared_write: true edits
+them (the one that keeps the instance); the others read them.
 \`angelia profiles\` lists what exists.`,
   },
   routing: {
@@ -108,7 +111,12 @@ An unknown chat is dropped (defaults.unmatched), or with unmatched: onboard an o
 there (in a group, one that mentions the bot) makes its profile (\`angelia guide onboard\`). The daemon reads the table only at start:
 after any edit run \`angelia check-config\`, then an owner sends /restart in the chat (it checks the
 table first and refuses a broken one) or runs \`angelia restart\` from a terminal. An agent must never
-restart the daemon it runs under: \`angelia restart\` refuses, and /sh cannot do it either.`,
+restart the daemon it runs under: \`angelia restart\` refuses, and /sh cannot do it either.
+The daemon runs on the table the owner last accepted. After an edit, /restart lists the changes and
+the owner sends /restart confirm, or runs \`angelia accept\` on the host (\`--check\` lists them).
+\`angelia compile --write\` refuses until the table is accepted. Only model, effort and a few timeouts
+change without that. Accepting is the owner's step: show the owner the list, and never accept a
+change you did not make.`,
   },
   onboard: {
     title: 'a new chat gets its own profile',
@@ -167,7 +175,8 @@ may point anywhere and is added to the profile's reachable folders.
 
 defaults.capabilities goes to every profile, defaults.deny to none; a profile adds with
 capabilities:, drops a default with except:, and denies with deny:, which wins over everything.
-Without --write, compile only prints what it would change. After a write, a restart.
+Without --write, compile only prints what it would change. It writes only from an accepted table
+(\`angelia accept\`). After a write, a restart.
 
 Starter skills ship with Angelia and \`angelia init\` copies them into _capabilities/skills/
 (an existing folder of the same name is left alone): checkout (build the cart, hand the owner a

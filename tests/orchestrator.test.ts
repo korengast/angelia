@@ -120,6 +120,25 @@ test('status, help, resume texts and empty result silence', async (t) => {
   assert.match(sent.at(-1)!.text, /^\/new/);
 });
 
+test('/status gives an owner the line that resumes the session at a terminal; a group member gets the status alone', async (t) => {
+  const { o, sent } = setup(); t.after(() => o.shutdown());
+  await o.handle(dm('1', '/status'));
+  assert.doesNotMatch(sent.at(-1)!.text, /--resume/, 'no session yet, nothing to resume');
+  await o.handle(dm('1', 'hello'));
+  await o.handle(dm('1', '/status'));
+  const id = o.map.getActive('telegram:1')!.id;
+  const lines = sent.at(-1)!.text.split('\n');
+  assert.match(lines.at(-2)!, /^To go on in a terminal/);
+  assert.match(lines.at(-1)!, new RegExp(`^cd \\S+ && CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 claude --permission-mode acceptEdits --resume ${id}$`));
+  const g = (sender: string) => dm('g@g.us', '/status', { platform: 'whatsapp', isGroup: true, mentioned: true, sender });
+  await o.handle(dm('g@g.us', 'hello', { platform: 'whatsapp', isGroup: true, mentioned: true }));
+  await o.handle(g('1555x'));
+  assert.match(sent.at(-1)!.text, /^angelia · profile a · session/);
+  assert.doesNotMatch(sent.at(-1)!.text, /terminal|--resume/);
+  await o.handle(g('u1'));
+  assert.match(sent.at(-1)!.text, /--resume/);
+});
+
 test('a usage limit is passed on with how to switch model, not as "something broke"', async (t) => {
   const { o, sent } = setup(); t.after(() => o.shutdown());
   await o.handle(dm('1', 'LIMIT'));
@@ -363,7 +382,7 @@ test('a pile-up in one chat is capped and told once; a very long answer goes as 
   const o = new Orchestrator(cfg, { telegram: {
     send: async (_c: string, text: string) => { sent.push(text); },
     sendMedia: async (_c: string, m: { path: string; fileName: string }) => { files.push({ name: m.fileName, text: readFileSync(m.path, 'utf8') }); },
-  } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE } });
+  } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, chunkGapMs: [10, 20] });
   t.after(() => o.shutdown());
   const long = 'x'.repeat(4096 * 6);
   await o.handle(dm('1', long));

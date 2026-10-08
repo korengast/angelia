@@ -3,6 +3,7 @@ import { loadConfig } from '../instance/config/load.js';
 import type { Config } from '../instance/config/schema.js';
 import { configPath, INSTANCE_DIR } from '../instance/instance.js';
 import { selfPrompt } from '../daemon/self.js';
+import { readAccepted, tableChanges } from '../instance/accepted.js';
 import { planHandoffSkill, planProfile, planText, readRecord } from './compile.js';
 
 /** The profiles whose compiled files no longer match the table (all compiled ones when none are
@@ -43,6 +44,12 @@ export async function compileCommand(argv: string[]): Promise<void> {
   const handoff = planHandoffSkill();
   if (handoff.change || handoff.conflict) console.log(`${handoff.conflict ? `conflict: ${handoff.conflict}` : handoff.change}\n`);
   if (!write) { console.log('Nothing written. Add --write and the profile names to apply.'); return; }
+  // Compile writes what the agents will run with, so it works only from a table the owner accepted:
+  // otherwise compiling one profile's new skill would carry another change nobody looked at into the
+  // settings (instance/accepted.ts). It accepts nothing itself.
+  const acc = readAccepted(INSTANCE_DIR);
+  const pending = acc ? tableChanges(acc, cfg) : [];
+  if (pending.length) throw new Error(`not written: the routing table has ${pending.length} change(s) not accepted yet:\n${pending.map((l) => `  ${l}`).join('\n')}\nIf every one is yours, run angelia accept (or /restart, then /restart confirm, in a chat), then compile again.`);
   const blocked = plans.filter((pl) => pl.conflicts.length);
   if (blocked.length) throw new Error(`not written: conflicts in ${blocked.map((pl) => pl.profile).join(', ')}`);
   for (const pl of plans) pl.apply();

@@ -38,12 +38,13 @@ export const Profile = z.object({
   /** Denied on top of defaults.deny. A profile's own deny beats everything. */
   deny: z.array(z.string()).default([]),
   permission_mode: PermissionMode.default('acceptEdits'),
-  model: z.string().optional(),
+  // One word that cannot pass for a flag: it goes on the CLI's command line, and needs no confirm (accepted.ts).
+  model: z.string().regex(/^[^\s-]\S*$/, 'a model name: one word, not starting with -').optional(),
   effort: Effort.optional(),
   add_dirs: z.array(z.string()).default([]),
   unsafe_ok: z.boolean().default(false),
   shell: z.boolean().default(false),
-  shell_timeout_seconds: z.number().positive().default(60),
+  shell_timeout_seconds: z.number().positive().max(2_000_000).default(60),
   /** Launch the agent with Claude in Chrome (--chrome): browser tools inside the user's everyday Chrome. */
   chrome: z.boolean().default(false),
   /** Which local CLI answers this profile. claude-code: Claude Code. grok: Grok Build. pi: pi. codex: Codex. */
@@ -83,6 +84,10 @@ export const Profile = z.object({
    *  can act. "*" for every profile; default none. The owner, jobs and this chat's own agent are not
    *  limited. A line (`angelia send`) needs no listing: the chat sees it, labelled. */
   accept_from: z.array(z.string()).default([]),
+  /** May edit the workspace's _shared/ (doctrine every profile imports, the self prompt) and
+   *  _capabilities/ (the skills and tools every profile runs). Default no: an agent that could edit
+   *  them would reach every other profile. Give it to the one profile that keeps the instance. */
+  shared_write: z.boolean().default(false),
 }).strict();
 
 const Id = z.union([z.string(), z.number()]).transform(String);
@@ -141,12 +146,12 @@ export const Config = z.object({
       unmatched: z.enum(['drop', 'reply', 'onboard']).default('drop'),
       /** Messages out per minute, per platform. Progress lines always leave one free for the answer. */
       max_out_per_min: z.number().int().positive().default(10),
-      idle_exit_minutes: z.number().positive().default(30),
-      permission_timeout_minutes: z.number().positive().default(10),
+      idle_exit_minutes: z.number().positive().max(35_000).default(30),
+      permission_timeout_minutes: z.number().positive().max(35_000).default(10),
       /** A turn in print mode with no output from its CLI this long is stuck: the chat is told at half
        *  of it, and at the full time the CLI is stopped and the chat told so. 0: never. tmux turns
        *  have their own hourly line and are not stopped. */
-      turn_stall_minutes: z.number().nonnegative().default(60),
+      turn_stall_minutes: z.number().nonnegative().max(35_000).default(60),
       /** Capabilities every profile gets, unless it lists them under except. */
       capabilities: z.array(z.string()).default([]),
       /** Denied to every profile, unless it lists them under its own capabilities. */

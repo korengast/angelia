@@ -73,12 +73,13 @@ Then send *"what is in this folder?"* to your bot. The agent answers from the pr
 ## Getting started
 
 ```bash
-angelia init                         # setup wizard: bot token, CLI, first profile, pair the chat
+angelia init                         # setup wizard: Telegram and/or WhatsApp, CLI, first profile, pair the chat
 angelia status                       # what is running, and which chats are warm
 angelia check-config                 # validate routing.yaml and warn about risky combinations
 angelia profiles                     # every profile and the chats routed to it
 angelia profile add <platform:chat>  # a new profile and route for a chat, by hand
 angelia compile <profile> --write    # write a profile's tools and deny rules into its CLI settings
+angelia accept [--check]             # take your edits to routing.yaml (or list them first)
 angelia pair                         # link WhatsApp by QR
 angelia jobs install                 # turn each profile's angelia-jobs.yaml into timers
 angelia send <chat> <text>           # post into a chat from any script
@@ -125,7 +126,7 @@ Answered by Angelia itself, without spending a token. Registered in Telegram's c
 | `/new` | Start a fresh session; the old one stays in history. Messages still waiting are dropped |
 | `/resume` | List past sessions and switch back to one |
 | `/stop` | End the current turn and drop the messages waiting behind it (the answer says how many) |
-| `/status` | The active session, its turns and last use |
+| `/status` | The active session, its turns and last use. In a Claude Code chat, an owner also gets the line that opens the same session in a terminal |
 | `/model`, `/effort` | Alone: the one in use and the choices the CLI offers. With a value: set it for this session only |
 | `/backend` | Alone: the CLI in use and the ones installed. `/backend codex`: move this profile to another CLI, with a fresh session |
 | `/sh <command>` | Run a shell command in the profile folder, no agent (opt-in per profile) |
@@ -143,11 +144,15 @@ Working in Claude Code at your desk and want to go on from your phone? Type `/an
 
 If that chat is in the middle of a turn, the turn goes on in the background. `/status` shows it, a permission it asks for is told to the chat and waits for you, and `/resume` takes it back.
 
+### From the chat to the terminal
+
+Back at your desk? In a Claude Code chat, `/status` ends with a line such as `cd ~/work/bot && CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 claude --permission-mode acceptEdits --resume <id>`. Paste it in a terminal and the same session opens there, in the profile's folder, with its permissions, model, extra folders and MCP servers. If `/status` says *warm*, send `/stop` in the chat first, and type `/exit` in the terminal before you write in the chat again, so the two don't split. The chat's own keys (capability tokens, its Angelia API token) stay with the chat. Only owners get the line: it names folders on your machine, and `/status` is open to everyone in a group.
+
 ---
 
 ## WhatsApp
 
-Add `whatsapp: { auth_dir: ~/.angelia/wa }` to the table and run `angelia pair`. It opens a local page with a QR code; on the phone that owns the number, choose *Linked devices > Link a device* and scan it.
+`angelia init` offers WhatsApp beside Telegram: it opens a local page with a QR code; on the phone that owns the number, choose *Linked devices > Link a device* and scan it. Then you send the number a message from the chat it should answer, and confirm. On an existing setup, add `whatsapp: { auth_dir: ~/.angelia/wa }` to the table and run `angelia pair`.
 
 > **Use a second, established number, not your personal one.** Angelia ignores what its own account sends, so on your personal number it would not hear you, and it would answer as you. Its link can also read every chat on that account. And WhatsApp bans newly created numbers that start acting like robots, often within hours.
 

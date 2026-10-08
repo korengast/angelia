@@ -1,11 +1,11 @@
-import { closeSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Capability, Config, Profile } from '../instance/config/schema.js';
 import { resolveProfile } from './resolve.js';
 import { SELF_END, SELF_START, openAgentFile, rewriteAgentFile, upsertSelfBlock } from '../daemon/self.js';
 import { API_SOCKET, HOME_PRIVATE, INSTANCE_DIR, STATE_PRIVATE, commonDir, workspaceDir } from '../instance/instance.js';
-import { isInside } from '../core/paths.js';
+import { O_NOFOLLOW_ANY, isInside } from '../core/paths.js';
 import { codexUserMcpServers } from '../brain/codex-config.js';
 import { fileURLToPath } from 'node:url';
 
@@ -240,7 +240,16 @@ export function otherProfileRules(cfg: Config, name: string, home = homedir()): 
 /** All a profile is denied whatever its capabilities: Angelia's state, your credentials, the other profiles. */
 export function profileFloor(cfg: Config, name: string, stateDir: string, home = homedir()): string[] {
   const p = cfg.profiles[name];
-  return [...new Set([...floorRules(p.backend, stateDir, home), ...credentialRules(p, home), ...otherProfileRules(cfg, name, home)])];
+  return [...new Set([...floorRules(p.backend, stateDir, home), ...credentialRules(p, home), ...otherProfileRules(cfg, name, home), ...sharedRules(p, stateDir, home)])];
+}
+
+/** The workspace folders that reach every profile: _shared/ (doctrine their instructions import, the
+ *  self prompt) and _capabilities/ (the skills and tools they run). Read-only but for a profile with
+ *  shared_write: an agent talked into editing them would act in every other profile. */
+export const SHARED_DIRS = ['_shared', '_capabilities'];
+export function sharedRules(p: Profile, stateDir: string, home = homedir()): string[] {
+  if (p.shared_write) return [];
+  return SHARED_DIRS.map((d) => pathRule('Edit', glob(join(workspaceDir(stateDir), d)), p.backend, home));
 }
 
 /**
@@ -375,6 +384,49 @@ export function userMcpServers(home = homedir()): string[] {
   return [...names].sort();
 }
 
+/**
+ * The folders under a profile's folder that compile writes in, that are links. The agent may write its
+ * own folder, and compile runs outside every sandbox: `.claude` swapped for a link would carry the
+ * settings, the record and the skill links to wherever it points.
+ */
+function linkedFolders(cwd: string, paths: string[][]): string[] {
+  const out = new Set<string>();
+  for (const parts of paths) {
+    let at = cwd;
+    for (const part of parts) {
+      at = join(at, part);
+      let st;
+      try { st = lstatSync(at); } catch { break; }
+      if (st.isSymbolicLink()) { out.add(at); break; }
+    }
+  }
+  return [...out];
+}
+
+/**
+ * Write a whole file in a profile's folder without following a link anywhere on the way (O_NOFOLLOW_ANY
+ * on macOS, which refuses to be combined with O_NOFOLLOW; O_NOFOLLOW for the file itself elsewhere), and only into a plain file with no other name
+ * (a hard link would carry the write out of the folder). One descriptor from the check to the write.
+ * O_NONBLOCK: a FIFO in the file's place must not hold the daemon (which compiles for /backend); the
+ * plain-file check then refuses it.
+ */
+export function writePlain(cwd: string, file: string, text: string): void {
+  const path = join(realpathSync(cwd), relative(cwd, file));
+  let fd: number;
+  try { fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_NONBLOCK | (O_NOFOLLOW_ANY || constants.O_NOFOLLOW), 0o644); }
+  catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ELOOP') throw new Error(`${file} is reached through a link; compile writes no file through one`);
+    if ((e as NodeJS.ErrnoException).code === 'ENXIO') throw new Error(`${file} is not a plain file with one name; compile writes only those`);
+    throw e;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1) throw new Error(`${file} is not a plain file with one name; compile writes only those`);
+    ftruncateSync(fd, 0);
+    writeSync(fd, text, 0);
+  } finally { closeSync(fd); }
+}
+
 export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): ProfilePlan {
   const p = cfg.profiles[name];
   const home = opts.home ?? homedir();
@@ -385,7 +437,9 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
 
   // Skills: a link per allowed skill; a denied one must not be there at all.
   // Codex finds project skills in .agents/skills (measured with skills/list), not in Claude's folder.
-  const skillsDir = join(p.cwd, ...(p.backend === 'codex' ? ['.agents', 'skills'] : ['.claude', 'skills']));
+  const skillsRel = p.backend === 'codex' ? ['.agents', 'skills'] : ['.claude', 'skills'];
+  const skillsDir = join(p.cwd, ...skillsRel);
+  for (const l of linkedFolders(p.cwd, [['.claude'], skillsRel])) conflicts.push(`${l} is a link: compile writes only into plain folders, so move it aside by hand`);
   const wantLinks: Record<string, string> = {};
   for (const [n, c] of allowed) if (c.kind === 'skill') wantLinks[n] = c.path;
   const oldLinks = rec?.links ?? {};
@@ -445,7 +499,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     if (strict && !rec?.mcpStrict) changes.push('+ strict MCP: only this folder\'s .mcp.json is loaded; user-level servers (such as github, tavily) are left out');
     if (!strict && rec?.mcpStrict) changes.push('- strict MCP: user-level servers (such as github, tavily) load again');
     if (!strict) notes.push('no MCP server is denied here, so MCP is not strict: user-level servers (such as github, tavily) load as well');
-    if (touched) mcpOp = () => writeFileSync(mcpPath, JSON.stringify({ ...cur, mcpServers: servers }, null, 2) + '\n');
+    if (touched) mcpOp = () => writePlain(p.cwd, mcpPath, JSON.stringify({ ...cur, mcpServers: servers }, null, 2) + '\n');
   } else if (p.backend === 'codex') {
     if (Object.keys(wantMcp).length) notes.push(`codex: allowed MCP servers are not written yet (${Object.keys(wantMcp).join(', ')}); add them with codex mcp add`);
   } else if (p.backend === 'pi') {
@@ -585,12 +639,12 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
         const out: Record<string, any> = { ...settings, permissions: perms };
         if (Object.keys(sb).length) out.sandbox = sb; else delete out.sandbox;
         mkdirSync(dirname(settingsPath), { recursive: true });
-        writeFileSync(settingsPath, JSON.stringify(out, null, 2) + '\n');
+        writePlain(p.cwd, settingsPath, JSON.stringify(out, null, 2) + '\n');
       }
       blockOp?.();
       if (wantDirs.includes(common)) mkdirSync(common, { recursive: true });
       mkdirSync(join(p.cwd, '.claude'), { recursive: true });
-      writeFileSync(join(p.cwd, RECORD), JSON.stringify(record, null, 2) + '\n');
+      writePlain(p.cwd, join(p.cwd, RECORD), JSON.stringify(record, null, 2) + '\n');
       writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}), ...(p.backend === 'pi' && p.sandbox !== false ? { piSandbox: true } : {}) });
     },
   };

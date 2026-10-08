@@ -27,6 +27,11 @@ export interface Inbound {
   isGroup: boolean;
   mentioned: boolean;
   media: string[];
+  /** 'app': the owner typed it in a client on this machine (the API's reply-to-caller turn). What
+   *  the turn says goes to that client as events (core/events.ts) and never to the chat. */
+  surface?: 'app';
+  /** The id a client was given for this turn (the API's /turn); its events carry it. */
+  turnId?: string;
 }
 
 export interface SessionRow {
@@ -61,6 +66,8 @@ export type BrainEvent =
   /** A line from Angelia about the session itself, delivered to the chat as is (not agent text). */
   | { kind: 'notice'; text: string }
   | { kind: 'permission'; id: string; tool: string; preview: string; /** The whole request, when the preview had to cut it. */ detail?: string }
+  /** A request given to the chat was answered outside Angelia: in the CLI's own dialog (its pane or app). */
+  | { kind: 'permission-answered'; id: string; allow: boolean }
   | { kind: 'result'; text: string; isError: boolean; reason?: string };
 
 export function sessionKey(i: Pick<Inbound, 'platform' | 'chat' | 'thread'>): string {

@@ -19,6 +19,7 @@
 //   env FAKE_CODEX_MCP_ON=<name>  -> config/read shows that MCP server still enabled
 //   env FAKE_CODEX_NO_RESUME=1 -> thread/resume fails (the thread is gone)
 //   env FAKE_CODEX_VERSION     -> the version in initialize's userAgent (default 0.157.0)
+//   thread/turns/list          -> two turns (one per page with limit 1); env FAKE_CODEX_NO_THREAD=1 -> not found
 import { randomUUID } from 'node:crypto';
 
 // `codex exec ... -o <file> [fork <id>] -`: one question (`angelia ask`). The answer, written to the -o
@@ -99,6 +100,27 @@ process.stdin.on('data', (s) => {
     if (m.method === 'initialize') reply({ userAgent: `angelia/${process.env.FAKE_CODEX_VERSION ?? '0.157.0'} (Mac OS; x86_64)`, codexHome: '/x', platformFamily: 'unix', platformOs: 'macos' });
     else if (m.method === 'model/list') reply({ data: [{ id: 'gpt-other', isDefault: false }, { id: 'gpt-fake', isDefault: true }] });
     else if (m.method === 'thread/start') { threadId = 'thr-' + randomUUID(); threadParams = m.params; reply({ thread: { id: threadId }, model: m.params.model, ...applied(m.params) }); note('thread/started', { thread: { id: threadId } }); }
+    else if (m.method === 'thread/turns/list') {
+      // Two turns as codex-cli 0.157 lists them (desc, itemsView full; shapes from a real thread, 2026-10-08).
+      // The first page holds the newest turn; its cursor reaches the older one.
+      if (process.env.FAKE_CODEX_NO_THREAD) return out({ id: m.id, error: { code: -32600, message: `thread not found: ${m.params.threadId}` } });
+      const older = { id: 'turn-1', status: 'completed', startedAt: 1791465873, completedAt: 1791465881, itemsView: 'full', items: [
+        { type: 'userMessage', id: 'u1', clientId: null, content: [{ type: 'text', text: 'Run cat note.txt', text_elements: [] }, { type: 'localImage', path: '/tmp/x.png' }] },
+        { type: 'reasoning', id: 'r1', summary: [], content: [] },
+        { type: 'agentMessage', id: 'a0', text: 'Reading it.', phase: 'commentary' },
+        { type: 'commandExecution', id: 'exec-1', command: "/bin/zsh -lc 'cat note.txt'", aggregatedOutput: 'hello\n', exitCode: 0 },
+        { type: 'mcpToolCall', id: 'mcp-1', server: 'github', tool: 'search', arguments: {} },
+        { type: 'agentMessage', id: 'a1', text: 'It says hello.', phase: 'final_answer' },
+      ] };
+      const newer = { id: 'turn-2', status: 'completed', startedAt: 1791465881, completedAt: 1791465884, itemsView: 'full', items: [
+        { type: 'userMessage', id: 'u2', clientId: null, content: [{ type: 'text', text: 'Say DONE only.', text_elements: [] }] },
+        { type: 'agentMessage', id: 'a2', text: 'DONE', phase: 'final_answer' },
+      ] };
+      const cursor = JSON.stringify({ requestedThreadId: m.params.threadId, rolloutOrdinal: 20, includeAnchor: false, scope: { kind: 'turns' } });
+      if (process.env.FAKE_CODEX_TURNS_LOG) void import('node:fs').then(({ appendFileSync }) => appendFileSync(process.env.FAKE_CODEX_TURNS_LOG, JSON.stringify(m.params) + '\n'));
+      if (m.params.cursor === cursor) return reply({ data: [older], nextCursor: null, backwardsCursor: null });
+      return m.params.limit === 1 ? reply({ data: [newer], nextCursor: cursor, backwardsCursor: null }) : reply({ data: [newer, older], nextCursor: null, backwardsCursor: null });
+    }
     else if (m.method === 'thread/resume') {
       if (process.env.FAKE_CODEX_NO_RESUME) out({ id: m.id, error: { code: -32600, message: `no rollout found for thread id ${m.params.threadId}` } });
       else if (process.env.FAKE_CODEX_BUSY) out({ id: m.id, error: { code: -32600, message: `thread ${m.params.threadId} already has an active writer` } });

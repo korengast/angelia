@@ -5,6 +5,7 @@ import { homedir, userInfo } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fallbackDirs, locateBin, pathWithBins } from '../brain/locate.js';
+import { effectiveTable } from '../instance/accepted.js';
 import { loadConfig } from '../instance/config/load.js';
 import { STATE_DIR } from './daemon.js';
 import { configPath } from '../instance/instance.js';
@@ -182,7 +183,9 @@ export async function serviceCommand(argv: string[]): Promise<void> {
       const other = force ? undefined : otherInstance();
       if (other) throw new Error(other);
       const config = resolve(configPath(args[0]));
-      const cfg = loadConfig(config); // a table that does not load never becomes a service
+      // A table that does not load never becomes a service. The PATH comes from the accepted table: a
+      // bin an agent wrote into the table must not become a folder on the daemon's PATH.
+      const cfg = effectiveTable(loadConfig(config), STATE_DIR).cfg;
       const bins = pathWithBins(cfg);
       const extra = [...bins.path.split(delimiter), dirname(process.execPath)];
       const plist = buildPlist({

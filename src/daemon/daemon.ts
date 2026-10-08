@@ -5,21 +5,24 @@ import { workspaceDir } from '../instance/instance.js';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { loadConfig, configWarnings } from '../instance/config/load.js';
+import { effectiveTable, writeAccepted } from '../instance/accepted.js';
 import { cliWarnings, pathWithBins, type BackendName } from '../brain/index.js';
 import { scrubTmuxServer, sweepPanes, tmuxWarnings, tuiHookWarnings } from '../brain/tui.js';
 import { STRIP_ENV } from '../brain/argv.js';
+import { trustFolder } from '../brain/grok.js';
+import { locateBin, profileBin } from '../brain/locate.js';
 import { profileEnv, readEnvFile, SESSION_ENV, tableSecrets } from '../core/env.js';
 import { Orchestrator, type Sender } from '../core/orchestrator.js';
 import { TelegramAdapter } from '../adapters/telegram/adapter.js';
 import { WhatsAppAdapter } from '../adapters/whatsapp/adapter.js';
 import { matchRoute } from '../core/router/match.js';
 import { gate as routeGate } from '../core/router/gate.js';
-import { apiDeps } from './api/deps.js';
 import { API_SOCKET, ApiServer, claimSocket, loadOrMintToken, sessionToken } from './api/server.js';
 import { selfPrompt, selfOverrideWarning, upsertSelfBlock, FILE_BACKENDS } from './self.js';
 import { blockText, floorWarnings, launchCheck, nestingWarnings, readRecord, seedGuards } from '../capabilities/compile.js';
 import { launchChatRestart, takeRestartNote } from './restart.js';
 import { onboardChat } from '../instance/onboard.js';
+import { apiDeps } from './api/deps.js';
 import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
 import type { Inbound } from '../core/types.js';
 
@@ -79,7 +82,19 @@ export async function runDaemon(configPath: string): Promise<void> {
 
   // Held in memory, never copied into process.env: everything this process starts inherits that.
   const secrets = envFile();
-  const cfg = loadConfig(configPath);
+  // The daemon runs on the table the owner accepted (instance/accepted.ts): changes an agent could have
+  // made wait for /restart confirm. The first start with this version takes the table as it stands.
+  const live = loadConfig(configPath);
+  let cfg = live;
+  try {
+    const eff = effectiveTable(live, STATE_DIR);
+    cfg = eff.cfg;
+    if (eff.pending.length) logLine(`table: ${eff.pending.length} change(s) not accepted, running on the accepted table (/restart lists them): ${eff.pending.join('; ')}`);
+    else writeAccepted(live, STATE_DIR);
+  } catch (e) {
+    // Fails closed, as jobs do: running on the table as it stands would take every change nobody saw.
+    throw new Error(`the accepted routing table cannot be read (${(e as Error).message}), so the daemon does not start. See the changes with angelia accept --check; take the table with angelia accept, then start again.`);
+  }
   for (const w of configWarnings(cfg, workspaceDir(STATE_DIR))) logLine(`config warning: ${w}`);
   for (const w of [...tuiHookWarnings(cfg.profiles), ...tmuxWarnings(cfg.profiles), ...floorWarnings(cfg, STATE_DIR), ...nestingWarnings(cfg)]) logLine(`config warning: ${w}`);
   const missing = cliWarnings(cfg);
@@ -127,14 +142,44 @@ export async function runDaemon(configPath: string): Promise<void> {
       if (r.status === 0) return undefined;
       return (r.stderr || r.stdout || `check-config failed (${r.error?.message ?? `exit ${r.status}`})`).trim().split('\n').filter((l) => !l.startsWith('warning:')).slice(-4).join('\n');
     },
+    // Also the installed code, for the same reason, and on the table the new daemon will load.
+    wider: () => {
+      const r = spawnSync(process.execPath, [process.argv[1], 'accept', '--check', '--config', configPath], { encoding: 'utf8', timeout: 30_000 });
+      if (r.status !== 0) throw new Error((r.stderr || r.stdout || `accept --check failed (${r.error?.message ?? `exit ${r.status}`})`).trim().split('\n').slice(-4).join('\n'));
+      // The installed code's own fingerprint: it is the one that checks it on /restart confirm.
+      const lines = r.stdout.split('\n').filter((l) => l.startsWith('change: ')).map((l) => l.slice(8));
+      return { lines, fingerprint: /\(fingerprint (\w+)\)/.exec(r.stdout)?.[1] ?? '' };
+    },
+    accept: (fingerprint: string) => {
+      const r = spawnSync(process.execPath, [process.argv[1], 'accept', '--expect', fingerprint, '--config', configPath], { encoding: 'utf8', timeout: 30_000 });
+      return r.status === 0 ? undefined : (r.stderr || r.stdout || `accept failed (${r.error?.message ?? `exit ${r.status}`})`).trim().split('\n').slice(-4).join('\n');
+    },
     launch: (key: string) => launchChatRestart(key, table, (why) => {
       logLine(`restart failed key=${key}: ${why}`);
       void orch.notify(key, `The restart failed. Angelia is still running as before (pid ${process.pid}).\n${why}`)
         .catch((e) => logLine(`restart failure note: ${(e as Error).message}`));
     }),
   };
-  const onboard = (i: Inbound, chatName?: string) => onboardChat({ table, cfg, platform: i.platform, chat: i.chat, chatName, instance: STATE_DIR, self });
-  const switchBackend = (profile: string, backend: BackendName) => switchProfileBackend({ table, cfg, profile, backend, instance: STATE_DIR, self });
+  // A grok profile made or switched from a chat: grok reads its CLAUDE.md only in a trusted folder,
+  // and nobody is at a screen to answer grok's trust question. Says why when the trust did not hold.
+  const grokTrust = async (profile: string): Promise<string | undefined> => {
+    const p = cfg.profiles[profile];
+    if (p?.backend !== 'grok') return undefined;
+    const bin = locateBin(profileBin(p));
+    if (bin && await trustFolder(bin, p.cwd)) return undefined;
+    return `grok did not confirm it trusts ${p.cwd}, and reads its CLAUDE.md only once it does: run grok --trust there once.`;
+  };
+  const onboard = async (i: Inbound, chatName?: string) => {
+    const made = onboardChat({ table, cfg, platform: i.platform, chat: i.chat, chatName, instance: STATE_DIR, self });
+    const note = await grokTrust(made.name);
+    if (note) logLine(`onboard profile=${made.name} ${note}`);
+    return made;
+  };
+  const switchBackend = async (profile: string, backend: BackendName) => {
+    const done = switchProfileBackend({ table, cfg, profile, backend, instance: STATE_DIR, self });
+    const note = await grokTrust(profile);
+    return note ? { ...done, notes: [...done.notes, note] } : done;
+  };
   const orch = new Orchestrator(cfg, senders, { stateDir: STATE_DIR, log: logLine, selfPrompt: self, restart, onboard, switchBackend, transcripts: true, secrets, sessionToken: (key) => sessionToken(apiToken, key), launchGuard });
   // A tmux server outlives the daemon and keeps the environment it was started with. One started by an
   // older build still carries the bot token and hands it to every new pane: take the secrets out.
@@ -147,15 +192,18 @@ export async function runDaemon(configPath: string): Promise<void> {
   // pass routing and gating. Nothing is downloaded for anyone else.
   const inboxFor = (i: Omit<Inbound, 'media'>) => { const r = matchRoute(cfg, i); return r && routeGate(i, r).ok ? cfg.profiles[r.profile].cwd : undefined; };
   const onInbound = (i: Inbound) => orch.handle(i).catch((e) => logLine(`handle error: ${(e as Error).message}`));
-  const api = new ApiServer(apiDeps(orch), apiToken);
+  // What `angelia status` shows, and the API's `/status`. The platform states are set further down.
+  // Telegram's state is the adapter's own: a copy here would go on saying polling after polling died.
+  let telegram: TelegramAdapter | undefined;
+  const tgState = () => telegram?.state ?? 'off';
+  let waState = 'off';
+  const statusNow = () => ({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), tg: tgState(), wa: waState, sessions: orch.status() });
+  const api = new ApiServer(apiDeps(orch, cfg, statusNow, STATE_DIR), apiToken);
   const socket = join(STATE_DIR, API_SOCKET);
   await claimSocket(socket);
   await api.listen(socket);
   adapters.push({ stop: () => api.close() });
 
-  // Telegram's state is the adapter's own: a copy here would go on saying polling after polling died.
-  let telegram: TelegramAdapter | undefined;
-  const tgState = () => telegram?.state ?? 'off';
   if (cfg.telegram) {
     const token = process.env[cfg.telegram.token_env] ?? secrets[cfg.telegram.token_env];
     if (!token) throw new Error(`telegram: ${cfg.telegram.token_env} is not set`);
@@ -165,7 +213,6 @@ export async function runDaemon(configPath: string): Promise<void> {
     adapters.push(tg);
     await startPlatform('telegram', () => tg.start());
   }
-  let waState = 'off';
   let waAdapter: WhatsAppAdapter | undefined;
   if (cfg.whatsapp) {
     const wa = new WhatsAppAdapter({ authDir: cfg.whatsapp.auth_dir, pairing: cfg.whatsapp.pairing, phone: cfg.whatsapp.phone, log: logLine, inboxFor, onInbound });
@@ -184,7 +231,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   const writeStatus = () => {
     const path = join(STATE_DIR, 'status.json');
     try {
-      writeFileSync(`${path}.tmp`, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), tg: tgState(), wa: waState, sessions: orch.status() }, null, 2));
+      writeFileSync(`${path}.tmp`, JSON.stringify(statusNow(), null, 2));
       renameSync(`${path}.tmp`, path);
       statusError = '';
     } catch (e) {

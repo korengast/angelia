@@ -128,7 +128,7 @@ test('ask over the API (the daemon\'s wiring): another chat\'s agent gets the an
   const { o } = setup();
   const dir = mkdtempSync(join(tmpdir(), 'angelia-ask-api-'));
   const token = loadOrMintToken(join(dir, 'api.token'));
-  const api = new ApiServer(apiDeps(o), token);
+  const api = new ApiServer(apiDeps(o, Config.parse({ profiles: {}, routes: [] }), () => ({})), token);
   const socket = join(dir, API_SOCKET);
   await claimSocket(socket);
   await api.listen(socket);

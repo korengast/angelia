@@ -5,6 +5,8 @@ import type { Config } from './config/schema.js';
 import { backupConfig } from './init.js';
 import { planProfile } from '../capabilities/compile.js';
 import type { BackendName } from '../brain/brain.js';
+import { INSTANCE_DIR } from './instance.js';
+import { beyond, pendingRefusal, writeAccepted } from './accepted.js';
 
 /** Fields that belong to one CLI and mean nothing, or something wrong, to another. */
 const CLI_FIELDS = ['model', 'effort', 'bin'] as const;
@@ -31,6 +33,10 @@ export interface Switched { removed: string[]; notes: string[] }
  * `tui: true` goes too when leaving Claude Code, where it is the only CLI that reads it.
  */
 export function switchBackend(o: SwitchOpts): Switched {
+  // Built on the table as it stands, so that table must be the accepted one (accepted.ts).
+  const state = o.instance ?? INSTANCE_DIR;
+  const pending = pendingRefusal(loadConfig(o.table), state);
+  if (pending) throw new Error(`not switching: ${pending}`);
   const doc = parseDocument(readFileSync(o.table, 'utf8'));
   const node = doc.getIn(['profiles', o.profile], true);
   if (!(node instanceof YAMLMap)) throw new Error(`no profile ${o.profile} in ${o.table}`);
@@ -44,6 +50,8 @@ export function switchBackend(o: SwitchOpts): Switched {
   writeFileSync(o.table, doc.toString({ lineWidth: 0, flowCollectionPadding: false }));
   let fresh: Config;
   try { fresh = loadConfig(o.table); } catch (e) { copyFileSync(backup, o.table); throw e; }
+  const extra = beyond(state, fresh, ['backend', 'tui', ...CLI_FIELDS].map((f) => `profiles.${o.profile}.${f}`));
+  if (extra.length) { copyFileSync(backup, o.table); throw new Error(`not switching: the routing table changed while it was written (${extra.join('; ')})`); }
   let notes: string[];
   try {
     const plan = planProfile(fresh, o.profile, { self: o.self, stateDir: o.instance });
@@ -51,6 +59,7 @@ export function switchBackend(o: SwitchOpts): Switched {
     plan.apply();
     notes = plan.notes;
   } catch (e) { copyFileSync(backup, o.table); throw e; }
+  writeAccepted(fresh, state);
   o.cfg.profiles[o.profile] = fresh.profiles[o.profile];
   return { removed, notes };
 }

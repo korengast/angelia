@@ -134,6 +134,16 @@ export function resolveMedia(req: MediaRequest, platform: Platform, where: Media
 }
 
 /**
+ * Where a file came from, when what is read is a copy of it (the desk app copies a dropped file, since
+ * the daemon may not read the folder it was in). The place is held to the same rules as a file sent
+ * directly; resolved as far as this process can see it.
+ */
+export function assertOrigin(from: string, where: MediaWhere = {}): void {
+  if (!isAbsolute(from)) throw new MediaError(`not an absolute path: ${short(from)}`);
+  if (denied(real(from), where.home ?? homedir(), where.stateDir)) throw new MediaError(`refusing to send from that location: ${short(from)}`);
+}
+
+/**
  * A private copy of a checked file, taken at once, which is what the adapter sends. The send may wait
  * for the rate limit, and an agent that controls the folder could swap the file under the checked
  * name in that time. The file is opened without following a link, must still be the file that was

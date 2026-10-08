@@ -132,3 +132,44 @@ test('a failed /restart reports its reason and drops the note; a clean exit says
   assert.equal(said.length, 2);
   assert.ok(existsSync(join(dir, RESTART_NOTE)), 'a clean exit leaves the note for the new daemon');
 });
+
+test('/restart confirm parses with its word', () => {
+  assert.deepEqual(parseCommand('/restart confirm'), { name: 'restart', value: 'confirm' });
+});
+
+test('/restart: a changed table is listed, and /restart confirm accepts exactly what was listed', async (t) => {
+  const { changesHash } = await import('../src/instance/accepted.js');
+  const launched: string[] = [];
+  let wider = ['profiles.a.shell: false → true'];
+  const accepted: string[] = [];
+  const { o, sent } = rig({ check: () => undefined, launch: (k) => launched.push(k), wider: () => ({ lines: wider, fingerprint: changesHash(wider) }), accept: (f: string) => { accepted.push(f); return undefined; } } as never);
+  t.after(() => o.shutdown());
+  const say = (text: string) => o.handle({ ...msg('boss'), text });
+
+  await say('/restart');
+  assert.equal(launched.length, 0);
+  assert.match(sent.at(-1)!, /^Not restarting yet\. The routing table changed since you last accepted it:\n• profiles\.a\.shell: false → true\n.*\/restart confirm/);
+
+  // The table grew again after the owner looked: the new list is shown, nothing is accepted.
+  wider = ['profiles.a.shell: false → true', 'routes.whatsapp:g@g.us.allow_from: + stranger'];
+  await say('/restart confirm');
+  assert.deepEqual(accepted, []);
+  assert.equal(launched.length, 0);
+  assert.match(sent.at(-1)!, /\+ stranger/);
+
+  await say('/restart confirm');
+  assert.deepEqual(accepted, [changesHash(wider)], 'the fingerprint of the list shown goes to angelia accept');
+  assert.match(sent.at(-1)!, /^Routing table ok\. Restarting now/);
+  assert.deepEqual(launched, ['whatsapp:g@g.us']);
+});
+
+test('/restart: nothing new to accept restarts at once; confirm alone accepts nothing', async (t) => {
+  const launched: string[] = [];
+  let accepted = 0;
+  const { o, sent } = rig({ check: () => undefined, launch: (k) => launched.push(k), wider: () => ({ lines: [], fingerprint: '' }), accept: () => { accepted++; return undefined; } } as never);
+  t.after(() => o.shutdown());
+  await o.handle({ ...msg('boss'), text: '/restart confirm' });
+  assert.equal(accepted, 0);
+  assert.match(sent.at(-1)!, /^Routing table ok\. Restarting now/);
+  assert.equal(launched.length, 1);
+});

@@ -157,15 +157,54 @@ export function waitExit(lines: EventEmitter, exited: () => boolean, ms: number)
   });
 }
 
-/** Graceful stop of a backend's child: close stdin (every CLI here ends on EOF), then SIGTERM, then SIGKILL. */
-export async function stopChild(child: { stdin: { end(): void }; kill(signal: NodeJS.Signals): boolean }, lines: EventEmitter, exited: () => boolean, graceMs: number): Promise<void> {
+/** How every backend starts its CLI: in a process group of its own (detached), so a forced stop
+ *  reaches what the CLI started too (signalGroup). stdin stays a pipe: the CLI still ends on EOF when
+ *  the daemon goes away. */
+export const CHILD_GROUP = { detached: true } as const;
+
+type Child = { pid?: number; stdin: { end(): void }; kill(signal: NodeJS.Signals): boolean };
+
+/**
+ * Signal a CLI and everything it started: a long shell command, an MCP server, pi's sandbox-exec.
+ * The CLI leads its own group (CHILD_GROUP), and only it got the signal before, so those kept running
+ * after the chat was told "Stopped". Falls back to the CLI alone when there is no group to signal.
+ */
+export function signalGroup(child: { pid?: number; kill(signal: NodeJS.Signals): boolean }, sig: NodeJS.Signals): void {
+  if (child.pid) { try { process.kill(-child.pid, sig); return; } catch { /* no such group */ } }
+  try { child.kill(sig); } catch { /* gone */ }
+}
+
+/**
+ * Stop a backend's child: close stdin (every CLI here ends on EOF, and ends its own tools), then
+ * SIGTERM, then SIGKILL, to the whole group. A CLI that ends on EOF is left to clean up after itself:
+ * what it chose to leave running, it did on purpose. A forced stop (/stop mid-turn, the stall
+ * watchdog) ends the whole group, a server the agent started in the background included; one that
+ * needed SIGKILL may have left tools that ignore SIGTERM, so its group gets a last SIGKILL.
+ */
+export async function stopChild(child: Child, lines: EventEmitter, exited: () => boolean, graceMs: number): Promise<void> {
   child.stdin.end();
   if (await waitExit(lines, exited, graceMs)) return;
-  child.kill('SIGTERM');
+  signalGroup(child, 'SIGTERM');
   if (await waitExit(lines, exited, graceMs)) return;
-  child.kill('SIGKILL');
+  signalGroup(child, 'SIGKILL');
   await waitExit(lines, exited, graceMs);
+  // It had to be killed: what it started may ignore SIGTERM too.
+  if (child.pid) try { process.kill(-child.pid, 'SIGKILL'); } catch { /* the group is gone */ }
 }
+
+/**
+ * The process groups of the CLIs running now. They are out of the daemon's own group, so launchd's
+ * clean-up of a daemon that died no longer reaches them: on its way out, the daemon ends them itself.
+ * (A SIGKILL of the daemon still leaves them; each CLI then ends on EOF, its tools may not.)
+ */
+const groups = new Set<number>();
+export function trackGroup(child: { pid?: number; once(e: 'exit', f: () => void): unknown }): void {
+  const pid = child.pid;
+  if (!pid) return;
+  groups.add(pid);
+  child.once('exit', () => groups.delete(pid));
+}
+process.on('exit', () => { for (const g of groups) try { process.kill(-g, 'SIGKILL'); } catch { /* gone */ } });
 
 /**
  * Why the child died, for the log and for the retry decision. Always starts with `exit`, because

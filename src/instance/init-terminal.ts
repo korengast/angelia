@@ -2,11 +2,13 @@ import { standIn } from '../adapters/telegram/adapter.js';
 import { locateBin } from '../brain/locate.js';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Bot } from 'grammy';
 import { banner } from '../cli/banner.js';
 import { packageRoot } from '../daemon/update.js';
+import { trustFolder } from '../brain/grok.js';
 import { runInit, type Ask, type PairedChat } from './init.js';
 
 /** Terminal implementation of the wizard's questions. */
@@ -73,19 +75,44 @@ export async function waitForChat(token: string): Promise<PairedChat> {
 export async function initCommand(): Promise<void> {
   process.stdout.write(banner(installedVersion(), { isTTY: process.stdout.isTTY, env: process.env }));
   const ask = terminalAsk();
-  await runInit({ ask, stateDir: process.env.ANGELIA_STATE_DIR, verifyToken, waitForChat, hasBin });
+  // Baileys is loaded only when WhatsApp is chosen: a Telegram-only setup never pays for it.
+  const wa = () => import('../adapters/whatsapp/pair.js');
+  await runInit({
+    ask, stateDir: process.env.ANGELIA_STATE_DIR, verifyToken, waitForChat, hasBin,
+    linkWhatsApp: async (authDir) => (await wa()).linkWhatsApp({ auth_dir: authDir, pairing: 'qr' }),
+    waitForWhatsAppChat: async (authDir) => (await wa()).waitForWhatsAppChat(authDir),
+    trustGrok: async (cwd) => { const bin = locateBin('grok'); return !!bin && trustFolder(bin, cwd); },
+    cloneAngelia,
+    startService: process.platform === 'darwin'
+      ? async (config) => (await import('../daemon/service.js')).serviceCommand(['install', config])
+      : undefined,
+  });
   process.exit(0);
+}
+
+/** A full clone of the repository the installed package names: the profile works on the code, and
+ *  the history is part of that. */
+function cloneAngelia(dest: string): string {
+  const repo = packageJson().repository?.url?.replace(/^git\+/, '');
+  if (!repo) throw new Error('the installed package names no repository');
+  execFileSync('git', ['clone', '-q', repo, dest], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 120_000 });
+  return `Cloned Angelia into ${dest}.`;
 }
 
 /** Found where the daemon would find it: PATH, then the usual install folders (locateBin). The
  *  wizard used to search PATH only and call a CLI, whisper or ffmpeg missing that the daemon finds. */
 const hasBin = (bin: string): boolean => !!locateBin(bin);
 
-/** The installed package's version, for the banner; '?' when it cannot be read. */
-function installedVersion(): string {
+interface PackageJson { version?: string; repository?: { url?: string } }
+
+/** The installed package's package.json; empty when it cannot be read. */
+function packageJson(): PackageJson {
   try {
-    return (JSON.parse(readFileSync(join(packageRoot(), 'package.json'), 'utf8')) as { version?: string }).version ?? '?';
+    return JSON.parse(readFileSync(join(packageRoot(), 'package.json'), 'utf8')) as PackageJson;
   } catch {
-    return '?';
+    return {};
   }
 }
+
+/** The installed package's version, for the banner; '?' when it cannot be read. */
+const installedVersion = (): string => packageJson().version ?? '?';

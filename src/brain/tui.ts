@@ -10,7 +10,7 @@ import { cleanText, type BrainEvent } from '../core/types.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession } from './brain.js';
 import { importsAccepted, importsDialogOpen, loadBuffer, paneBusy, paneIdle, pasteLanded, permissionDialog, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
-import { PermissionRelay, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
+import { paneVerdict, PermissionRelay, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { readRecord } from '../capabilities/compile.js';
 
@@ -40,6 +40,11 @@ const STILL_MS = 30 * 60_000;
 const QUIET_MS = 12_000;
 /** After a chat answer, a dialog that still asks the same thing this long is taken as asking again. */
 const REASK_MS = 2500;
+/** How long a request answered in the pane may go without a result in the transcript before it counts
+ *  as allowed: Claude writes a refusal at once, so a call still waiting on its result is running. */
+const DECIDE_MS = 3000;
+/** The most of a turn's transcript read to find how a request answered in the pane went. */
+const TRANSCRIPT_SLICE_MAX = 8 * 1024 * 1024;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -173,6 +178,8 @@ export class TuiBrain extends EventEmitter implements Brain {
   private up = false;
   private transcript: string;
   private at = 0;
+  /** Where this turn's rows begin in the transcript, for reading how a request answered in the pane went. */
+  private from = 0;
   /** One line for the chat before the next turn's answer, when the launch had to say something (a lost conversation). */
   private notice: string | null = null;
   lastUsedAt = Date.now();
@@ -388,7 +395,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     let sentAt = Date.now();
     const gen = this.gen;
     const submit = () => {
-      this.at = fileSize(this.transcript); // only rows written from here on are this turn's
+      this.at = this.from = fileSize(this.transcript); // only rows written from here on are this turn's
       rmSync(this.markerPath, { force: true });
       sentAt = Date.now();
     };
@@ -422,7 +429,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.up = true;
     this.ready = Promise.resolve(null);
     this.lastUsedAt = Date.now();
-    this.at = fileSize(this.transcript);
+    this.at = this.from = fileSize(this.transcript);
     return this.watch(this.turnSentAt ?? Date.now(), false, gen);
   }
 
@@ -440,6 +447,10 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  (`gen` moved). */
   private async *watch(sentAt: number, background: boolean, gen: number): AsyncGenerator<BrainEvent> {
     let pending: string | null = null;
+    // Relayed requests by id, and those answered in the pane or the app whose outcome the transcript
+    // has yet to show.
+    const asked = new Map<string, { tool: string; input: unknown }>();
+    const deciding = new Map<string, { tool: string; input: unknown; since: number }>();
     const dialogs = new DialogWatch();
     const screen = new ScreenDialogs();
     let quietSince = 0;
@@ -467,6 +478,7 @@ export class TuiBrain extends EventEmitter implements Brain {
           else if (pending) { yield { kind: 'progress', text: pending }; pending = null; }
         }
         const done = this.takeMarker(sentAt);
+        if (deciding.size) yield* this.decide(deciding, done !== null);
         if (done !== null) {
           over();
           yield { kind: 'result', text: done, isError: false };
@@ -477,9 +489,16 @@ export class TuiBrain extends EventEmitter implements Brain {
           for (const r of this.relay.take()) {
             this.relayedAt = Date.now();
             this.permissions.add(r.id);
+            asked.set(r.id, { tool: r.tool, input: r.input });
             yield relayedPermission(r);
           }
-          for (const id of this.relay.gone()) { this.relayedAt = Date.now(); this.permissions.take(id); } // answered in the app or in the terminal
+          // Answered in the app or in the terminal: Claude ended the hook. The transcript says how.
+          for (const id of this.relay.gone()) {
+            this.relayedAt = Date.now();
+            this.permissions.take(id);
+            const a = asked.get(id);
+            if (a) { asked.delete(id); deciding.set(id, { ...a, since: Date.now() }); }
+          }
         }
         const pane = await this.capture(30);
         if (pane !== lastPane) { lastPane = pane; movedAt = Date.now(); }
@@ -513,6 +532,21 @@ export class TuiBrain extends EventEmitter implements Brain {
       // However the reader ends (an answer, an exit, let go of, or abandoned by its caller), its
       // heartbeat ends with it, unless a newer reader has taken the pane since.
       if (!background && this.beating?.gen === gen) this.stopBeat();
+    }
+  }
+
+  /** Report each request answered in Claude's own dialog once the transcript shows how it went. A
+   *  refusal is written at once; a call still without a result after DECIDE_MS was allowed and runs.
+   *  A call the transcript does not show is not guessed at. `last`: the turn ends, decide now. */
+  private *decide(deciding: Map<string, { tool: string; input: unknown; since: number }>, last: boolean): Generator<BrainEvent> {
+    const chunk = readSlice(this.transcript, this.from);
+    for (const [id, d] of deciding) {
+      const v = paneVerdict(chunk, d.tool, d.input);
+      const late = last || Date.now() - d.since > DECIDE_MS;
+      if (typeof v === 'boolean' || (v === 'running' && late)) yield { kind: 'permission-answered', id, allow: v !== false };
+      else if (!late) continue;
+      else this.emit('log', `permission ${id.slice(0, 8)} answered in the pane; the transcript does not show how`);
+      deciding.delete(id);
     }
   }
 
@@ -671,6 +705,24 @@ export function transcriptEvents(chunk: string): TranscriptEvent[] {
     }
   }
   return out;
+}
+
+/** The transcript from `from` on, at most the last TRANSCRIPT_SLICE_MAX bytes of it. */
+function readSlice(path: string, from: number): string {
+  let fd: number;
+  try { fd = openSync(path, 'r'); } catch { return ''; }
+  try {
+    const size = fstatSync(fd).size;
+    const start = Math.max(from, size - TRANSCRIPT_SLICE_MAX);
+    if (size <= start) return '';
+    const buf = Buffer.allocUnsafe(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    return buf.toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function fileSize(path: string): number {

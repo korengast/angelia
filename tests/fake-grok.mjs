@@ -5,22 +5,40 @@
 //   text contains "CRASH"    -> exit 1 mid-turn
 //   text contains "FAIL"     -> JSON-RPC error on session/prompt
 //   env FAKE_GROK_NO_LOAD=1  -> session/load answers with an error (unknown session)
+//   env FAKE_GROK_LOAD_DELAY_MS -> session/load starts that much later
+//   env FAKE_GROK_REPLAY=1   -> session/load replays a two-prompt conversation with tools and a thought
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 const bypass = process.argv.includes('--always-approve');
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const reply = (id, result) => out({ jsonrpc: '2.0', id, result });
 const update = (sessionId, u) => out({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: u } });
 const chunk = (sid, text) => update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
 let sid = null, reqId = 1000; const waiting = new Map(); // permission rpc id -> continuation
-createInterface({ input: process.stdin }).on('line', (line) => {
-  const m = JSON.parse(line);
+const handle = (m) => {
   if (m.method === 'initialize' && process.env.FAKE_GROK_SILENT) return;
   if (m.method === 'initialize') return reply(m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true }, agentInfo: { name: 'fake-grok', version: '1.0.30' } });
   if (m.method === 'session/new') { sid = 'grok-' + randomUUID(); return reply(m.id, { sessionId: sid, models: { currentModelId: 'grok-4.6' } }); }
   if (m.method === 'session/load') {
     if (process.env.FAKE_GROK_NO_LOAD) return out({ jsonrpc: '2.0', id: m.id, error: { code: -32000, message: 'session not found' } });
-    sid = m.params.sessionId; chunk(sid, 'replayed history'); return reply(m.id, { models: { currentModelId: 'grok-4.6' } });
+    if (process.env.FAKE_GROK_LOAD_DELAY_MS && !m.__delayed) { m.__delayed = true; setTimeout(() => handle(m), Number(process.env.FAKE_GROK_LOAD_DELAY_MS)); return; }
+    sid = m.params.sessionId;
+    if (process.env.FAKE_GROK_LOAD_LOG) appendFileSync(process.env.FAKE_GROK_LOAD_LOG, sid + '\n');
+    if (process.env.FAKE_GROK_REPLAY) {
+      // A conversation of two prompts as grok 1.0.40 replays it (shapes from a real session, 2026-10-08).
+      const tool = (id, kind, name) => update(sid, { sessionUpdate: 'tool_call', toolCallId: id, title: kind, kind, status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'output' } }], rawInput: { variant: 'Bash' }, _meta: { 'x.ai/tool': { version: 1, name, kind } } });
+      update(sid, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'Read note.txt' }, _meta: { promptIndex: 0 } });
+      chunk(sid, "I'll read "); chunk(sid, 'it.');
+      tool('call-1', 'execute', 'run_terminal_command');
+      update(sid, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Found it.' } });
+      tool('call-2', 'read', 'read_file');
+      chunk(sid, 'It says hello.');
+      update(sid, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'Thanks' }, _meta: { promptIndex: 1 } });
+      chunk(sid, 'Welcome.');
+      update(sid, { sessionUpdate: 'available_commands_update', availableCommands: [] });
+    } else chunk(sid, 'replayed history');
+    return reply(m.id, { models: { currentModelId: 'grok-4.6' } });
   }
   if (m.id !== undefined && m.method === undefined && waiting.has(m.id)) { const k = waiting.get(m.id); waiting.delete(m.id); return k(m.result?.outcome); }
   if (m.method !== 'session/prompt') return;
@@ -45,5 +63,6 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     return;
   }
   finish(`echo: ${text}`);
-});
+};
+createInterface({ input: process.stdin }).on('line', (line) => handle(JSON.parse(line)));
 process.stdin.on('close', () => process.exit(0));

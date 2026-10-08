@@ -22,6 +22,7 @@ const L = {
   config: '  check-config | profiles [--json]       validate the table; list profiles and their chats',
   profile: '  profile add <platform:chat> [name]     a new profile and route, as onboarding makes them',
   compile: '  compile [profile...] [--write|--check] [--config <routing.yaml>]   capabilities into the profile folder',
+  accept: '  accept [--check] [--config <routing.yaml>]   take the routing table as the accepted one (or list its changes)',
   jobs: '  jobs [install|remove|run] [profile] [job] [--config <routing.yaml>]   scheduled jobs (angelia guide jobs)',
   workspace: '  workspace sync [--quiet]               commit and push what the profiles changed (run it from a job)\n  workspace commit -m <message> [path...] [--no-push]   one change, after the gates (angelia guide commit)',
   send: '  send <platform:chat> <text>            post into a routed chat',
@@ -50,6 +51,7 @@ export const COMMANDS: Record<string, Spec> = {
   profile: { line: L.profile },
   compile: { line: L.compile, flags: { '--write': false, '--check': false, '--config': true } },
   // --hash: what a timer passes, so a changed job refuses to run from an old timer.
+  accept: { line: L.accept, flags: { '--check': false, '--expect': true, '--config': true } },
   jobs: { line: L.jobs, flags: { '--config': true, '--hash': true } },
   workspace: { line: L.workspace, usage: 'usage: angelia workspace sync [--quiet]\n       angelia workspace commit -m <message> [path...] [--no-push]', flags: { '--quiet': false, '-m': true, '--message': true, '--no-push': false } },
   send: { line: L.send, text: true },

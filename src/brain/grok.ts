@@ -1,11 +1,23 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { grokArgv, childEnv } from './argv.js';
-import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
 
 type Msg = Record<string, any>;
+
+/**
+ * Mark a folder trusted in grok. grok reads a folder's CLAUDE.md only once it is trusted, and a chat
+ * has no screen to answer its trust question on. `--trust` records the trust without opening the TUI
+ * when a subcommand follows, and `inspect` then prints whether it holds (grok 1.0.40). Never rejects:
+ * false when grok is missing, does not answer in time, or still says no.
+ */
+export function trustFolder(bin: string, cwd: string, timeoutMs = 30_000): Promise<boolean> {
+  return new Promise((done) => {
+    execFile(bin, ['--trust', 'inspect'], { cwd, env: childEnv(), timeout: timeoutMs }, (err, out) => done(!err && /Project trusted:\s*yes/i.test(String(out))));
+  });
+}
 
 /**
  * One long-lived `grok agent stdio` child (Grok Build) per session key, driven over ACP
@@ -42,8 +54,9 @@ export class GrokBrain extends EventEmitter implements Brain {
 
   start(): void {
     const [bin, ...args] = grokArgv(this.profile, this.opts.bin ?? 'grok');
-    const child = spawn(bin, args, { cwd: this.profile.cwd, env: childEnv(this.opts.env), stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { cwd: this.profile.cwd, env: childEnv(this.opts.env), stdio: ['pipe', 'pipe', 'pipe'], ...CHILD_GROUP });
     this.child = child;
+    trackGroup(child);
     const done = (code: number | null, signal: NodeJS.Signals | null) => {
       if (this.exited) return;
       this.exited = true;
@@ -220,5 +233,5 @@ export class GrokBrain extends EventEmitter implements Brain {
     if (this.child && !this.exited) await stopChild(this.child, this.lines, () => this.exited, graceMs);
   }
 
-  kill(): void { this.child?.kill('SIGKILL'); }
+  kill(): void { if (this.child && !this.exited) signalGroup(this.child, 'SIGKILL'); }
 }
