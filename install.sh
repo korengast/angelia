@@ -6,15 +6,17 @@
 # runs `angelia init` unless an instance already exists. It never clones into your home, never
 # builds in place, and never touches an existing instance.
 #
-# The release it installs must be a tag signed by the release key below, and the tag must name
-# itself: a new tag pushed by anyone without the key is refused. Fetch this script from a tag (the
+# The release it installs must be a tag signed by one of the release keys below (the owner's, and the
+# release workflow's, which lives only in the repository's `release` environment on GitHub), and the
+# tag must name itself: a new tag pushed by anyone without a key is refused. Fetch this script from a tag (the
 # README's line does), so the key it carries is the one that release shipped. The same key is in
 # allowed_signers, which the installed copy keeps: `angelia update` checks every later release
 # against it. ANGELIA_REF set to a branch installs that branch unsigned, and says so.
 set -eu
 
 # One line per key, the format of git's gpg.ssh.allowedSignersFile. Kept equal to allowed_signers by a test.
-SIGNERS='korengast@users.noreply.github.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK9Krso/DJH0yfzU2ACgmKYZtCBs4OOeVEX6+KONrUJk'
+SIGNERS='korengast@users.noreply.github.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK9Krso/DJH0yfzU2ACgmKYZtCBs4OOeVEX6+KONrUJk
+release-ci@useangelia.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFkVpARRjsFeKy3JdX/TN+0Tco/p94MePKMKe11UPiI4'
 
 REPO="${ANGELIA_REPO:-https://github.com/korengast/angelia.git}"
 STATE="${ANGELIA_STATE_DIR:-$HOME/.angelia}"

@@ -134,6 +134,27 @@ The site's `/install` redirects to the `install.sh` attached to the release name
 Every installed copy checks the next release against the `allowed_signers` it was installed with,
 so a new key reaches users only through a release signed with the old one that ships both.
 
+### Releasing without anyone at the keyboard
+
+`.github/workflows/release.yml` signs and publishes a release with a second key that lives only in
+the repository's `release` environment on GitHub. Set up once: an environment named `release` with
+a wait timer (60 minutes here) and only `main` allowed to deploy; two environment secrets,
+`RELEASE_SIGNING_KEY` (an ed25519 key without a passphrase, its public half in `allowed_signers`)
+and `RELEASE_DEPLOY_KEY` (a write deploy key); and deploy keys allowed to bypass the rulesets that
+guard `main` and `v*` tags. Then, for each release:
+
+```bash
+git push origin <commit>:refs/heads/release/X.Y.Z     # the release commit, on top of main
+gh workflow run release.yml -f version=X.Y.Z -f commit=<full commit id>
+gh run cancel <run id>                                 # to stop it during the wait
+```
+
+The workflow checks the commit (on top of `main`, version in `package.json`, tag still free), runs
+the whole suite on macOS, waits, then signs the tag, pushes `main` and the tag together, and makes
+the GitHub release with the tag's `install.sh` and the commit message as notes. Know what it trades:
+whoever can push to `main` and start workflows can release, so the signature says the release came
+from this repository's workflow, not that a person approved it. The wait is the time to stop it.
+
 ## Uninstall
 
 ```bash

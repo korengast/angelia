@@ -1,0 +1,104 @@
+# Signs and publishes a release with nobody at the keyboard (docs/runbook.md, "Releasing without
+# anyone at the keyboard"). Started by hand: `gh workflow run release.yml -f version=X.Y.Z -f
+# commit=<id>`, the commit pushed to a release/X.Y.Z branch first. The `release` environment holds
+# both keys and makes the publish job wait, so a release can be stopped before anything is public.
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version, X.Y.Z (package.json must say the same)
+        required: true
+      commit:
+        description: The full id of the release commit, on top of main
+        required: true
+permissions:
+  contents: read
+# One release at a time; a second one waits instead of racing the first for main.
+concurrency:
+  group: release
+  cancel-in-progress: false
+env:
+  V: ${{ inputs.version }}
+  C: ${{ inputs.commit }}
+jobs:
+  check:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: The inputs are a version and a full commit id
+        run: |
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be X.Y.Z"; exit 1; }
+          [[ "$C" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be a full commit id"; exit 1; }
+      # Actions pinned to a commit, not a tag that can be moved. Bump by hand.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The commit is on top of main, names this version, and the tag is free
+        run: |
+          git fetch -q origin main
+          git merge-base --is-ancestor origin/main "$C" || { echo "::error::$C is not on top of main"; exit 1; }
+          [ "$(node -p 'require("./package.json").version')" = "$V" ] || { echo "::error::package.json does not say $V"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/v$V" >/dev/null; then echo "::error::v$V exists"; exit 1; fi
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: brew install tmux
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm run lint
+      - run: npm test
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The wait timer and the keys are here: nothing below runs before the wait is over.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Main has not moved past the commit during the wait
+        run: |
+          git fetch -q origin main
+          git merge-base --is-ancestor origin/main "$C" || { echo "::error::main moved; start again"; exit 1; }
+      - name: Sign the tag and check it against the commit's own allowed_signers
+        env:
+          SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          umask 077
+          k="$RUNNER_TEMP/sign"
+          printf '%s\n' "$SIGNING_KEY" > "$k"
+          git -c gpg.format=ssh -c user.signingkey="$k" -c user.name="Angelia release workflow" -c user.email=release-ci@useangelia.com \
+            tag -s "v$V" -m "Angelia $V" "$C"
+          rm -f "$k"
+          git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag "v$V"
+      - name: Push main and the tag together
+        env:
+          DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+        run: |
+          umask 077
+          k="$RUNNER_TEMP/push"
+          printf '%s\n' "$DEPLOY_KEY" > "$k"
+          # GitHub's published ed25519 host key (api.github.com/meta), so the push goes nowhere else.
+          printf 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n' > "$RUNNER_TEMP/known_hosts"
+          GIT_SSH_COMMAND="ssh -i $k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts" \
+            git push --atomic "git@github.com:${GITHUB_REPOSITORY}.git" "$C:refs/heads/main" "refs/tags/v$V"
+          rm -f "$k"
+      - name: The GitHub release, with the tag's own install.sh and the commit message as notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git show "v$V:install.sh" > "$RUNNER_TEMP/install.sh"
+          git log -1 --format=%b "$C" | grep -v '^Co-Authored-By:' > "$RUNNER_TEMP/notes.md"
+          gh release create "v$V" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Angelia $V" \
+            --notes-file "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/install.sh"
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/release/$V" || true
