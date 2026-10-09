@@ -120,6 +120,9 @@ export function resolveMedia(req: MediaRequest, platform: Platform, where: Media
   let st;
   try { st = statSync(path); } catch { throw new MediaError(`no such file: ${short(raw)}`); }
   if (!st.isFile()) throw new MediaError(`not a file: ${short(raw)}`);
+  // A second name (a hard link) can give a credential file a plain name in a plain folder: the checks
+  // above see the folder it was linked into, not the one it lives in.
+  if (st.nlink > 1) throw new MediaError(`refusing a file with more than one name: ${short(raw)}`);
   if (st.size === 0) throw new MediaError(`empty file: ${short(raw)}`);
   const cap = MAX_MEDIA_BYTES[platform];
   if (st.size > cap) throw new MediaError(`too big for ${platform}: ${Math.round(st.size / 1e6)} MB, limit ${Math.round(cap / 1e6)} MB`);
@@ -174,17 +177,26 @@ export function snapshotMedia(m: Media): { media: Media; cleanup(): void } {
  *  by a symlink in the folder's own path (/tmp is /private/tmp on macOS). */
 const real = (p: string): string => { try { return realpathSync.native(p); } catch { return resolve(p); } };
 
-/** By file identity (`under`), so a hard link to the env file counts as the env file, and by folded
- *  text, so another case or normalisation of a name does not get past. */
-function denied(path: string, home: string, stateDir?: string): boolean {
+/** A credential location (the state folder's private files, the CLIs' own folders, keys, env files).
+ *  By file identity (`under`), so a hard link to the env file counts as the env file, and by folded
+ *  text, so another case or normalisation of a name does not get past. Also used by the profile views
+ *  (instance/profile-files.ts). */
+export function denied(path: string, home: string, stateDir?: string): boolean {
+  return deniedChecker(home, stateDir)(path);
+}
+
+/** `denied` with its places worked out once, for a caller that checks many paths (a folder listing). */
+export function deniedChecker(home: string, stateDir?: string): (path: string) => boolean {
   // The state folder at its default place and wherever ANGELIA_STATE_DIR moved it.
   const states = [...new Set([join(home, '.angelia'), ...(stateDir ? [stateDir] : []), ...(process.env.ANGELIA_STATE_DIR ? [process.env.ANGELIA_STATE_DIR] : [])].map(real))];
   const privateState = states.flatMap((s) => [...STATE_PRIVATE.files, ...STATE_PRIVATE.dirs, ...STATE_LOGS].map((f) => join(s, f)));
   const all = [...DENY_DIRS, ...DENY_HOME_DIRS.map((d) => real(join(home, d))), ...privateState];
-  if (all.some((d) => under(path, d))) return true;
-  const parts = path.split(sep);
-  if (parts.slice(0, -1).some((p) => DENY_SEGMENTS.includes(fold(p).toLowerCase()))) return true;
-  return DENY_NAMES.test(fold(parts[parts.length - 1]));
+  return (path) => {
+    if (all.some((d) => under(path, d))) return true;
+    const parts = path.split(sep);
+    if (parts.slice(0, -1).some((p) => DENY_SEGMENTS.includes(fold(p).toLowerCase()))) return true;
+    return DENY_NAMES.test(fold(parts[parts.length - 1]));
+  };
 }
 
 function short(p: string): string {

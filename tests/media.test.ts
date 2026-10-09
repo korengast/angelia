@@ -157,3 +157,12 @@ test('media tags: a long run of "MEDIA:/" is parsed in linear time, not stalling
   // Was about 2.8 s; well under a second now. A loose bound, for a slow CI runner.
   assert.ok(Date.now() - t0 < 1500, `${Date.now() - t0} ms`);
 });
+
+test('media: a hard link to a credential file under a plain name is refused (review 2026-10-09)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'media-hl-'));
+  mkdirSync(join(home, '.angelia', 'wa'), { recursive: true });
+  writeFileSync(join(home, '.angelia', 'wa', 'creds.json'), '{"noiseKey":"never"}');
+  mkdirSync(join(home, 'work'));
+  linkSync(join(home, '.angelia', 'wa', 'creds.json'), join(home, 'work', 'notes.txt'));
+  assert.throws(() => resolveMedia({ path: join(home, 'work', 'notes.txt') }, 'telegram', { home }), /more than one name/);
+});

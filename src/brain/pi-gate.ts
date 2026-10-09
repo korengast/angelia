@@ -292,6 +292,14 @@ function compile(policy: PiPolicy, home: string): Compiled {
   return c;
 }
 
+/** Run `fn` with the file id, chain and fold caches on, as one decision does: for a caller that checks
+ *  many paths against the same rules at once (a folder listing). Nested calls share the outer scope. */
+export function withIdCache<T>(fn: () => T): T {
+  if (ids) return fn();
+  ids = new Map(); chains = new Map(); folds = new Map(); decision++;
+  try { return fn(); } finally { ids = chains = folds = null; }
+}
+
 /** What the gate does with one tool call. Pure but for the file system lookups, so the tests can walk every mode. */
 export function decide(policy: PiPolicy, tool: string, input: Record<string, unknown>, home = homedir()): Verdict {
   ids = new Map(); chains = new Map(); folds = new Map(); decision++;

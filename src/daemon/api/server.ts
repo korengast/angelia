@@ -1,4 +1,5 @@
 import { AskError } from '../../brain/ask.js';
+import { FileError } from '../../instance/profile-files.js';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -49,15 +50,25 @@ export interface ApiDeps {
   permissions?(): unknown[];
   /** A profile's jobs and their last runs; undefined for a profile that does not exist. */
   jobs?(profile: string): unknown;
+  /** A profile's instruction file, a folder's entries, one file (instance/profile-files.ts); undefined
+   *  for a profile that does not exist; a FileError for what the rules refuse. */
+  instructions?(profile: string): unknown;
+  files?(profile: string, path: string): unknown;
+  file?(profile: string, path: string): unknown;
+  /** Memory, skills (and one skill's text), capabilities (instance/profile-views.ts), same contract. */
+  memory?(profile: string): unknown;
+  skills?(profile: string): unknown;
+  skill?(profile: string, name: string): unknown;
+  capabilities?(profile: string): unknown;
 }
 
 /** Owner-only reads, by path. `/events` is a stream and handled on its own. */
-const READS = new Set(['/status', '/profiles', '/sessions', '/history', '/events', '/permissions', '/jobs']);
+const READS = new Set(['/status', '/profiles', '/sessions', '/history', '/events', '/permissions', '/jobs', '/instructions', '/files', '/file', '/memory', '/skills', '/skill', '/capabilities']);
 /** The version of the owner's read API (the routes a desktop app uses). A client refuses another. */
 export const DESK_API_VERSION = 1;
 /** What this daemon adds to version 1, so a client can offer it or say to update. An old daemon
  *  ignores a field it does not know (files sent to it would be dropped without a word). */
-export const DESK_FEATURES = ['command', 'files'] as const;
+export const DESK_FEATURES = ['command', 'files', 'views'] as const;
 /** Files one app turn may carry. */
 export const TURN_FILES_MAX = 10;
 /** Keep-alive comment on an idle event stream, so a client can tell a quiet daemon from a dead one. */
@@ -85,7 +96,7 @@ export class ApiServer {
   }
 
   listen(socket: string): Promise<void> {
-    this.server = createServer((req, res) => void this.handle(req, res).catch((e) => json(res, { error: (e as Error).message }, 500)));
+    this.server = createServer((req, res) => void this.handle(req, res).catch((e) => json(res, { error: publicMessage(e) }, 500)));
     return new Promise((resolve, reject) => {
       this.server!.once('error', reject);
       this.server!.listen(socket, () => { chmodSync(socket, 0o600); resolve(); });
@@ -235,6 +246,27 @@ export class ApiServer {
         const page = d.jobs(url.searchParams.get('profile') ?? '');
         return page === undefined ? json(res, { error: 'no such profile' }, 404) : json(res, page);
       }
+      case '/instructions':
+      case '/files':
+      case '/file':
+      case '/memory':
+      case '/skills':
+      case '/skill':
+      case '/capabilities': {
+        const views: Record<string, ((profile: string, arg: string) => unknown) | undefined> = {
+          '/instructions': d.instructions, '/files': d.files, '/file': d.file, '/memory': d.memory, '/skills': d.skills, '/skill': d.skill, '/capabilities': d.capabilities,
+        };
+        const fn = views[url.pathname];
+        if (!fn) return json(res, { error: 'not found' }, 404);
+        const arg = url.pathname === '/skill' ? url.searchParams.get('name') ?? '' : url.searchParams.get('path') ?? '';
+        let page: unknown;
+        try { page = fn(url.searchParams.get('profile') ?? '', arg); }
+        catch (e) {
+          if (e instanceof FileError) return json(res, { error: e.message }, e.status);
+          throw e;
+        }
+        return page === undefined ? json(res, { error: 'no such profile' }, 404) : json(res, page);
+      }
       case '/sessions':
         if (!d.sessions) return json(res, { error: 'not found' }, 404);
         if (!d.routed(key)) return json(res, { error: 'not a routed chat' }, 404);
@@ -270,6 +302,14 @@ export class ApiServer {
 }
 
 export { API_SOCKET } from '../../instance/instance.js';
+
+/** What a failed request says to its client. A system error (EACCES, ENOENT…) carries a path, and with
+ *  it the user's name: a client, possibly a phone, gets a fixed line instead. */
+export function publicMessage(e: unknown): string {
+  const code = (e as NodeJS.ErrnoException | undefined)?.code;
+  if (typeof code === 'string' && /^E[A-Z]+$/.test(code)) return `a file could not be read (${code})`;
+  return (e as Error | undefined)?.message ?? 'internal error';
+}
 
 /** The token of one chat's agent: stable across restarts, so a tmux pane that outlives the daemon
  *  keeps a working one, and worthless for any other chat. */

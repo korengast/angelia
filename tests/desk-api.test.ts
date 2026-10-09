@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { API_SOCKET, ApiServer, claimSocket, loadOrMintToken, sessionToken } from '../src/daemon/api/server.js';
+import { API_SOCKET, ApiServer, claimSocket, loadOrMintToken, publicMessage, sessionToken } from '../src/daemon/api/server.js';
 import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
 import { apiDeps } from '../src/daemon/api/deps.js';
@@ -349,6 +349,79 @@ test('desk api: a Codex chat\'s history is read by Codex, page by page', async (
   assert.equal((await get(socket, `/history?key=telegram:5&before=${other}`, token)).status, 400, 'a cursor for another thread');
 });
 
+test('desk api: a profile\'s instructions and files, under one set of rules, for the owner only', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-desk-views-'));
+  const folder = mkdtempSync(join(tmpdir(), 'angelia-desk-prof-'));
+  const outside = mkdtempSync(join(tmpdir(), 'angelia-desk-out-'));
+  writeFileSync(join(folder, 'CLAUDE.md'), '# Rules\n\nBe brief.');
+  mkdirSync(join(folder, 'memory'));
+  writeFileSync(join(folder, 'memory', 'index.md'), 'notes');
+  writeFileSync(join(folder, '.env'), 'TOKEN=never');
+  mkdirSync(join(folder, 'private'));
+  writeFileSync(join(folder, 'private', 'diary.md'), 'kept from the agent');
+  writeFileSync(join(outside, 'x.md'), 'not this profile\'s');
+  symlinkSync(join(outside, 'x.md'), join(folder, 'away.md'));
+  // The profile's own deny rule, as compile writes them (absolute form).
+  mkdirSync(join(folder, '.claude'));
+  writeFileSync(join(folder, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: [`Read(/${join(folder, 'private')}/**)`] } }));
+  const cfg = Config.parse({ profiles: { a: { cwd: folder } }, routes: [{ platform: 'telegram', chat: 7, profile: 'a' }] });
+  const o = new Orchestrator(cfg, { telegram: { send: async () => {} }, whatsapp: { send: async () => {} } }, { stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs') } });
+  const token = loadOrMintToken(join(dir, 'api.token'));
+  const api = new ApiServer(apiDeps(o, cfg, () => ({}), dir), token);
+  const socket = join(dir, API_SOCKET);
+  await claimSocket(socket);
+  await api.listen(socket);
+  t.after(async () => { await api.close(); await o.shutdown(); });
+
+  const ins = await get(socket, '/instructions?profile=a', token);
+  assert.deepEqual(ins.body, { found: true, file: 'CLAUDE.md', text: '# Rules\n\nBe brief.', cut: false });
+  const list = await get(socket, '/files?profile=a&path=', token);
+  assert.deepEqual(list.body.map((e: { name: string }) => e.name), ['.claude', 'memory', 'CLAUDE.md'], 'no .env, no denied folder, no link out');
+  assert.deepEqual((await get(socket, '/file?profile=a&path=memory/index.md', token)).body, { binary: false, size: 5, text: 'notes', cut: false });
+  for (const [path, status] of [['private/diary.md', 400], ['.env', 400], ['away.md', 400], ['../x', 400], ['nothing.md', 404]] as const) {
+    const r = await get(socket, `/file?profile=a&path=${encodeURIComponent(path)}`, token);
+    assert.equal(r.status, status, path);
+    assert.doesNotMatch(JSON.stringify(r.body), /kept from|never|not this/, `${path}: no content in the refusal`);
+  }
+  assert.equal((await get(socket, '/files?profile=nobody&path=', token)).status, 404);
+  assert.equal((await get(socket, '/instructions?profile=a', sessionToken(token, 'telegram:7'))).status, 403, 'not with an agent\'s token');
+
+  // Memory, skills and capabilities, through the same wiring.
+  mkdirSync(join(folder, '.claude', 'skills', 'notes'), { recursive: true });
+  writeFileSync(join(folder, '.claude', 'skills', 'notes', 'SKILL.md'), '---\nname: notes\ndescription: Keep notes\n---\nbody');
+  writeFileSync(join(folder, 'CLAUDE.md'), '# Rules\n\n@memory/index.md\n@private/diary.md');
+  const mem = (await get(socket, '/memory?profile=a', token)).body;
+  assert.equal(mem.folder, 'memory');
+  assert.deepEqual(mem.imports.map((i: { ref: string; text?: string; why?: string }) => [i.ref, i.text ?? i.why]), [['memory/index.md', 'notes'], ['private/diary.md', 'that file is not shown here']]);
+  const skills = (await get(socket, '/skills?profile=a', token)).body.skills.filter((x: { source: string }) => x.source === 'profile');
+  assert.deepEqual(skills.map((x: { name: string; description: string }) => [x.name, x.description]), [['notes', 'Keep notes']]);
+  assert.match((await get(socket, '/skill?profile=a&name=notes', token)).body.text, /body/);
+  assert.equal((await get(socket, '/skill?profile=a&name=../../etc', token)).status, 404);
+  assert.deepEqual((await get(socket, '/capabilities?profile=a', token)).body, { allowed: [], denied: [], compiledAt: null });
+});
+
+test('desk api: a folder of 20,000 files lists quickly through the daemon\'s own checks; a system error shows no path', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-desk-many-'));
+  const folder = mkdtempSync(join(tmpdir(), 'angelia-desk-manyp-'));
+  mkdirSync(join(folder, 'many'));
+  for (let i = 0; i < 20_000; i++) writeFileSync(join(folder, 'many', `f${String(i).padStart(5, '0')}.md`), '');
+  const cfg = Config.parse({ profiles: { a: { cwd: folder } }, routes: [{ platform: 'telegram', chat: 8, profile: 'a' }] });
+  const o = new Orchestrator(cfg, { telegram: { send: async () => {} }, whatsapp: { send: async () => {} } }, { stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs') } });
+  const token = loadOrMintToken(join(dir, 'api.token'));
+  const api = new ApiServer(apiDeps(o, cfg, () => ({}), dir), token);
+  const socket = join(dir, API_SOCKET);
+  await claimSocket(socket);
+  await api.listen(socket);
+  t.after(async () => { await api.close(); await o.shutdown(); });
+  const start = Date.now();
+  const r = await get(socket, '/files?profile=a&path=many', token);
+  assert.equal(r.body.length, 1000);
+  assert.ok(Date.now() - start < 5000, `took ${Date.now() - start} ms`);
+  const err = Object.assign(new Error(`EACCES: permission denied, open '${folder}/x'`), { code: 'EACCES' });
+  assert.equal(publicMessage(err), 'a file could not be read (EACCES)');
+  assert.equal(publicMessage(new Error('plain')), 'plain');
+});
+
 test('desk api: an app turn\'s unanswered permission times out as an event, with no line in the chat', async (t) => {
   const { o, token, socket, sent } = await setup(t, undefined, 0.005);
   const s = await listen(socket, token, 'telegram:1');
@@ -412,7 +485,7 @@ test('desk api: a client that connects late still sees the running turn and the 
   const { o, token, socket } = await setup(t);
   const health = await get(socket, '/healthz');
   assert.equal(health.body.api, 1, 'the desk API version is announced');
-  assert.deepEqual(health.body.features, ['command', 'files'], 'and what it adds to it');
+  assert.deepEqual(health.body.features, ['command', 'files', 'views'], 'and what it adds to it');
   const s = await listen(socket, token, 'telegram:1');
   const turn = o.handle({ platform: 'telegram', chat: '1', sender: '1', text: 'PERM run it', isGroup: false, mentioned: true, media: [] });
   await s.until((e) => e.some((x) => x.type === 'permission'));
