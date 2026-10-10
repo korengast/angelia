@@ -2,7 +2,7 @@
 
 > Angelia is a small local daemon that routes WhatsApp and Telegram chats to the coding agent CLI on the user's own Mac (supported: Claude Code, Codex, Grok Build and pi; OpenCode next). One chat, one profile folder, one session. It runs no model of its own. MIT license. This file describes version {{VERSION}}.
 
-Install with `curl -fsSL {{SITE}}/install | sh`, then run `angelia init`. One file, `~/.angelia/workspace/routing.yaml`, maps chats to profiles. Scripts and programs on the same machine talk to a running daemon through a local HTTP API on a Unix socket, `~/.angelia/api.sock` (or `$ANGELIA_STATE_DIR/api.sock`), with the owner's token from `~/.angelia/api.token`. It never opens a network port. An agent that runs inside Angelia uses the `angelia` command; `angelia guide` is its manual, and `angelia guide api` covers the API.
+Install with `curl -fsSL {{SITE}}/install | sh` (it checks the release signature and starts `angelia init`), or with npm: `npm install -g --ignore-scripts angelia-gateway`, then `angelia init`. One file, `~/.angelia/workspace/routing.yaml`, maps chats to profiles. Scripts and programs on the same machine talk to a running daemon through a local HTTP API on a Unix socket, `~/.angelia/api.sock` (or `$ANGELIA_STATE_DIR/api.sock`), with the owner's token from `~/.angelia/api.token`. It never opens a network port. An agent that runs inside Angelia uses the `angelia` command; `angelia guide` is its manual, and `angelia guide api` covers the API.
 
 ## Docs
 

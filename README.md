@@ -51,6 +51,15 @@ https://github.com/user-attachments/assets/2532dfea-d4f9-4d07-830d-d1fa084e0690
 
 The installer checks Node, fetches the newest release, **verifies its signature** (release keys `SHA256:74hZgwt/ABiUQz6C9A1r7hpHZtCRq1KfC1KvvCR1ys0` and, for releases the release workflow signs, `SHA256:+9Y9DX+JEDqt5Kxkfr83lQ/cKdo1E2pPgQT10ssc5Lw`), installs it and starts the setup wizard. The wizard asks for a bot token and which CLI to use, makes your first profile, and pairs the chat when you send the bot a message.
 
+Or with npm, the same package the installer builds:
+
+```bash
+npm install -g --ignore-scripts angelia-gateway
+angelia init
+```
+
+npm does not check the release signature the way the installer does; from 0.3.21 on, each release on npm is published by the release workflow with npm provenance (`npm audit signatures` checks it).
+
 You need:
 
 - **Node 22 or newer** and **git** (it comes with the Xcode command line tools).
