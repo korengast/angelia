@@ -216,3 +216,14 @@ test('onboarding builds only on the accepted table, and records the table it wro
   const made = onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'n@g.us', chatName: 'Late', instance });
   assert.ok(readAccepted(instance)!.profiles[made.name], 'the new profile is part of the accepted table');
 });
+
+test('a Hebrew group name onboards on an accepted table, with no confirm (master, 2026-10-10)', async () => {
+  const { writeAccepted, readAccepted } = await import('../src/instance/accepted.js');
+  const t = table();
+  const instance = join(t.dir, 'instance');
+  const cfg = loadConfig(t.path);
+  writeAccepted(cfg, instance);
+  const made = onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'hebrew@g.us', chatName: 'עוזרת בריאות שיר', instance });
+  assert.equal(made.name, 'עוזרת-בריאות-שיר');
+  assert.ok(readAccepted(instance)!.profiles[made.name], 'recorded as accepted: the next /restart asks nothing');
+});

@@ -59,8 +59,14 @@ const isDefault = (parent: string, k: string, v: unknown) => {
   return !!d && k !== 'cwd' && k !== 'profile' && JSON.stringify(d[k]) === JSON.stringify(v);
 };
 // A name from the table goes in as it is only when it cannot pass for list text (a line break would
-// add a made-up line to what the owner reads).
-const key = (k: string) => (/^[\w@:#()+ .-]+$/.test(k) ? k : JSON.stringify(k));
+// add a made-up line to what the owner reads). Letters and digits of any script count (a profile made
+// from a Hebrew group name); control and format characters (bidi marks) do not.
+const key = (k: string) => (/^[\p{L}\p{M}\p{N}_@:#()+ .-]+$/u.test(k) ? k : JSON.stringify(k));
+
+/** A place in the table as tableChanges names it (`profiles.home.shell`), each part written the way the
+ *  list writes it. Callers of `beyond` build their own paths with this, never by hand: a name the list
+ *  quotes would otherwise not match, and their own change would count as someone else's. */
+export const tablePath = (...parts: string[]): string => parts.map(key).join('.');
 
 /** Every difference between two tables, one plain line each, as `profiles.home.shell: false → true`. */
 export function tableChanges(was: Config, now: Config): string[] {

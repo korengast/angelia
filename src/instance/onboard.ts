@@ -12,7 +12,7 @@ import { backupConfig, instructionFile } from './init.js';
 import { builtinVoiceTools } from '../voice/setup.js';
 import { planProfile } from '../capabilities/compile.js';
 import type { Platform } from '../core/types.js';
-import { beyond, pendingRefusal, writeAccepted } from './accepted.js';
+import { beyond, tablePath, pendingRefusal, writeAccepted } from './accepted.js';
 
 /**
  * A new profile for a chat nobody routed yet (`defaults.unmatched: onboard`).
@@ -112,7 +112,7 @@ export function onboardChat(o: OnboardOpts): Onboarded {
   try { fresh = loadConfig(o.table); } catch (e) { copyFileSync(backup, o.table); throw e; }
 
   // Only the new profile and route may differ from the accepted table: anything else came in between.
-  const extra = beyond(instance, fresh, [`profiles.${name}`, `routes.${o.platform}:${o.chat}`]);
+  const extra = beyond(instance, fresh, [tablePath('profiles', name), tablePath('routes', `${o.platform}:${o.chat}`)]);
   if (extra.length) { copyFileSync(backup, o.table); throw new Error(`not onboarding: the routing table changed while it was written (${extra.join('; ')})`); }
   const p = fresh.profiles[name];
   try {

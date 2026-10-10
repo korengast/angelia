@@ -6,7 +6,7 @@ import { backupConfig } from './init.js';
 import { planProfile } from '../capabilities/compile.js';
 import type { BackendName } from '../brain/brain.js';
 import { INSTANCE_DIR } from './instance.js';
-import { beyond, pendingRefusal, writeAccepted } from './accepted.js';
+import { beyond, tablePath, pendingRefusal, writeAccepted } from './accepted.js';
 
 /** Fields that belong to one CLI and mean nothing, or something wrong, to another. */
 const CLI_FIELDS = ['model', 'effort', 'bin'] as const;
@@ -50,7 +50,7 @@ export function switchBackend(o: SwitchOpts): Switched {
   writeFileSync(o.table, doc.toString({ lineWidth: 0, flowCollectionPadding: false }));
   let fresh: Config;
   try { fresh = loadConfig(o.table); } catch (e) { copyFileSync(backup, o.table); throw e; }
-  const extra = beyond(state, fresh, ['backend', 'tui', ...CLI_FIELDS].map((f) => `profiles.${o.profile}.${f}`));
+  const extra = beyond(state, fresh, ['backend', 'tui', ...CLI_FIELDS].map((f) => tablePath('profiles', o.profile, f)));
   if (extra.length) { copyFileSync(backup, o.table); throw new Error(`not switching: the routing table changed while it was written (${extra.join('; ')})`); }
   let notes: string[];
   try {
