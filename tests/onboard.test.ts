@@ -146,10 +146,10 @@ test('the onboard block is checked when the table loads', () => {
   assert.equal(loadConfig(write('defaults: {unmatched: onboard}\nonboard: {owners: ["1"]}\n')).defaults.unmatched, 'onboard');
 });
 
-function orch(owners = ['u1'], skip: string[] = []) {
+function orch(owners = ['u1'], skip: string[] = [], mention?: 'required' | 'any') {
   const cfg = Config.parse({
     profiles: { a: { cwd: here } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }],
-    defaults: { unmatched: 'onboard', max_out_per_min: 1000 }, onboard: { owners, skip },
+    defaults: { unmatched: 'onboard', max_out_per_min: 1000 }, onboard: { owners, skip, mention },
   });
   const sent: { chat: string; text: string }[] = [];
   const made: string[] = [];
@@ -190,6 +190,14 @@ test('in a group, an owner starts a profile only by addressing the bot; a DM nee
   assert.equal(sent.length, 0);
   await o.handle({ ...msg('u1', 'hello there'), chat: 'u1', isGroup: false, mentioned: false });
   assert.deepEqual(made, ['u1/Trip']);
+});
+
+test('with onboard.mention: any, an owner starts a group profile without a mention; a stranger still cannot', async (t) => {
+  const { o, made } = orch(['u1'], [], 'any'); t.after(() => o.shutdown());
+  await o.handle({ ...msg('stranger', 'hi all'), mentioned: false });
+  assert.deepEqual(made, []);
+  await o.handle({ ...msg('u1', 'lunch anyone?'), mentioned: false });
+  assert.deepEqual(made, ['new@g.us/Trip']);
 });
 
 test('a chat on the skip list is never onboarded, even for an owner', async (t) => {

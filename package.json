@@ -1,6 +1,6 @@
 {
   "name": "angelia-gateway",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "description": "Turn the coding agent CLI you already know into the brain of your personal assistants, on WhatsApp and Telegram. One chat, one folder, one session.",
   "type": "module",
   "license": "MIT",
@@ -9,7 +9,6 @@
     "type": "git",
     "url": "git+https://github.com/korengast/angelia.git"
   },
-  "private": true,
   "engines": {
     "node": ">=22"
   },

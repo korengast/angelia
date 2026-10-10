@@ -194,10 +194,11 @@ export class Orchestrator {
       if (g.reason === 'unmatched' && this.cfg.defaults.unmatched === 'onboard' && this.opts.onboard && !parseCommand(i.text)
         && !this.cfg.onboard?.skip.includes(`${i.platform}:${i.chat}`)) {
         // Only an owner makes a new profile. Anyone can add the bot's number to a group. And in a
-        // group the message must address the bot, as every routed group requires by default: an
-        // owner chatting in a group the bot happens to be in must not wake up to a new profile.
+        // group the message must address the bot, as the new route will (onboard.mention, required by
+        // default): an owner chatting in a group the bot happens to be in must not wake up to a new
+        // profile. With mention: any the owner wants the bot to answer every message there anyway.
         if (!this.cfg.onboard?.owners.includes(i.sender)) { this.dropped(key, `reason=unmatched-not-owner sender=${i.sender}`); return; }
-        if (i.isGroup && !i.mentioned) { this.dropped(key, 'reason=unmatched-not-mentioned'); return; }
+        if (i.isGroup && !i.mentioned && this.cfg.onboard?.mention !== 'any') { this.dropped(key, 'reason=unmatched-not-mentioned'); return; }
         return this.queue.enqueue(key, () => this.onboard(i, key));
       }
       // The sender is named when it is the reason, so an allow list missing someone can be fixed.

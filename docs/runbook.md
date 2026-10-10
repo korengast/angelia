@@ -151,7 +151,14 @@ gh run cancel <run id>                                 # to stop it during the w
 
 The workflow checks the commit (on top of `main`, version in `package.json`, tag still free), runs
 the whole suite on macOS, waits, then signs the tag, pushes `main` and the tag together, and makes
-the GitHub release with the tag's `install.sh` and the commit message as notes. Know what it trades:
+the GitHub release with the tag's `install.sh` and the commit message as notes, then publishes the same
+tarball `install.sh` builds to npm as `angelia-gateway` (trusted publishing: no npm token is stored;
+the package's npm settings trust this repository's `release.yml` in the `release` environment). If
+that last step fails, the release is out without npm: publish that tag's tarball by hand
+(`npm ci --ignore-scripts && npm run build && npm pack --ignore-scripts`, then `npm publish <tgz>`). The
+tarball holds no native binaries (sharp and the other platform packages are installed on the user's
+machine), so it does not matter which OS builds it. The very first publish was by hand, since npm
+lets a package trust a workflow only once the package exists. Know what it trades:
 whoever can push to `main` and start workflows can release, so the signature says the release came
 from this repository's workflow, not that a person approved it. The wait is the time to stop it.
 

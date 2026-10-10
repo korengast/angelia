@@ -125,10 +125,12 @@ change you did not make.`,
 defaults: { unmatched: onboard }
 onboard:
   owners: ["15551234567"]          who may start one; anyone else is dropped without a reply.
-                                   In a group the message must mention the bot or reply to it.
+                                   In a group the message must mention the bot or reply to it,
+                                   unless mention: any (below).
   allow_from: ["15551234567", ...] who may talk to it (default: the owners)
   folder: ~/agents                 where new folders go (default: workspace/profiles)
-  mention: any                     the new route's mention setting
+  mention: any                     the new route's mention setting; with any, an owner's first
+                                   group message needs no mention either
   skip: ["whatsapp:1203…@g.us"]    chats never onboarded: ones another gateway still serves, or
                                    archived ones. Fill it before turning onboard on, since every
                                    chat not in routes: counts as new. Take a key off when it moves.

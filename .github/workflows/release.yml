@@ -60,6 +60,9 @@ jobs:
     environment: release
     permissions:
       contents: write
+      # npm trusted publishing: npm checks this run's OIDC token (repo, release.yml, environment
+      # release) instead of a stored token, and adds provenance. Nothing else uses it.
+      id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -102,3 +105,22 @@ jobs:
           gh release create "v$V" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Angelia $V" \
             --notes-file "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/install.sh"
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/release/$V" || true
+      # The same tarball install.sh builds (npm ci, build, pack), from the tagged commit. Last on
+      # purpose: a failed publish leaves the release out and is redone by hand (docs/runbook.md).
+      # Only the public repo publishes (the private dev line has this file too): npm trusts the public
+      # repo that package.json names, and gives no provenance to a private one.
+      - if: ${{ !github.event.repository.private }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Publish to npm as angelia-gateway (trusted publishing, provenance)
+        if: ${{ !github.event.repository.private }}
+        run: |
+          npm i -g --silent npm@11.21.0
+          if npm view "angelia-gateway@$V" version >/dev/null 2>&1; then echo "angelia-gateway@$V is on npm already"; exit 0; fi
+          git checkout -q "v$V"
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          tgz=$(npm pack --ignore-scripts --silent --pack-destination "$RUNNER_TEMP")
+          npm publish "$RUNNER_TEMP/$tgz" --access public
