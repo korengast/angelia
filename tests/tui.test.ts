@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { importsAccepted, importsDialogOpen, paneBusy, paneIdle, pasteLanded, permissionDialog, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
+import { importsAccepted, importsDialogOpen, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
 import { hookSettings, transcriptEvents, transcriptPath } from '../src/brain/tui.js';
 
 const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`./fixtures/pane-${name}.txt`, import.meta.url)), 'utf8');
@@ -201,4 +201,23 @@ test('a second permission dialog right after a chat answer is announced; the one
   assert.deepEqual(see(b, 2800), {});
   assert.ok(see(b, 2800 + 3000).announce, 'the same question still up well after the answer: asked again');
   assert.deepEqual(Object.keys(see(null, 9000)), ['gone']);
+});
+
+test('a pasted message is pressed again when a fresh Claude Code drops the Enter; never into a dialog (master, 2026-10-10)', async () => {
+  const rule = '─'.repeat(40);
+  const box = (line: string) => `⏺ Ready.\n\n${rule}\n❯ ${line}\n${rule}\n  Opus 5·high\n  ⏵⏵ bypass permissions on\n`;
+  const pasted = box('[Pasted text #1 +3 lines]');
+  const empty = box('');
+  const busy = fixture('busy');
+  const dialog = fixture('permission');
+  const run = async (frames: string[]) => {
+    let enters = 0, i = 0;
+    const ok = await submitPasted('first line\nsecond\nthird\nfourth', async () => frames[Math.min(i++, frames.length - 1)], async () => { enters++; }, { polls: 2, sleep: async () => {} });
+    return { ok, enters };
+  };
+  assert.deepEqual(await run([pasted, pasted, empty]), { ok: true, enters: 2 }, 'the first Enter was lost: pressed once more, then taken');
+  assert.deepEqual(await run([busy]), { ok: true, enters: 1 }, 'taken at once');
+  assert.deepEqual(await run([pasted, dialog]), { ok: true, enters: 1 }, 'a dialog opened: never pressed again');
+  assert.deepEqual(await run([pasted]), { ok: false, enters: 3 }, 'never taken: three presses, then no');
+  assert.deepEqual(await run(['']), { ok: false, enters: 1 }, 'the pane is gone');
 });

@@ -125,6 +125,6 @@ test('a tmux pane that died before its first prompt gets the same one fresh-id r
   // failed until /new (seen in two chats, 2026-09-29 and 2026-09-30).
   assert.equal(freshRetry('the agent exited while starting (claude in /x; run it there by hand to see why)'), true);
   assert.equal(freshRetry('exit: Invalid API key'), true);
-  assert.equal(freshRetry('the session never came back to a prompt'), false);
+  assert.equal(freshRetry('the message could not be typed into the session (no prompt, or Claude Code did not take it)'), false);
   assert.equal(freshRetry(undefined), false);
 });

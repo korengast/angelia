@@ -9,7 +9,7 @@ import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent } from '../core/types.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession } from './brain.js';
-import { importsAccepted, importsDialogOpen, loadBuffer, paneBusy, paneIdle, pasteLanded, permissionDialog, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { importsAccepted, importsDialogOpen, loadBuffer, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { paneVerdict, PermissionRelay, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { readRecord } from '../capabilities/compile.js';
@@ -375,8 +375,9 @@ export class TuiBrain extends EventEmitter implements Brain {
         // after it, and its answer would look like ours. Clear the box and say no.
         if (gen !== this.gen || paneBusy(pane)) break;
         submit();
-        await this.tm(['send-keys', '-t', this.name, 'Enter']);
-        return true;
+        if (await submitPasted(text, () => this.capture(20), () => this.tm(['send-keys', '-t', this.name, 'Enter']))) return true;
+        this.emit('log', `tmux: the pasted message was not taken after three Enters pane=${this.name}`);
+        break;
       }
     }
     await this.tm(['send-keys', '-t', this.name, 'C-u']); // clear whatever landed, submit nothing
@@ -400,7 +401,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       sentAt = Date.now();
     };
     if (!(await this.paste(text, submit, gen))) {
-      yield { kind: 'result', text: '', isError: true, reason: this.up ? 'the session never came back to a prompt' : 'exit' };
+      yield { kind: 'result', text: '', isError: true, reason: this.up ? 'the message could not be typed into the session (no prompt, or Claude Code did not take it)' : 'exit' };
       return;
     }
     this.turnSentAt = sentAt;

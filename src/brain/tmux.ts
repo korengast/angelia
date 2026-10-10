@@ -153,6 +153,34 @@ export function pasteLanded(pane: string, text: string): boolean {
   return head.length > 0 && box.split(/\s+/).join(' ').includes(head);
 }
 
+/**
+ * Press Enter on a pasted message and make sure Claude took it. A Claude Code that is still starting can
+ * drop that Enter and leave the text in the box with nothing running (seen on a fresh pane, 2.1.296,
+ * master 2026-10-10). Taken means the box no longer holds the text, a turn runs, or a dialog opened.
+ * Enter is pressed again only while the text still sits in an idle box with no dialog on screen: an
+ * Enter that reached a dialog would answer it. False after `tries` presses: the caller clears the box
+ * and says so, rather than wait on a turn that never started.
+ */
+export async function submitPasted(
+  text: string,
+  capture: () => Promise<string>,
+  enter: () => Promise<unknown>,
+  o: { tries?: number; polls?: number; pollMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<boolean> {
+  const { tries = 3, polls = 6, pollMs = 250 } = o;
+  const nap = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let t = 0; t < tries; t++) {
+    await enter();
+    for (let p = 0; p < polls; p++) {
+      await nap(pollMs);
+      const pane = await capture();
+      if (!pane) return false; // the pane is gone
+      if (paneBusy(pane) || permissionDialog(pane) || !pasteLanded(pane, text)) return true;
+    }
+  }
+  return false;
+}
+
 /** A rule may carry the session's name near its right end once the session is named
  *  (`───── trip-planning ─`, measured 2026-09-21); without it a named session's box is never
  *  found and every paste is judged not landed. */
