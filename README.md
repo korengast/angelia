@@ -194,6 +194,7 @@ Each chat keeps one warm process, so a message never waits for a CLI to start. P
 | [Setting things up by hand](docs/reference.md#setting-things-up-by-hand) | Profiles, Telegram, the table, WhatsApp, Chrome, `/sh`, the service, updates |
 | [The instance](docs/reference.md#the-instance) | `~/.angelia`: the workspace in git, and the state that never is |
 | [Files](docs/reference.md#files) | Every file Angelia keeps, and what is in it |
+| [Local API](docs/api.md) | Scripts and agents talk to the daemon: tokens, routes, events, the OpenAPI document, tested example clients |
 | [Security model](docs/security.md) | Who can reach and command the agent, secrets, the sandbox, logs, what leaves your machine |
 | [Runbook](docs/runbook.md) | Day-to-day commands, known failures and their fixes, cutting a release, uninstalling |
 | [Decisions](docs/decisions/) | Why it is built this way, with the CLI versions each finding was measured on |

@@ -32,7 +32,7 @@ const SKIP = new Set(['package-lock.json', 'tests/hygiene.test.ts']);
 /** The author's identity belongs in exactly these places. package.json carries the repository URL,
  *  which is where `angelia update` fetches from; npm's own field for it, nothing else there names anyone.
  *  The landing page's build and the reference's by-hand install name the repository, as the README does. */
-const MAY_NAME_THE_AUTHOR = new Set(['install.sh', 'allowed_signers', 'LICENSE', 'README.md', 'package.json', 'site/build.mjs', 'docs/reference.md']);
+const MAY_NAME_THE_AUTHOR = new Set(['install.sh', 'allowed_signers', 'LICENSE', 'README.md', 'package.json', 'site/build.mjs', 'docs/reference.md', 'docs/api.md', 'src/instance/guide.ts']);
 /** Accounts that are not a person: CI runs as "runner", and the word is ordinary English. */
 const NOT_A_PERSON = new Set(['runner', 'admin', 'ubuntu', 'root', 'user']);
 

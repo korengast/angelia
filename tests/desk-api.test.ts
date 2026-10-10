@@ -485,7 +485,7 @@ test('desk api: a client that connects late still sees the running turn and the 
   const { o, token, socket } = await setup(t);
   const health = await get(socket, '/healthz');
   assert.equal(health.body.api, 1, 'the desk API version is announced');
-  assert.deepEqual(health.body.features, ['command', 'files', 'views'], 'and what it adds to it');
+  assert.deepEqual(health.body.features, ['command', 'files', 'views', 'openapi'], 'and what it adds to it');
   const s = await listen(socket, token, 'telegram:1');
   const turn = o.handle({ platform: 'telegram', chat: '1', sender: '1', text: 'PERM run it', isGroup: false, mentioned: true, media: [] });
   await s.until((e) => e.some((x) => x.type === 'permission'));

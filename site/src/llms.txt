@@ -1,0 +1,24 @@
+# Angelia
+
+> Angelia is a small local daemon that routes WhatsApp and Telegram chats to the coding agent CLI on the user's own Mac (Claude Code and Grok Build today; Codex, pi and OpenCode next). One chat, one profile folder, one session. It runs no model of its own. MIT license. This file describes version {{VERSION}}.
+
+Install with `curl -fsSL {{SITE}}/install | sh`, then run `angelia init`. One file, `~/.angelia/workspace/routing.yaml`, maps chats to profiles. Scripts and programs on the same machine talk to a running daemon through a local HTTP API on a Unix socket, `~/.angelia/api.sock` (or `$ANGELIA_STATE_DIR/api.sock`), with the owner's token from `~/.angelia/api.token`. It never opens a network port. An agent that runs inside Angelia uses the `angelia` command; `angelia guide` is its manual, and `angelia guide api` covers the API.
+
+## Docs
+
+- [README]({{RAW}}/README.md): what Angelia is, install, quick start, chat commands, security in one minute, backends, FAQ
+- [Reference]({{RAW}}/docs/reference.md): features in detail, capabilities per profile, setting things up by hand, the instance folder, every file Angelia keeps
+- [Security model]({{RAW}}/docs/security.md): who can reach and command the agent, tokens, secrets, the sandbox, what leaves the machine
+
+## Local API
+
+- [Build on Angelia]({{SITE}}/docs/api.md): tokens, a quick start, the stable routes, events, and the stability promise
+- [OpenAPI 3.1 document]({{SITE}}/openapi.json): every route, field, error and example answer. A running daemon serves its own copy at `GET /openapi.json` on the socket, with no token
+- [Example clients]({{TREE}}/examples/api): tested against a real daemon; Python with the standard library only, Node with no packages, and curl
+
+## Optional
+
+- [Claude Code on WhatsApp and Telegram, four ways compared]({{SITE}}/guides/claude-code-whatsapp-telegram/)
+- [Runbook]({{RAW}}/docs/runbook.md): day-to-day commands, known failures and fixes, uninstalling
+- [Decisions]({{TREE}}/docs/decisions): why it is built this way
+- [Everything above in one file]({{SITE}}/llms-full.txt)

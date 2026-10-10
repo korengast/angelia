@@ -250,6 +250,40 @@ angelia jobs remove <p> [job]
 The daemon has no scheduler; the operating system runs the timers. A timer runs the job as it
 was when installed: after editing the file, install again, or the timer refuses and says so.`,
   },
+  api: {
+    title: 'the local API, for scripts and agents',
+    body: `The daemon answers HTTP on a Unix socket, ~/.angelia/api.sock (mode 600), never a network port.
+angelia send, send-media, turn and ask use it. Inside a chat, use those commands: they find the
+socket and the token by themselves. Use the API itself from a script or a program.
+
+Tokens, in the Authorization: Bearer header:
+  owner      ~/.angelia/api.token: every chat, every route
+  an agent   ANGELIA_API_TOKEN (and ANGELIA_SESSION_KEY, its own chat): its own chat only, and no reads.
+             Toward another profile's chat it needs from: <its own chat>, and the profiles allow it
+             (send: neither isolated; ask: answer_from; turn: accept_from)
+
+The stable routes (version 1; they only grow):
+  GET  /healthz           up? api version, features. No token.
+  GET  /openapi.json      the full contract of this daemon. No token. Same as: angelia api spec
+  POST /send              {key, text}             a line into the chat; no agent runs
+  POST /send-media        {key, path, caption?}   a file into the chat
+  POST /turn              {key, text}             a task for the chat's agent; answers {turn: id}
+  POST /ask               {key, text}             a read-only copy answers; the answer is the response
+  GET  /events?key=       server-sent events: turn, progress, out, permission, permission-answered,
+                          turn-end (owner)
+  GET  /profiles /sessions?key= /history?key= /permissions /jobs?profile=   (owner)
+  POST /permission        {key, id, allow}        answer a permission request (owner)
+key is platform:chat, as angelia profiles --json lists it. Errors are {error} with a status; the
+text says what to change. Ignore fields and event types you do not know.
+
+curl --unix-socket ~/.angelia/api.sock -H "Authorization: Bearer $(cat ~/.angelia/api.token)" \\
+  -H 'content-type: application/json' -d '{"key":"telegram:123456","text":"Backup done."}' http://localhost/send
+
+To get a task's answer: open /events?key=<chat> first, then POST /turn, then print the out events
+until the turn-end that carries the turn's id. Clients that do this, with no packages, in Python,
+Node and curl: https://github.com/korengast/angelia/tree/main/examples/api
+The page for people: https://useangelia.com/docs/api.md`,
+  },
   commands: {
     title: 'the angelia command',
     // The same list `angelia --help` prints (cli/cli-args.ts), so the two never drift apart.

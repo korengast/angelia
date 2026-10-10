@@ -123,6 +123,27 @@ const html = page('index.html')
   .replace('<!--COMPARE-HERO-->', guides.some((g) => g.slug === COMPARE) ? ` <a href="/guides/${COMPARE}/">How it compares</a>.` : '');
 writeFileSync(join(out, 'index.html'), html);
 writeFileSync(join(out, '404.html'), page('404.html'));
+// For agents (llmstxt.org): /llms.txt lists the docs, /llms-full.txt holds them in one file, and the API
+// page and its OpenAPI document are served as they are. Links point at this release's tag, so an agent
+// reads the docs of the version the install line gives.
+const TAG = `https://github.com/${REPO}/blob/v${version}`;
+const llmsVars = (t) => t.replaceAll('{{SITE}}', SITE).replaceAll('{{VERSION}}', version)
+  .replaceAll('{{RAW}}', `https://raw.githubusercontent.com/${REPO}/v${version}`).replaceAll('{{TREE}}', `https://github.com/${REPO}/tree/v${version}`);
+writeFileSync(join(out, 'llms.txt'), llmsVars(readFileSync(join(here, 'src', 'llms.txt'), 'utf8')));
+/** A repository Markdown file with its relative links made absolute, so they work out of the repo. */
+const absolute = (file) => {
+  const dir = dirname(file);
+  const abs = (href) => /^(https?:|mailto:|#)/.test(href) ? href : `${TAG}/${join(dir, href.split('#')[0])}${href.includes('#') ? '#' + href.split('#')[1] : ''}`;
+  return readFileSync(join(here, '..', file), 'utf8')
+    .replace(/\]\(([^)\s]+)\)/g, (_, h) => `](${abs(h)})`)
+    .replace(/href="([^"]+)"/g, (_, h) => `href="${abs(h)}"`);
+};
+const FULL = ['README.md', 'docs/api.md', 'docs/reference.md', 'docs/security.md'];
+writeFileSync(join(out, 'llms-full.txt'), `# Angelia ${version}: the documentation in one file\n\n` +
+  FULL.map((f) => `<!-- ${TAG}/${f} -->\n\n${absolute(f)}`).join('\n\n---\n\n'));
+mkdirSync(join(out, 'docs', 'api'), { recursive: true });
+writeFileSync(join(out, 'docs', 'api.md'), readFileSync(join(here, '..', 'docs', 'api.md'), 'utf8'));
+for (const to of ['openapi.json', 'docs/api/openapi.json']) copyFileSync(join(here, '..', 'docs', 'api', 'openapi.json'), join(out, to));
 writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SITE}/sitemap.xml\n`);
 writeFileSync(join(out, 'sitemap.xml'),
   `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc></url>` +
@@ -171,6 +192,12 @@ writeFileSync(join(out, '_headers'), [
   '  Referrer-Policy: strict-origin-when-cross-origin',
   // Cloudflare Web Analytics (cookieless) injects its beacon script and posts to cloudflareinsights.com.
   "  Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; connect-src 'self' https://cloudflareinsights.com; img-src 'self' data:; frame-ancestors 'none'",
+  // Where an agent finds the docs for any page (llmstxt.org).
+  '  Link: </llms.txt>; rel="describedby"',
+  '/llms*.txt',
+  '  Content-Type: text/plain; charset=utf-8',
+  '/docs/*.md',
+  '  Content-Type: text/markdown; charset=utf-8',
   '/fonts/*',
   '  Cache-Control: public, max-age=2592000',
   '/angelia-demo*',

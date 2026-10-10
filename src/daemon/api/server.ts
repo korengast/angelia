@@ -9,6 +9,8 @@ import { HandoffError } from '../../core/handoff.js';
 import type { AttachFile, HandoffRequest, HandoffResult } from '../../core/orchestrator.js';
 import { APP_COMMANDS, type AppCommand } from '../../core/commands.js';
 import type { ChatListener } from '../../core/events.js';
+import { DESK_API_VERSION, DESK_FEATURES, routeFor, TURN_FILES_MAX } from './routes.js';
+import { openApiDocument } from './openapi.js';
 
 export interface ApiDeps {
   /** Post a line into a chat. `fromKey`: another profile's agent posted it, and the line says so. */
@@ -62,15 +64,7 @@ export interface ApiDeps {
   capabilities?(profile: string): unknown;
 }
 
-/** Owner-only reads, by path. `/events` is a stream and handled on its own. */
-const READS = new Set(['/status', '/profiles', '/sessions', '/history', '/events', '/permissions', '/jobs', '/instructions', '/files', '/file', '/memory', '/skills', '/skill', '/capabilities']);
-/** The version of the owner's read API (the routes a desktop app uses). A client refuses another. */
-export const DESK_API_VERSION = 1;
-/** What this daemon adds to version 1, so a client can offer it or say to update. An old daemon
- *  ignores a field it does not know (files sent to it would be dropped without a word). */
-export const DESK_FEATURES = ['command', 'files', 'views'] as const;
-/** Files one app turn may carry. */
-export const TURN_FILES_MAX = 10;
+export { DESK_API_VERSION, DESK_FEATURES, TURN_FILES_MAX };
 /** Keep-alive comment on an idle event stream, so a client can tell a quiet daemon from a dead one. */
 const PING_MS = 15_000;
 /** Bytes an event stream may hold for a client that is not reading before it is cut. */
@@ -96,7 +90,7 @@ export class ApiServer {
   }
 
   listen(socket: string): Promise<void> {
-    this.server = createServer((req, res) => void this.handle(req, res).catch((e) => json(res, { error: publicMessage(e) }, 500)));
+    this.server = createServer((req, res) => void this.handle(req, res).catch((e) => json(res, { error: publicMessage(e) }, e instanceof BodyError ? e.status : 500)));
     return new Promise((resolve, reject) => {
       this.server!.once('error', reject);
       this.server!.listen(socket, () => { chmodSync(socket, 0o600); resolve(); });
@@ -119,10 +113,13 @@ export class ApiServer {
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://x');
-    if (req.method === 'GET' && url.pathname === '/healthz') return json(res, { ok: true, api: DESK_API_VERSION, features: DESK_FEATURES });
-    if (req.method === 'GET' && READS.has(url.pathname)) return this.read(req, res, url);
-    const route = req.method === 'POST' ? url.pathname : '';
-    if (route !== '/send' && route !== '/turn' && route !== '/ask' && route !== '/send-media' && route !== '/handoff' && route !== '/permission' && route !== '/command') return json(res, { error: 'not found' }, 404);
+    // Only what the published route table lists (routes.ts), so the contract and the server agree.
+    if (!routeFor(req.method, url.pathname)) return json(res, { error: 'not found' }, 404);
+    if (url.pathname === '/healthz') return json(res, { ok: true, api: DESK_API_VERSION, features: DESK_FEATURES });
+    // The contract of this very daemon, for a client or an agent that reads it before calling.
+    if (url.pathname === '/openapi.json') return json(res, openApiDocument());
+    if (req.method === 'GET') return this.read(req, res, url);
+    const route = url.pathname;
     const body = await readJson(req);
     // The header when there is one (a client keeps the token out of bodies and logs); the body
     // field for the clients that predate it.
@@ -280,7 +277,7 @@ export class ApiServer {
         catch (e) {
           // A CLI that could not give the history (orchestrator HistoryError): said, not shown as empty.
           const status = typeof (e as { status?: unknown }).status === 'number' ? (e as { status: number }).status : 500;
-          return json(res, { error: (e as Error).message }, status);
+          return json(res, { error: publicMessage(e) }, status);
         }
         return page === undefined ? json(res, { error: 'this chat has no session with that id' }, 404) : json(res, page);
       }
@@ -298,6 +295,7 @@ export class ApiServer {
         return;
       }
     }
+    return json(res, { error: 'not found' }, 404);
   }
 }
 
@@ -379,11 +377,24 @@ export async function claimSocket(path: string): Promise<void> {
 
 function json(res: ServerResponse, o: unknown, status = 200): void { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); }
 
+/** A request body over this is refused (413). */
+export const BODY_MAX = 256 * 1024;
+
+/** A body the client got wrong: not JSON, not an object, too large. */
+class BodyError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+
 function readJson(req: IncomingMessage): Promise<Record<string, any>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []; let size = 0;
-    req.on('data', (c: Buffer) => { size += c.length; if (size > 256 * 1024) { reject(new Error('body too large')); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(new Error('bad json')); } });
+    req.on('data', (c: Buffer) => { size += c.length; if (size > BODY_MAX) { reject(new BodyError(`body too large (at most ${BODY_MAX / 1024} KB)`, 413)); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => {
+      let v: unknown;
+      try { v = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}; } catch { return reject(new BodyError('bad json', 400)); }
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return reject(new BodyError('the body must be a JSON object', 400));
+      resolve(v as Record<string, any>);
+    });
     req.on('error', reject);
   });
 }

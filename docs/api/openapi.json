@@ -1,0 +1,2113 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Angelia local API",
+    "version": "1",
+    "summary": "Talk to a running Angelia daemon from scripts and apps on the same machine.",
+    "description": "Served over a Unix socket, `~/.angelia/api.sock` (mode 600), never a network port. Example: `curl --unix-socket ~/.angelia/api.sock -H \"Authorization: Bearer $(cat ~/.angelia/api.token)\" http://localhost/profiles`. A request body is a JSON object of at most 256 KB. Routes tagged `stable` are version 1 of the contract: within it they only gain (new optional fields in, new fields and event types out, new routes). Routes tagged `internal` serve Angelia's own clients and may change in any release.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "x-features": [
+      "command",
+      "files",
+      "views",
+      "openapi"
+    ]
+  },
+  "servers": [
+    {
+      "url": "http://localhost",
+      "description": "Over the Unix socket ~/.angelia/api.sock"
+    }
+  ],
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "stable",
+      "description": "Version 1 of the contract."
+    },
+    {
+      "name": "internal",
+      "description": "For Angelia's own clients; may change in any release."
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Is the daemon up, and which API version and features it has",
+        "description": "A client checks `api` and refuses a version it does not know. `features` lists what this daemon adds to the version.\n\nToken: No token.",
+        "operationId": "getHealthz",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "api": {
+                      "type": "number",
+                      "const": 1
+                    },
+                    "features": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "api",
+                    "features"
+                  ]
+                },
+                "example": {
+                  "ok": true,
+                  "api": 1,
+                  "features": [
+                    "command",
+                    "files",
+                    "views",
+                    "openapi"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "This document, as the running daemon has it",
+        "description": "Read it before calling: it matches the installed version. `angelia api spec` prints the same.\n\nToken: No token.",
+        "operationId": "getOpenapi.json",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "openapi": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "openapi"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/send": {
+      "post": {
+        "summary": "Post a line into a routed chat",
+        "description": "A line `MEDIA:<absolute path>` in the text attaches that file (not from another profile's agent). No agent sees the line. Another profile's agent may post when neither profile is isolated and the hourly limit between profiles allows it; the line says who sent it.\n\nToken: The owner's token, or an agent's own (`ANGELIA_API_TOKEN`) for its own chat. Where the route says so, an agent's token also works for another profile's chat, with `from`.",
+        "operationId": "postSend",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "A routed chat as `platform:chat`, such as `telegram:123456` or `whatsapp:1203630000…@g.us`; `angelia profiles --json` lists them."
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "from": {
+                    "description": "An agent writing into another profile's chat names its own chat here; its own token then counts. Not for the owner.",
+                    "type": "string"
+                  },
+                  "token": {
+                    "deprecated": true,
+                    "description": "The token, for clients that predate the Authorization header. Prefer the header.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "text"
+                ]
+              },
+              "example": {
+                "key": "telegram:1",
+                "text": "The backup finished."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "media": {
+                      "description": "Files attached from MEDIA: lines.",
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                },
+                "example": {
+                  "ok": true
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/send-media": {
+      "post": {
+        "summary": "Attach a file to a routed chat",
+        "description": "An agent's token works for its own chat only, and attaches only what its profile may read. Audio goes as a voice note unless `voice` is false.\n\nToken: The owner's token, or an agent's own (`ANGELIA_API_TOKEN`) for its own chat. Where the route says so, an agent's token also works for another profile's chat, with `from`.",
+        "operationId": "postSendMedia",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "A routed chat as `platform:chat`, such as `telegram:123456` or `whatsapp:1203630000…@g.us`; `angelia profiles --json` lists them."
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Absolute path."
+                  },
+                  "caption": {
+                    "type": "string"
+                  },
+                  "voice": {
+                    "type": "boolean"
+                  },
+                  "file_name": {
+                    "description": "The name a document is sent under.",
+                    "type": "string"
+                  },
+                  "token": {
+                    "deprecated": true,
+                    "description": "The token, for clients that predate the Authorization header. Prefer the header.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "path"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                },
+                "example": {
+                  "ok": true
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/turn": {
+      "post": {
+        "summary": "Type a prompt into a chat's session",
+        "description": "Queued; the answer goes to the chat, or, with `reply: caller`, to the event stream only. Watch `/events` for the turn id. An agent's prompt is plain text, never a CLI command. Another profile's agent may give a task only when the target lists it in `accept_from`. 429: the chat already holds 10 turns, running and waiting; try again after it answers.\n\nToken: The owner's token, or an agent's own (`ANGELIA_API_TOKEN`) for its own chat. Where the route says so, an agent's token also works for another profile's chat, with `from`.",
+        "operationId": "postTurn",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "A routed chat as `platform:chat`, such as `telegram:123456` or `whatsapp:1203630000…@g.us`; `angelia profiles --json` lists them."
+                  },
+                  "text": {
+                    "description": "Required unless files are given.",
+                    "type": "string"
+                  },
+                  "from": {
+                    "description": "An agent writing into another profile's chat names its own chat here; its own token then counts. Not for the owner.",
+                    "type": "string"
+                  },
+                  "reply": {
+                    "description": "Owner only: the answer comes back as events, never to the chat; the agent sees the prompt as the owner's, typed in an app.",
+                    "type": "string",
+                    "const": "caller"
+                  },
+                  "plain": {
+                    "description": "With reply: caller, a text starting with / stays a message.",
+                    "type": "boolean"
+                  },
+                  "files": {
+                    "description": "With reply: caller only: files for the agent, copied into the profile's inbox.",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "from": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "path"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "token": {
+                    "deprecated": true,
+                    "description": "The token, for clients that predate the Authorization header. Prefer the header.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key"
+                ]
+              },
+              "example": {
+                "key": "telegram:1",
+                "text": "Summarise today's mail."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "queued": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "turn": {
+                      "type": "string",
+                      "description": "The id the turn's events carry."
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "queued",
+                    "turn"
+                  ]
+                },
+                "example": {
+                  "ok": true,
+                  "queued": true,
+                  "turn": "7f0c2a9e-5b1d-4c3e-9a47-2e8f6d1b0c55"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/ask": {
+      "post": {
+        "summary": "Ask a chat's agent a question and wait for the answer",
+        "description": "A read-only copy of the chat's session answers: it reads files and nothing else, and keeps nothing. Up to ten minutes. The chat does not get the answer. A DM with an owner gets one line saying a question was asked; a group gets nothing. Another profile's agent may ask only when the target lists it in `answer_from`, neither profile is isolated, and the hourly limit between profiles allows it.\n\nToken: The owner's token, or an agent's own (`ANGELIA_API_TOKEN`) for its own chat. Where the route says so, an agent's token also works for another profile's chat, with `from`.",
+        "operationId": "postAsk",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "A routed chat as `platform:chat`, such as `telegram:123456` or `whatsapp:1203630000…@g.us`; `angelia profiles --json` lists them."
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "from": {
+                    "description": "An agent writing into another profile's chat names its own chat here; its own token then counts. Not for the owner.",
+                    "type": "string"
+                  },
+                  "token": {
+                    "deprecated": true,
+                    "description": "The token, for clients that predate the Authorization header. Prefer the header.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "answer": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "answer"
+                  ]
+                },
+                "example": {
+                  "answer": "Two things: the dentist at 10:30, and the invoice for March is due."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "summary": "The live event stream",
+        "description": "Server-sent events: each `data:` line is one JSON event below. Comment lines (`: ping`) keep an idle stream alive. A client that stops reading is cut off; it reconnects and reads what it missed from `/history`. New event types may appear: ignore unknown ones.\n\nToken: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getEvents",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "query",
+            "required": false,
+            "description": "Only this chat's events.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A server-sent event stream; each `data:` line is one event of this shape.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "turn"
+                        },
+                        "turn": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "sender": {
+                          "type": "string"
+                        },
+                        "surface": {
+                          "type": "string",
+                          "enum": [
+                            "chat",
+                            "app"
+                          ]
+                        },
+                        "queued": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "at",
+                        "type",
+                        "turn",
+                        "text",
+                        "sender",
+                        "surface",
+                        "queued"
+                      ],
+                      "description": "A turn began. `surface: app`: the owner typed it in a client, and the answer goes back to that client only."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "progress"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "at",
+                        "type",
+                        "text"
+                      ],
+                      "description": "A line the agent said along the way."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "out"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "at",
+                        "type",
+                        "text"
+                      ],
+                      "description": "A line the chat got (or, for an app turn, would have got)."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "permission"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "tool": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "at",
+                        "type",
+                        "id",
+                        "tool",
+                        "preview"
+                      ],
+                      "description": "The agent waits for a yes or no; answer it with POST /permission."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "permission-answered"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "allow": {
+                          "type": "boolean"
+                        },
+                        "by": {
+                          "type": "string",
+                          "enum": [
+                            "chat",
+                            "app",
+                            "timeout",
+                            "terminal"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "at",
+                        "type",
+                        "id",
+                        "allow",
+                        "by"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "turn-end"
+                        },
+                        "turn": {
+                          "type": "string"
+                        },
+                        "ok": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "queued": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "at",
+                        "type",
+                        "turn",
+                        "ok",
+                        "queued"
+                      ]
+                    }
+                  ]
+                },
+                "example": {
+                  "key": "telegram:1",
+                  "at": "2026-10-10T09:15:02.311Z",
+                  "type": "turn-end",
+                  "turn": "7f0c2a9e-5b1d-4c3e-9a47-2e8f6d1b0c55",
+                  "ok": true,
+                  "queued": 0
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/profiles": {
+      "get": {
+        "summary": "Profiles, their chats and their sessions",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getProfiles",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "number",
+                      "const": 1
+                    },
+                    "profiles": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "backend": {
+                            "type": "string"
+                          },
+                          "tui": {
+                            "type": "boolean"
+                          },
+                          "model": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "folder": {
+                            "type": "string"
+                          },
+                          "chats": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "chat": {
+                                  "type": "string"
+                                },
+                                "session": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "sessions": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "chat",
+                                "session",
+                                "sessions"
+                              ]
+                            }
+                          },
+                          "settings": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {},
+                            "description": "The table's settings for the profile. Its keys may grow."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "backend",
+                          "tui",
+                          "model",
+                          "folder",
+                          "chats",
+                          "settings"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "version",
+                    "profiles"
+                  ]
+                },
+                "example": {
+                  "version": 1,
+                  "profiles": [
+                    {
+                      "name": "mail",
+                      "backend": "claude-code",
+                      "tui": false,
+                      "model": null,
+                      "folder": "/Users/example/.angelia/workspace/profiles/mail",
+                      "chats": [
+                        {
+                          "chat": "telegram:123456",
+                          "session": "3b9e1f4a-8c2d-4e6f-a1b3-5d7c9e0f2a48",
+                          "sessions": [
+                            "3b9e1f4a-8c2d-4e6f-a1b3-5d7c9e0f2a48"
+                          ]
+                        }
+                      ],
+                      "settings": {
+                        "permission_mode": "acceptEdits",
+                        "effort": null
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/sessions": {
+      "get": {
+        "summary": "A chat's sessions, last used first",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getSessions",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "query",
+            "required": true,
+            "description": "A routed chat as `platform:chat`, such as `telegram:123456` or `whatsapp:1203630000…@g.us`; `angelia profiles --json` lists them.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "active": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string"
+                          },
+                          "last_used_at": {
+                            "type": "string"
+                          },
+                          "turns": {
+                            "type": "number"
+                          },
+                          "started": {
+                            "type": "boolean"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "backend": {
+                            "description": "The CLI that owns this session.",
+                            "type": "string"
+                          },
+                          "model": {
+                            "description": "A /model override for this session only.",
+                            "type": "string"
+                          },
+                          "effort": {
+                            "description": "An /effort override for this session only.",
+                            "type": "string"
+                          },
+                          "background_since": {
+                            "description": "A handoff moved the chat on while this session's turn was running.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "created_at",
+                          "last_used_at",
+                          "turns",
+                          "started",
+                          "label"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "active",
+                    "sessions"
+                  ]
+                },
+                "example": {
+                  "active": "3b9e1f4a-8c2d-4e6f-a1b3-5d7c9e0f2a48",
+                  "sessions": [
+                    {
+                      "id": "3b9e1f4a-8c2d-4e6f-a1b3-5d7c9e0f2a48",
+                      "created_at": "2026-10-09T07:00:12.000Z",
+                      "last_used_at": "2026-10-10T09:15:02.000Z",
+                      "turns": 14,
+                      "started": true,
+                      "label": "mail and calendar",
+                      "backend": "claude-code"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/history": {
+      "get": {
+        "summary": "A chat's conversation, from the CLI's own record",
+        "description": "Angelia keeps no copy of messages: each CLI's own session files are read. The first page holds the newest messages; within a page, items are oldest first. For older messages, pass the page's `cursor` as `before`.\n\nToken: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getHistory",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "query",
+            "required": true,
+            "description": "A routed chat as `platform:chat`, such as `telegram:123456` or `whatsapp:1203630000…@g.us`; `angelia profiles --json` lists them.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "required": false,
+            "description": "Default: the active session.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Messages per page.",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d+$"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "The `cursor` of a page you have: you get the messages just before (older than) that page.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "session": {
+                      "description": "The session read; null when the chat has none yet.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "supported": {
+                      "type": "boolean",
+                      "description": "False for a CLI whose history Angelia cannot read yet."
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "assistant"
+                            ]
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "at": {
+                            "description": "ISO time.",
+                            "type": "string"
+                          },
+                          "tools": {
+                            "description": "Tools the assistant used in this message, each once.",
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "role",
+                          "text"
+                        ]
+                      }
+                    },
+                    "more": {
+                      "type": "boolean",
+                      "description": "Older messages exist before the first item."
+                    },
+                    "cursor": {
+                      "description": "With `more`: pass it as `before` to get the page of older messages. Opaque.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "session",
+                    "supported",
+                    "items",
+                    "more"
+                  ]
+                },
+                "example": {
+                  "session": "3b9e1f4a-8c2d-4e6f-a1b3-5d7c9e0f2a48",
+                  "supported": true,
+                  "more": true,
+                  "cursor": "183422",
+                  "items": [
+                    {
+                      "role": "user",
+                      "text": "What is on today?",
+                      "at": "2026-10-10T09:14:40.000Z"
+                    },
+                    {
+                      "role": "assistant",
+                      "text": "Two things: the dentist at 10:30, and the invoice for March is due.",
+                      "at": "2026-10-10T09:15:01.000Z",
+                      "tools": [
+                        "Read"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/permissions": {
+      "get": {
+        "summary": "Permission requests waiting now, every chat, oldest first",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getPermissions",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "permissions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "tool": {
+                            "type": "string"
+                          },
+                          "preview": {
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "at",
+                          "id",
+                          "tool",
+                          "preview"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "permissions"
+                  ]
+                },
+                "example": {
+                  "permissions": [
+                    {
+                      "key": "telegram:123456",
+                      "at": "2026-10-10T09:20:00.000Z",
+                      "id": "k3v9q",
+                      "tool": "Bash",
+                      "preview": "git push origin main"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/permission": {
+      "post": {
+        "summary": "Answer a permission request",
+        "description": "The first answer wins (chat, client or the CLI's own dialog). 409: nothing with that id waits.\n\nToken: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "postPermission",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "A routed chat as `platform:chat`, such as `telegram:123456` or `whatsapp:1203630000…@g.us`; `angelia profiles --json` lists them."
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "allow": {
+                    "type": "boolean"
+                  },
+                  "token": {
+                    "deprecated": true,
+                    "description": "The token, for clients that predate the Authorization header. Prefer the header.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "id",
+                  "allow"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                },
+                "example": {
+                  "ok": true
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/jobs": {
+      "get": {
+        "summary": "A profile's scheduled jobs and their last runs",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getJobs",
+        "tags": [
+          "stable"
+        ],
+        "x-stability": "stable",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "A profile name from the routing table.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "file": {
+                      "type": "string"
+                    },
+                    "jobs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "when": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "turn",
+                              "send",
+                              "run"
+                            ]
+                          },
+                          "what": {
+                            "type": "string"
+                          },
+                          "chat": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "installed": {
+                            "type": "boolean"
+                          },
+                          "runs": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "at": {
+                                  "type": "string"
+                                },
+                                "result": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "at",
+                                "result"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "when",
+                          "kind",
+                          "what",
+                          "chat",
+                          "enabled",
+                          "installed",
+                          "runs"
+                        ]
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "file",
+                    "jobs"
+                  ]
+                },
+                "example": {
+                  "file": "/Users/example/.angelia/workspace/profiles/mail/angelia-jobs.yaml",
+                  "jobs": [
+                    {
+                      "name": "morning-card",
+                      "when": "0 8 * * mon-fri",
+                      "kind": "turn",
+                      "what": "Write today's card.",
+                      "chat": "telegram:123456",
+                      "enabled": true,
+                      "installed": true,
+                      "runs": [
+                        {
+                          "at": "2026-10-10T08:00:03.000Z",
+                          "result": "ok"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "summary": "The daemon's own state",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getStatus",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "A view for Angelia's desktop app; its shape may change in any release."
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/command": {
+      "post": {
+        "summary": "A chat command pressed in a client",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "postCommand",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "A routed chat as `platform:chat`, such as `telegram:123456` or `whatsapp:1203630000…@g.us`; `angelia profiles --json` lists them."
+                  },
+                  "command": {
+                    "type": "string",
+                    "enum": [
+                      "new",
+                      "stop",
+                      "status"
+                    ]
+                  },
+                  "token": {
+                    "deprecated": true,
+                    "description": "The token, for clients that predate the Authorization header. Prefer the header.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "command"
+                ]
+              },
+              "example": {
+                "key": "telegram:1",
+                "command": "status"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "text"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/handoff": {
+      "post": {
+        "summary": "Move a terminal session to its chat (`angelia handoff`)",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "postHandoff",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "cwd": {
+                    "type": "string"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "session": {
+                    "type": "string"
+                  },
+                  "brief": {
+                    "type": "string"
+                  },
+                  "project": {
+                    "type": "string"
+                  },
+                  "chat": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "deprecated": true,
+                    "description": "The token, for clients that predate the Authorization header. Prefer the header.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "cwd",
+                  "summary"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "key": {
+                      "type": "string"
+                    },
+                    "profile": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "session",
+                        "brief"
+                      ]
+                    },
+                    "said": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "key",
+                    "profile",
+                    "mode",
+                    "said"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instructions": {
+      "get": {
+        "summary": "A profile's instructions, for the desktop app",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getInstructions",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "A profile name from the routing table.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "A view for Angelia's desktop app; its shape may change in any release."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/memory": {
+      "get": {
+        "summary": "A profile's memory, for the desktop app",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getMemory",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "A profile name from the routing table.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "A view for Angelia's desktop app; its shape may change in any release."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/skills": {
+      "get": {
+        "summary": "A profile's skills, for the desktop app",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getSkills",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "A profile name from the routing table.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "A view for Angelia's desktop app; its shape may change in any release."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/capabilities": {
+      "get": {
+        "summary": "A profile's capabilities, for the desktop app",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getCapabilities",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "A profile name from the routing table.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "A view for Angelia's desktop app; its shape may change in any release."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/files": {
+      "get": {
+        "summary": "A folder of a profile, for the desktop app",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getFiles",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "A profile name from the routing table.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "description": "A folder relative to the profile folder; default: the folder itself.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "dir",
+                          "file"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "kind"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/file": {
+      "get": {
+        "summary": "One file of a profile, for the desktop app",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getFile",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "A profile name from the routing table.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Relative to the profile folder.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "A view for Angelia's desktop app; its shape may change in any release."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/skill": {
+      "get": {
+        "summary": "One skill's text, for the desktop app",
+        "description": "Token: The owner's token (`~/.angelia/api.token`) only.",
+        "operationId": "getSkill",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "required": true,
+            "description": "A profile name from the routing table.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "A view for Angelia's desktop app; its shape may change in any release."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The owner's token from ~/.angelia/api.token, or an agent's ANGELIA_API_TOKEN."
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Refused or failed; `error` says why.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "description": "Says what went wrong; safe to show."
+                }
+              },
+              "required": [
+                "error"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

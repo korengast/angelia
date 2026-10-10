@@ -80,6 +80,12 @@ try {
       console.log(await handoffCommand(rest));
       break;
     }
+    case 'api': {
+      if (rest[0] !== 'spec') throw new Error('usage: angelia api spec');
+      const { openApiDocument } = await import('../daemon/api/openapi.js');
+      console.log(JSON.stringify(openApiDocument(), null, 2));
+      break;
+    }
     case 'export': {
       const all = rest.includes('--all'), tools = rest.includes('--tools');
       const at = rest.indexOf('--session');
