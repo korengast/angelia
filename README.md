@@ -31,7 +31,7 @@ Angelia runs no model of its own. It carries messages, files and approvals betwe
 <tr><td><b>One chat, one folder</b></td><td>Each topic gets its own folder and memory, each chat its own session: the house, money, a side project. Instruction files, settings, MCP servers and hooks work exactly as in your terminal.</td></tr>
 <tr><td><b>You approve risky steps</b></td><td>Before a command the profile does not allow on its own, the chat shows it and waits for your <code>yes</code>. No answer means no.</td></tr>
 <tr><td><b>Voice, photos and files</b></td><td>Send a voice note, a photo or a PDF; get files and voice notes back. Speech is turned into text and back on your machine.</td></tr>
-<tr><td><b>New chat, new assistant</b></td><td>Mention the bot in a new group and it sets up its own folder, then asks what the group is for.</td></tr>
+<tr><td><b>New chat, new assistant</b></td><td>Mention the bot in a new group (or just write there, with <code>onboard.mention: any</code>) and it sets up its own folder, then asks what the group is for.</td></tr>
 <tr><td><b>Scheduled check-ins</b></td><td>A morning summary, a weekly report. Your operating system runs the timer; the answer lands in the chat.</td></tr>
 <tr><td><b>Safe by default</b></td><td>Every profile is compiled with deny rules for your credentials and the other profiles' folders, and one whose rules were loosened is not started. Releases are signed, and the installer checks them.</td></tr>
 <tr><td><b>No new bill</b></td><td>No second model, no Angelia server, no telemetry. API keys are kept out of the agent's environment, so no chat can move you to per-token billing.</td></tr>
@@ -113,7 +113,7 @@ routes:
 telegram: { token_env: TELEGRAM_BOT_TOKEN }
 ```
 
-The wizard writes this file for you, in `~/.angelia/workspace/routing.yaml`. With onboarding on, a new chat adds its own profile and route the first time you mention the bot there.
+The wizard writes this file for you, in `~/.angelia/workspace/routing.yaml`. With onboarding on, a new chat adds its own profile and route the first time you mention the bot there; with `onboard.mention: any`, your first message there is enough.
 
 ---
 
