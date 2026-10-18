@@ -1,0 +1,74 @@
+<!--{
+  "title": "How to control Claude Code from your phone",
+  "description": "Run Claude Code on your Mac and talk to it from WhatsApp or Telegram: install, pair a chat, approve commands and send voice notes from your phone. About ten minutes.",
+  "date": "2026-10-18",
+  "draft": false
+}-->
+<p class="lede">Claude Code runs on your computer, with your files, skills and MCP servers. This page shows how to reach that same setup from your phone, through a chat app, in about ten minutes. I use Angelia for this, which I built, so the steps below use it. If you only want to watch one coding session from the couch, Anthropic's Remote Control is the better tool: see <a href="/guides/claude-code-whatsapp-telegram/">the four ways compared</a>.</p>
+
+<p>Short version: your Mac keeps running Claude Code, a small program connects it to a Telegram bot or a WhatsApp number, and you write to it like to a person. Commands that need your yes come to the chat. The answer comes back to the chat when the work is done.</p>
+
+<h2 id="what-you-need">What you need</h2>
+<ul>
+  <li>A Mac with Node 22 or newer and git.</li>
+  <li>Claude Code 2.1.270 or newer, signed in with a claude.ai plan. Check with <code>claude --version</code>.</li>
+  <li>A chat app on your phone. Telegram is the fastest: open <a href="https://t.me/BotFather">@BotFather</a>, send <code>/newbot</code> and keep the token. WhatsApp also works, but it needs a second, established number, not your personal one (<a href="/guides/claude-code-whatsapp-telegram/#angelia">why</a>).</li>
+</ul>
+
+<h2 id="install">Step 1: install and pair a chat</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>The installer checks the release's signature, installs Angelia and starts a setup wizard. You can <a href="https://github.com/{{REPO}}/blob/v{{VERSION}}/install.sh">read the script</a> first. The wizard asks:</p>
+<ol>
+  <li>Telegram, WhatsApp or both. For Telegram, paste the bot token. For WhatsApp, scan a QR code with the second phone.</li>
+  <li>Quick or Advanced. Quick gives one chat and one folder. Pick it for a first try.</li>
+  <li>Which CLI. Pick Claude Code.</li>
+  <li>Pair the chat. Send your bot any message from your phone. The wizard shows it and asks you to confirm.</li>
+</ol>
+<p>Now send <em>"what is in this folder?"</em>. Claude Code answers from the profile's folder, on your Mac.</p>
+
+<h2 id="keep-running">Step 2: keep it running</h2>
+<pre><code>angelia service install</code></pre>
+<p>Angelia now starts when you log in and comes back after a crash. The Mac must be on and awake: while it sleeps, nothing answers.</p>
+
+<h2 id="give-it-a-repo">Step 3: point it at your code</h2>
+<p>The agent works in its profile's folder, not in your current repo. Quick setup names the profile <code>main</code>. To let it work on a repo, add the repo to the profile in <code>~/.angelia/workspace/routing.yaml</code>:</p>
+<pre><code>profiles:
+  main: { cwd: ~/.angelia/workspace/profiles/main, permission_mode: acceptEdits, add_dirs: [~/code/my-app] }</code></pre>
+<p>Then take the change and apply the profile's rules:</p>
+<pre><code>angelia accept
+angelia compile main --write</code></pre>
+<p>Send <code>/restart</code> in the chat, then <code>/restart confirm</code>. The profile's folder holds its own <code>CLAUDE.md</code>, so the phone chat can have its own rules, apart from your terminal sessions.</p>
+
+<h2 id="approvals">Step 4: approve commands from the phone</h2>
+<p>With <code>permission_mode: acceptEdits</code>, Claude Code edits files on its own and asks before it runs other commands. The question comes to the chat:</p>
+<pre><code>🔐 Bash: npm test
+Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
+<p>Answer <code>yes 6b480a6f</code> and the turn goes on. No answer in ten minutes means no. Only the chat's owners can approve, so a group member cannot say yes for you.</p>
+
+<h2 id="while-it-works">While it works</h2>
+<ul>
+  <li>Short progress lines come to the chat while Claude Code works, then the answer. You do not need to keep the chat open.</li>
+  <li><code>/stop</code> ends the current turn. <code>/new</code> starts a fresh session. <code>/status</code> shows what is running. The router answers these itself, without spending tokens.</li>
+  <li>Voice notes work after <code>brew install openai-whisper ffmpeg</code>. Talk, and Claude Code gets the text. Whisper runs on your Mac, so the audio stays there.</li>
+  <li>Photos and files you send reach Claude Code as files on your Mac. It can send files back.</li>
+</ul>
+
+<h2 id="back-at-desk">Back at your desk, and the other way round</h2>
+<ul>
+  <li><strong>Phone to terminal:</strong> <code>/status</code> ends with a command such as <code>claude --resume &lt;id&gt;</code>. Paste it in a terminal and the same session opens there.</li>
+  <li><strong>Terminal to phone:</strong> type <code>/angelia-handoff</code> in a Claude Code session at your desk. The chat goes on from a written brief of what you were doing.</li>
+</ul>
+
+<h2 id="limits">Limits</h2>
+<ul>
+  <li>macOS only for now. Linux is next.</li>
+  <li>Each chat keeps its own warm Claude Code process. All chats share your plan's limits.</li>
+  <li>It uses your claude.ai login. A Console API key is not supported for Claude Code profiles.</li>
+  <li>It is a young project (v0.3), maintained by one person.</li>
+</ul>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/#security">Security</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>

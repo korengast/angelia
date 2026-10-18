@@ -19,6 +19,9 @@ Install with `curl -fsSL {{SITE}}/install | sh` (it checks the release signature
 ## Optional
 
 - [Claude Code on WhatsApp and Telegram, four ways compared]({{SITE}}/guides/claude-code-whatsapp-telegram/)
+- [How to control Claude Code from your phone]({{SITE}}/guides/claude-code-from-phone/)
+- [How to run Claude Code 24/7 on your own machine]({{SITE}}/guides/claude-code-24-7/)
+- [Claude Code notifications and approvals on your phone]({{SITE}}/guides/claude-code-phone-notifications/)
 - [Runbook]({{RAW}}/docs/runbook.md): day-to-day commands, known failures and fixes, uninstalling
 - [Decisions]({{TREE}}/docs/decisions): why it is built this way
 - [Everything above in one file]({{SITE}}/llms-full.txt)

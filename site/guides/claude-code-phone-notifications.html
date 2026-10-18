@@ -1,0 +1,58 @@
+<!--{
+  "title": "Claude Code notifications and approvals on your phone",
+  "description": "Get a phone notification when Claude Code finishes or needs permission, with a ten-line hook. Then go one step further: answer the permission prompt from the phone.",
+  "date": "2026-10-18",
+  "draft": false
+}-->
+<p class="lede">You start a long task in Claude Code and walk away. Twenty minutes later you come back, and it has waited eighteen of them for a yes. This page fixes that in two steps. First, a notification on your phone when Claude Code finishes or needs you: ten lines in a settings file, no extra software. Second, an answer to the permission prompt from the phone, so the work goes on while you are away. I built Angelia, which does the second step, so I'll say where each tool fits.</p>
+
+<h2 id="notify">Step 1: a notification with hooks</h2>
+<p>Claude Code runs <a href="https://code.claude.com/docs/en/hooks">hooks</a>: shell commands it starts on events. Two events matter here. <code>Stop</code> fires when Claude Code finishes its answer. <code>Notification</code> fires when it needs you, for example for a permission prompt (<code>permission_prompt</code>) or when it waits for your input (<code>idle_prompt</code>).</p>
+<p>The simplest way to reach a phone is <a href="https://ntfy.sh">ntfy</a>: install its app, subscribe to a topic, and anything posted to that topic arrives as a push notification. Add this to <code>~/.claude/settings.json</code>:</p>
+<pre><code>{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "curl -s -d 'Claude Code is done' ntfy.sh/YOUR-RANDOM-TOPIC" }] }
+    ],
+    "Notification": [
+      { "matcher": "permission_prompt",
+        "hooks": [{ "type": "command", "command": "curl -s -d 'Claude Code needs your yes' ntfy.sh/YOUR-RANDOM-TOPIC" }] }
+    ]
+  }
+}</code></pre>
+<ul>
+  <li>Pick a long random topic name. On the public ntfy server, anyone who knows the name can read the topic.</li>
+  <li>The notification text is fixed here, so no code or file names leave your machine. Do not post the hook's input (it carries the session's details) to a public topic.</li>
+  <li>Pushover, a Slack webhook or a Telegram bot work the same way: one <code>curl</code> line.</li>
+</ul>
+<p>This tells you that Claude Code waits. It does not let you answer. For that you must go back to the terminal, or use step 2.</p>
+
+<h2 id="approve">Step 2: approve from the phone</h2>
+<p>There are three ways to answer a prompt without the terminal.</p>
+<ul>
+  <li><strong><a href="https://code.claude.com/docs/en/remote-control">Remote Control</a></strong> (Anthropic): the session shows up in the Claude app, and you answer there. Best for one coding session you started at your desk.</li>
+  <li><strong>Official <a href="https://code.claude.com/docs/en/channels">channels</a></strong> (research preview): a Telegram, Discord or iMessage plugin can relay the prompt to the chat. It works in the one session you keep open.</li>
+  <li><strong>Angelia</strong> (mine): Claude Code runs in the background on your Mac, one session per chat, on Telegram or WhatsApp. Every prompt comes to the chat.</li>
+</ul>
+<p>The <a href="/guides/claude-code-whatsapp-telegram/">four ways compared</a> covers when each fits.</p>
+
+<h2 id="angelia-approvals">How approvals work in Angelia</h2>
+<p>Install it and pair a chat (<a href="/guides/claude-code-from-phone/">step by step</a>). Under <code>permission_mode: acceptEdits</code>, Claude Code edits files on its own and asks before it runs other commands. The question comes to the chat:</p>
+<pre><code>🔐 Bash: npm test
+Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
+<ul>
+  <li>Answer <code>yes 6b480a6f</code> and the turn goes on. The id ties the answer to this one request, so an old yes cannot approve a new command.</li>
+  <li>No answer in ten minutes counts as no.</li>
+  <li>Only the chat's owners can approve. In a group, other members can talk to the agent but cannot say yes for you.</li>
+  <li>The same works when Angelia runs Grok Build or pi. Codex runs inside its own sandbox and asks only when it needs more access than the sandbox gives.</li>
+</ul>
+<p>The "done" notification comes for free: the answer itself arrives as a chat message, after short progress lines while it works.</p>
+
+<h2 id="fewer-prompts">Fewer prompts</h2>
+<p>Each profile has a permission mode. <code>default</code> asks before edits and commands. <code>acceptEdits</code> asks only before commands. <code>plan</code> only plans. <code>bypassPermissions</code> asks nothing. Use it only in a profile that you alone write to, and whose folders you can afford to lose. Angelia also writes deny rules for your credentials and the other profiles' folders into every profile. A deny rule stops Claude Code's file tools, not every program a command starts, so keep commands asking in a profile other people can write to.</p>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/#security">Security</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>

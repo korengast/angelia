@@ -1,0 +1,63 @@
+<!--{
+  "title": "How to run Claude Code 24/7 on your own machine",
+  "description": "Keep Claude Code reachable all day on your Mac: a service that starts at login and survives crashes, a Mac that does not sleep, scheduled jobs, and what still stops it.",
+  "date": "2026-10-18",
+  "draft": false
+}-->
+<p class="lede">Claude Code is a terminal program. Close the terminal, let the laptop sleep, or reboot, and it is gone. To have it answer at any hour, three things must stay up: a process that runs Claude Code, a way to reach it, and the machine itself. This page goes through each one on a Mac. I use Angelia for the first two, which I built, so the commands below use it. The part about the machine applies whatever you use.</p>
+
+<h2 id="three-layers">What has to stay up</h2>
+<ul>
+  <li><strong>The process.</strong> Something must start Claude Code, keep it running and start it again after a crash.</li>
+  <li><strong>The way in.</strong> You need to reach it from outside the terminal. A chat app on your phone works best.</li>
+  <li><strong>The machine.</strong> It must be on, awake and logged in.</li>
+</ul>
+<p>Common ways to do the first two: tmux on the Mac with SSH from the phone, Anthropic's <a href="https://code.claude.com/docs/en/channels">channels</a> in a session you keep open, or a background program like Angelia. The <a href="/guides/claude-code-whatsapp-telegram/">four ways compared</a> covers the differences.</p>
+
+<h2 id="the-process">1. The process: a service</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh
+angelia service install</code></pre>
+<p>The first line installs Angelia and pairs a Telegram or WhatsApp chat (<a href="/guides/claude-code-from-phone/">step by step</a>). The second installs a macOS LaunchAgent. It starts Angelia when you log in and starts it again if it crashes.</p>
+<ul>
+  <li>Each chat keeps its own Claude Code session. After 30 minutes without messages, the process exits to free memory. The next message starts it again with <code>--resume</code>, so the conversation goes on where it stopped.</li>
+  <li>The sessions survive a restart of Angelia and a reboot of the Mac.</li>
+  <li>A turn that shows no progress for 30 minutes gets a warning in the chat. At 60 minutes Angelia stops it. You can send <code>/stop</code> at any time.</li>
+  <li>When you reach your plan's usage limit, the chat says so instead of failing silently.</li>
+</ul>
+<p>Check it from the terminal with <code>angelia status</code>. The log is in <code>~/.angelia/daemon.log</code>. It holds ids and errors, not your messages.</p>
+
+<h2 id="the-machine">2. The machine: no sleep, back after a reboot</h2>
+<p>This is the part people forget. A sleeping Mac answers nothing.</p>
+<ul>
+  <li><strong>Desktop Mac</strong> (mini, Studio, iMac): in System Settings, open Energy and turn on <em>Prevent automatic sleeping when the display is off</em>. Also turn on <em>Start up automatically after a power failure</em> if your Mac shows it.</li>
+  <li><strong>MacBook:</strong> in System Settings, open Battery, then Options, and turn on <em>Prevent automatic sleeping on power adapter when the display is off</em>. This works only on power. With the lid closed, a MacBook sleeps unless an external display is connected.</li>
+  <li><strong>For a few hours only:</strong> run <code>caffeinate -s</code> in a terminal. The Mac stays awake on power until you press Ctrl-C.</li>
+  <li><strong>After a reboot:</strong> the service starts at login, not at boot. With FileVault on, someone must log in after each reboot. macOS updates reboot the Mac, so check after an update.</li>
+</ul>
+<p>An old Mac mini that stays home is the simplest choice. It uses little power and never goes into a bag.</p>
+
+<h2 id="scheduled">3. Work it does without you asking</h2>
+<p>Running all day also lets the agent work on a schedule. A profile lists its jobs in <code>angelia-jobs.yaml</code> in its folder:</p>
+<pre><code>jobs:
+  morning-card:
+    schedule: "0 8 * * mon-fri"
+    turn: "Check the open pull requests and tell me which need me."</code></pre>
+<p>Then run <code>angelia jobs install</code>. macOS runs each job as its own timer, and the answer comes to the chat. A job can also post a fixed message or run a script.</p>
+
+<h2 id="updates">Updates and restarts</h2>
+<pre><code>angelia update</code></pre>
+<p>It installs the newest signed release. Your profiles and chats are not touched. Send <code>/restart</code> in a chat, then <code>/restart confirm</code>, to restart from the phone.</p>
+
+<h2 id="limits">What still stops it</h2>
+<ul>
+  <li>Power cuts and network outages. Angelia reconnects by itself when the network comes back.</li>
+  <li>Your plan's usage limits. Every chat draws on the same plan.</li>
+  <li>macOS only for now. Linux, with a systemd unit, is next.</li>
+  <li>Claude Code changes often. A new version can break something before Angelia is updated for it. Angelia is a young project (v0.3), maintained by one person.</li>
+</ul>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/#security">Security</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>

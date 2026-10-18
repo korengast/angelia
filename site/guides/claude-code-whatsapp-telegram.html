@@ -2,6 +2,7 @@
   "title": "Claude Code on WhatsApp and Telegram: four ways compared",
   "description": "Claude Code has no official WhatsApp channel. Remote Control, the Telegram channel, a WhatsApp plugin and Angelia compared: setup, limits, which to pick.",
   "date": "2026-10-02",
+  "updated": "2026-10-18",
   "draft": false
 }-->
 <p class="lede">You have Claude Code set up the way you like it: your files, your skills, your MCP servers. Now you want it in your pocket. Four ways keep that setup and let you reach it from your phone, and they solve different problems. I built one of them, Angelia, and this page is on its site, so I'll say up front where the others are the better choice.</p>
@@ -99,7 +100,7 @@ angelia service install</code></pre>
   <li>Dispatch: sends a task from the Claude app to Claude Desktop on your computer. Close to an assistant in your pocket, but it lives in the Claude app, not a chat app.</li>
   <li>Claude in Slack and cloud sessions at claude.ai/code: they run on Anthropic's machines, not yours.</li>
   <li>SSH into tmux from your phone: free and works with any CLI, but you type in a terminal on a phone keyboard, with no chat.</li>
-  <li>Full agents such as OpenClaw or Hermes Agent: they run their own agent rather than your Claude Code setup.</li>
+  <li>Full agents such as OpenClaw or Hermes Agent: their own agent, tools and permission rules. Hermes calls the model's API itself. OpenClaw can also run Claude Code as its engine, with its own tools and permission rules in front of it.</li>
 </ul>
 
 <h2 id="why-i-built-it">Why I built it</h2>
