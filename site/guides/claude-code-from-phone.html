@@ -1,6 +1,6 @@
 <!--{
   "title": "How to control Claude Code from your phone",
-  "description": "Run Claude Code on your Mac and talk to it from WhatsApp or Telegram: install, pair a chat, approve commands and send voice notes from your phone. About ten minutes.",
+  "description": "Run Claude Code on your Mac and use it from WhatsApp or Telegram: install, pair a chat, approve commands and send voice notes. About ten minutes.",
   "date": "2026-10-18",
   "draft": false
 }-->
@@ -28,7 +28,7 @@
 
 <h2 id="keep-running">Step 2: keep it running</h2>
 <pre><code>angelia service install</code></pre>
-<p>Angelia now starts when you log in and comes back after a crash. The Mac must be on and awake: while it sleeps, nothing answers.</p>
+<p>Angelia now starts when you log in and comes back after a crash. The Mac must be on and awake: while it sleeps, nothing answers. <a href="/guides/claude-code-24-7/">How to run Claude Code 24/7</a> covers sleep settings, reboots and scheduled jobs.</p>
 
 <h2 id="give-it-a-repo">Step 3: point it at your code</h2>
 <p>The agent works in its profile's folder, not in your current repo. Quick setup names the profile <code>main</code>. To let it work on a repo, add the repo to the profile in <code>~/.angelia/workspace/routing.yaml</code>:</p>
@@ -43,7 +43,7 @@ angelia compile main --write</code></pre>
 <p>With <code>permission_mode: acceptEdits</code>, Claude Code edits files on its own and asks before it runs other commands. The question comes to the chat:</p>
 <pre><code>🔐 Bash: npm test
 Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
-<p>Answer <code>yes 6b480a6f</code> and the turn goes on. No answer in ten minutes means no. Only the chat's owners can approve, so a group member cannot say yes for you.</p>
+<p>Answer <code>yes 6b480a6f</code> and the turn goes on. No answer in ten minutes means no. Only the chat's owners can approve, so a group member cannot say yes for you. More in <a href="/guides/claude-code-phone-notifications/">notifications and approvals on your phone</a>.</p>
 
 <h2 id="while-it-works">While it works</h2>
 <ul>

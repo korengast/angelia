@@ -98,11 +98,17 @@ const guideOg = (slug) => existsSync(join(here, 'static', 'guides', slug, 'og.pn
 const out = join(here, 'dist');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
+// Every guide ends with links to the others, above its Try box: the pages link each other, not only the index.
+const moreGuides = (slug) => {
+  const others = guides.filter((o) => o.slug !== slug);
+  return others.length ? `<nav class="more" aria-label="More guides"><h2 id="more-guides">More guides</h2><ul>${others.map((o) => `<li><a href="/guides/${o.slug}/">${esc(o.title)}</a></li>`).join('')}</ul></nav>\n` : '';
+};
+const withMore = (g) => g.body.includes('<div class="try"') ? g.body.replace('<div class="try"', `${moreGuides(g.slug)}<div class="try"`) : g.body + moreGuides(g.slug);
 for (const g of guides) {
   const url = `${SITE}/guides/${g.slug}/`;
   mkdirSync(join(out, 'guides', g.slug), { recursive: true });
   writeFileSync(join(out, 'guides', g.slug, 'index.html'), guidePage({
-    title: g.title, description: g.description, url, date: g.date, modified: g.updated ?? g.date, body: g.body,
+    title: g.title, description: g.description, url, date: g.date, modified: g.updated ?? g.date, body: withMore(g),
     ogImage: guideOg(g.slug), ogAlt: g.title,
     byline: `Koren Gast · Updated <time datetime="${g.updated ?? g.date}">${longDate(g.updated ?? g.date)}</time>`,
     jsonld: { '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: guideOg(g.slug), publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
@@ -120,6 +126,9 @@ const html = page('index.html')
   .replace('<!--GUIDES-->', guides.length ? '<li class="keep"><a href="/guides/">Guides</a></li>' : '')
   .replace('<!--COMPARE-->', guides.some((g) => g.slug === COMPARE)
     ? `<p class="compare"><span>Remote Control, Claude Code channels, a WhatsApp plugin or Angelia?</span> <a class="btn light" href="/guides/${COMPARE}/">Four ways compared →</a></p>` : '')
+  // The other guides by name, so each one is a link from the home page.
+  .replace('<!--GUIDE-LINKS-->', guides.some((g) => g.slug !== COMPARE)
+    ? `<p class="more-guides">Guides: ${guides.filter((g) => g.slug !== COMPARE).map((g) => `<a href="/guides/${g.slug}/">${esc(g.title)}</a>`).join(' · ')}</p>` : '')
   .replace('<!--COMPARE-HERO-->', guides.some((g) => g.slug === COMPARE) ? ` <a href="/guides/${COMPARE}/">How it compares</a>.` : '');
 writeFileSync(join(out, 'index.html'), html);
 writeFileSync(join(out, '404.html'), page('404.html'));
