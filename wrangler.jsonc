@@ -1,5 +1,6 @@
-// The landing page, served by Cloudflare as a Worker with static assets. One small script runs for
-// the demo videos only, to answer Range requests (site/worker/ranges.js); everything else is assets.
+// The landing page, served by Cloudflare as a Worker with static assets. A small script (site/worker/main.js)
+// answers Range requests for the demo videos and serves pages as Markdown to agents that ask for it;
+// fonts and images skip it and come straight from the assets.
 // `npx wrangler deploy` builds the page itself (build.command) and uploads site/dist, whatever build
 // command the dashboard has.
 // site/dist carries _headers and _redirects (/install -> the release's install.sh).
@@ -7,12 +8,12 @@
   "name": "angelia",
   "compatibility_date": "2026-09-01",
   "build": { "command": "node site/build.mjs" },
-  "main": "site/worker/ranges.js",
+  "main": "site/worker/main.js",
   "assets": {
     "directory": "./site/dist",
     "binding": "ASSETS",
     "not_found_handling": "404-page",
-    "run_worker_first": ["/angelia-demo*"]
+    "run_worker_first": ["/*", "!/fonts/*", "!/*.png", "!/*.jpg", "!/*.ico", "!/*.svg", "!/*.gif"]
   },
   // Branch builds run `wrangler preview`, which needs this block (empty is enough for assets only).
   "previews": {}

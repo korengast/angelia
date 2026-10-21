@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { htmlToMarkdown } from './markdown.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SITE = 'https://useangelia.com';
@@ -132,6 +133,15 @@ const html = page('index.html')
   .replace('<!--COMPARE-HERO-->', guides.some((g) => g.slug === COMPARE) ? ` <a href="/guides/${COMPARE}/">How it compares</a>.` : '');
 writeFileSync(join(out, 'index.html'), html);
 writeFileSync(join(out, '404.html'), page('404.html'));
+// Every page as Markdown beside its index.html, for an agent that sends Accept: text/markdown (the Worker
+// picks the file, site/worker/ranges.js). The 404 page has its own text: where to look instead.
+for (const dir of ['', ...(guides.length ? ['guides'] : []), ...guides.map((g) => `guides/${g.slug}`)]) {
+  const path = dir ? `/${dir}/` : '/';
+  writeFileSync(join(out, dir, 'index.md'), htmlToMarkdown(readFileSync(join(out, dir, 'index.html'), 'utf8'), SITE + path));
+}
+writeFileSync(join(out, '404.md'), `# Not found\n\nNothing is at this address on ${SITE}. The page may have moved, or the link has a typo.\n\n` +
+  `- [Home page](${SITE}/) ([Markdown](${SITE}/index.md))\n- [llms.txt](${SITE}/llms.txt): the documentation, listed for agents\n` +
+  `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [GitHub](https://github.com/${REPO})\n`);
 // For agents (llmstxt.org): /llms.txt lists the docs, /llms-full.txt holds them in one file, and the API
 // page and its OpenAPI document are served as they are. Links point at this release's tag, so an agent
 // reads the docs of the version the install line gives.

@@ -1,6 +1,6 @@
 // The site is static assets. Cloudflare's asset server answers a Range request with the whole file
-// (200), and Safari, on iOS above all, plays a <video> only from 206 answers. So the demo videos, and
-// only they (run_worker_first in wrangler.jsonc), pass through this script, which cuts the range.
+// (200), and Safari, on iOS above all, plays a <video> only from 206 answers. So the demo videos
+// pass from main.js to this script, which cuts the range.
 
 /** One `bytes=` range of a file of `size` bytes: { start, end } (end inclusive), 'bad' when it cannot
  *  be served (416), or undefined to answer with the whole file (no range, several ranges, or another
