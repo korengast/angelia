@@ -157,13 +157,23 @@ export function serviceLoaded(): boolean {
   return process.platform === 'darwin' && launchctl(['print', `${domain()}/${LABEL}`]).code === 0;
 }
 
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** Stop the service's daemon and forget the job; it comes back only with serviceStart.
  *  bootout returns while launchd is still removing a job whose daemon runs, and a bootstrap in that
- *  window fails (5: Input/output error), so wait until the job is gone. */
-export function serviceStop(run = launchctl): void {
-  if (run(['print', `${domain()}/${LABEL}`]).code !== 0) return;
-  run(['bootout', `${domain()}/${LABEL}`]);
-  for (let i = 0; i < 40 && run(['print', `${domain()}/${LABEL}`]).code === 0; i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+ *  window fails (5: Input/output error), so wait until the job is gone: up to 25 s, past launchd's
+ *  20 s ExitTimeOut, after which it has killed the daemon. */
+export function serviceStop(run = launchctl, sleep = sleepSync): void {
+  const job = `${domain()}/${LABEL}`;
+  if (run(['print', job]).code !== 0) return;
+  run(['bootout', job]);
+  for (let i = 0; i < 100; i++) {
+    if (run(['print', job]).code !== 0) return;
+    sleep(250);
+  }
+  throw new Error(`launchd still holds ${LABEL} 25s after bootout, so a start now would fail. Try again in a moment.`);
 }
 
 /** Load the job from the plist on disk (so a rewritten plist takes effect), and start the daemon.
@@ -171,9 +181,11 @@ export function serviceStop(run = launchctl): void {
  *  login session is left "pended nondemand spawn = speculative" and runs only at the next login.
  *  kickstart starts it now; on a daemon already running it does nothing. */
 export function serviceStart(home = homedir(), run = launchctl): void {
+  const job = `${domain()}/${LABEL}`;
   const r = run(['bootstrap', domain(), plistPath(home)]);
-  if (r.code !== 0 && run(['print', `${domain()}/${LABEL}`]).code !== 0) throw new Error(`launchctl bootstrap failed: ${r.out || `exit ${r.code}`}`);
-  run(['kickstart', `${domain()}/${LABEL}`]);
+  if (r.code !== 0 && run(['print', job]).code !== 0) throw new Error(`launchctl bootstrap failed: ${r.out || `exit ${r.code}`}`);
+  const k = run(['kickstart', job]);
+  if (k.code !== 0) throw new Error(`launchctl kickstart failed: ${k.out || `exit ${k.code}`}`);
 }
 
 function readPid(): number {

@@ -95,9 +95,21 @@ test('service restart: stop waits until launchd has dropped the job, start kicks
     if (args[0] === 'bootstrap') { if (lingering) return { code: 5, out: 'Bootstrap failed: 5: Input/output error' }; loaded = true; }
     return { code: 0, out: '' };
   };
-  serviceStop(run);
+  serviceStop(run, () => {});
   assert.equal(lingering, 0, 'serviceStop returned while the job was still listed');
   serviceStart('/no/home', run);
   assert.deepEqual(calls.slice(-2), ['bootstrap', 'kickstart']);
   assert.ok(loaded);
+});
+
+test('service stop: a job launchd never drops fails loudly instead of a start that cannot work', () => {
+  let sleeps = 0;
+  const run = (args: string[]): { code: number; out: string } => ({ code: 0, out: args[0] === 'print' ? 'state = running' : '' });
+  assert.throws(() => serviceStop(run, () => { sleeps++; }), /still holds .* after bootout/);
+  assert.equal(sleeps * 250, 25_000, 'waits past launchd\'s 20 s ExitTimeOut');
+});
+
+test('service start: a failed kickstart is an error, with launchctl\'s own words', () => {
+  const run = (args: string[]): { code: number; out: string } => (args[0] === 'kickstart' ? { code: 113, out: 'Could not find service' } : { code: 0, out: '' });
+  assert.throws(() => serviceStart('/no/home', run), /kickstart failed: Could not find service/);
 });
