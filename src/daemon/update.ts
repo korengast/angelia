@@ -18,12 +18,12 @@ import { nodeFixProblem } from './node-fix.js';
  *   the one that came with the download, so a changed account cannot ship a tag this copy accepts
  *   (a copy with no keys refuses; install.sh checks the first install against the key it carries);
  * - the installed commit must be in the new one's history, so a rewritten or older source is not
- *   taken for an update (`--force` overrides this one);
+ *   taken for an update (`--force` overrides this one, and only this one);
  * - no dependency runs an install script: `npm ci --ignore-scripts`, then this package's own build;
  *   the tarball carries every dependency at its locked version, so the install resolves nothing.
  * `--head` installs the branch tip instead, unsigned, and says so: that is for development.
- * Before any of it, the Node this runs on must have the fix for CVE-2026-111497 (node-fix.ts), unless
- * `--force`: npm only warns about `engines`, so it would build and install on that Node regardless.
+ * A Node without the fix for CVE-2026-111497 (node-fix.ts) gets a warning, not a refusal: refusing
+ * would not take the daemon off its Node, and it would keep Angelia's own security fixes out.
  *
  * It never restarts anything. The running daemon keeps the code it loaded; the user restarts when
  * it suits them, from a chat (/restart) or a terminal.
@@ -183,8 +183,7 @@ function run(cmd: string, args: string[], cwd?: string): string {
 export async function updateCommand(argv: string[]): Promise<void> {
   const check = argv.includes('--check'), head = argv.includes('--head'), force = argv.includes('--force');
   const open = nodeFixProblem();
-  if (open && !force) throw new Error(`${open}. Nothing was installed. Install a fixed Node first, or angelia update --force to install anyway.`);
-  if (open) console.log(`Warning: ${open}. --force: installing anyway.`);
+  if (open) console.log(`Warning: ${open}. Updating anyway: install a fixed Node too.`);
   const fromAt = argv.indexOf('--from');
   let source = fromAt >= 0 ? argv[fromAt + 1] : undefined;
   if (fromAt >= 0 && !source) throw new Error('--from needs a git URL or a folder');

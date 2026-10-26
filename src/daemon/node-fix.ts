@@ -3,8 +3,9 @@
  * from a response body. The daemon decodes untrusted HTTP all day (Telegram's API through fetch and
  * grammy, WhatsApp media through Baileys), so the runtime under it matters as much as the code.
  * Fixed in 22.23.4, 24.22.1 and 26.12.1; 23, 25 and older lines get no fix. npm's `engines` only
- * warns (EBADENGINE), so the places that can say so check it themselves: update refuses, the daemon
- * logs a warning at start, status and check-config print a line.
+ * warns (EBADENGINE), so the places that can say so check it themselves: update and the daemon's start
+ * log a warning, status and check-config print a line. Only install.sh refuses, at the first install;
+ * past it, a refusal would not take the daemon off its Node, and would keep Angelia's own fixes out.
  */
 
 /** The versions with the fix, as a person reads them. The same words as the README and install.sh. */

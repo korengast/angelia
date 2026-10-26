@@ -38,15 +38,20 @@ test('install.sh and nodeHasFix give the same answer for every version', () => {
   assert.ok(sh.includes(`die "${NODE_FIX} is required (CVE-2026-111497)`), 'and names the same versions');
 });
 
-test('update refuses a Node without the fix unless --force', async () => {
+test('update warns about a Node without the fix and goes on, --check too', async () => {
   const real = Object.getOwnPropertyDescriptor(process.versions, 'node')!;
   Object.defineProperty(process.versions, 'node', { ...real, value: '24.22.0' });
+  const said: string[] = [], log = console.log;
+  console.log = (...a: unknown[]) => { said.push(a.join(' ')); };
   try {
-    await assert.rejects(updateCommand([]), (e: Error) => e.message.startsWith('Node 24.22.0 is open to CVE-2026-111497') && e.message.includes(NODE_FIX) && /Nothing was installed/.test(e.message));
-    await assert.rejects(updateCommand(['--check']), /CVE-2026-111497/, '--check too');
-    // Past the check, this checkout is refused for its own reason: nothing is fetched either way.
-    await assert.rejects(updateCommand(['--force']), /runs from a checkout/);
+    for (const argv of [[], ['--check']]) {
+      said.length = 0;
+      // Past the warning, this checkout is refused for its own reason: nothing is fetched either way.
+      await assert.rejects(updateCommand(argv), /runs from a checkout/, argv.join(' '));
+      assert.ok(said.some((l) => l.startsWith('Warning: Node 24.22.0 is open to CVE-2026-111497') && l.includes(NODE_FIX) && l.includes('Updating anyway')), `${argv.join(' ')}: ${said.join('|')}`);
+    }
   } finally {
+    console.log = log;
     Object.defineProperty(process.versions, 'node', real);
   }
 });
