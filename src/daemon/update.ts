@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STATE_DIR } from './daemon.js';
 import { plistPath, plistProgram, serviceInstalled } from './service.js';
+import { nodeFixProblem } from './node-fix.js';
 
 /**
  * `angelia update`: replace the installed package with the newest signed release of its source, and
@@ -17,10 +18,12 @@ import { plistPath, plistProgram, serviceInstalled } from './service.js';
  *   the one that came with the download, so a changed account cannot ship a tag this copy accepts
  *   (a copy with no keys refuses; install.sh checks the first install against the key it carries);
  * - the installed commit must be in the new one's history, so a rewritten or older source is not
- *   taken for an update (`--force` overrides this one, and only this one);
+ *   taken for an update (`--force` overrides this one);
  * - no dependency runs an install script: `npm ci --ignore-scripts`, then this package's own build;
  *   the tarball carries every dependency at its locked version, so the install resolves nothing.
  * `--head` installs the branch tip instead, unsigned, and says so: that is for development.
+ * Before any of it, the Node this runs on must have the fix for CVE-2026-111497 (node-fix.ts), unless
+ * `--force`: npm only warns about `engines`, so it would build and install on that Node regardless.
  *
  * It never restarts anything. The running daemon keeps the code it loaded; the user restarts when
  * it suits them, from a chat (/restart) or a terminal.
@@ -179,6 +182,9 @@ function run(cmd: string, args: string[], cwd?: string): string {
 
 export async function updateCommand(argv: string[]): Promise<void> {
   const check = argv.includes('--check'), head = argv.includes('--head'), force = argv.includes('--force');
+  const open = nodeFixProblem();
+  if (open && !force) throw new Error(`${open}. Nothing was installed. Install a fixed Node first, or angelia update --force to install anyway.`);
+  if (open) console.log(`Warning: ${open}. --force: installing anyway.`);
   const fromAt = argv.indexOf('--from');
   let source = fromAt >= 0 ? argv[fromAt + 1] : undefined;
   if (fromAt >= 0 && !source) throw new Error('--from needs a git URL or a folder');
