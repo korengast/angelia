@@ -25,7 +25,7 @@ import { onboardChat } from '../instance/onboard.js';
 import { apiDeps } from './api/deps.js';
 import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
 import { nodeAdvice, nodeFixProblem } from './node-fix.js';
-import { stableNode } from './service.js';
+import { LABEL } from './service.js';
 import type { Inbound } from '../core/types.js';
 
 export const STATE_DIR = process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia');
@@ -83,7 +83,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   writeFileSync(pidFile, String(process.pid));
   // A warning, not a refusal: refusing would take every chat down, and the fix is the owner's to install.
   const started = nodeStart(), open = nodeFixProblem(process.versions.node, process.execPath);
-  if (open) logLine(`WARNING: ${open}. This process decodes what Telegram and WhatsApp send: ${nodeAdvice(started)}.`);
+  if (open) logLine(`WARNING: ${open}. This process decodes what Telegram and WhatsApp send: ${nodeAdvice(started, started !== undefined)}.`);
 
   // Held in memory, never copied into process.env: everything this process starts inherits that.
   const secrets = envFile();
@@ -287,12 +287,13 @@ export async function runDaemon(configPath: string): Promise<void> {
   await new Promise(() => {});
 }
 
-/** The node path this daemon was started by, which decides how a new Node reaches it. launchd passes
- *  the plist's own path as argv[0]; a start from a shell gives a bare `node`, and then the path
- *  `angelia service install` would write. process.execPath is no use here: it is always the real
- *  binary, a versioned folder even when the plist names a link that follows upgrades. */
-export function nodeStart(argv0 = process.argv0): string {
-  return isAbsolute(argv0) ? argv0 : stableNode();
+/** The plist's node path when launchd started this daemon (launchd passes it as argv[0] and names the
+ *  job in XPC_SERVICE_NAME, which its children inherit, so the parent must be launchd too): it decides whether a new Node reaches the daemon by a restart or needs the
+ *  plist written again. Without the service there is no plist to point anywhere, so nothing. process.execPath
+ *  is no use here: it is always the real binary, a versioned folder even when the plist names a link
+ *  that follows upgrades, and `angelia restart` spawns that same binary. */
+export function nodeStart(argv0 = process.argv0, service = process.ppid === 1 && process.env.XPC_SERVICE_NAME === LABEL): string | undefined {
+  return service && isAbsolute(argv0) ? argv0 : undefined;
 }
 
 /** status's line about the daemon's Node, from what status.json recorded: fine, unknown, or what is wrong with it. */
@@ -300,7 +301,7 @@ export function nodeLine(s: { node?: unknown; nodePath?: unknown; nodeStart?: un
   if (typeof s.node !== 'string') return "daemon's Node unknown (started before this version); angelia restart records it";
   const path = typeof s.nodePath === 'string' ? s.nodePath : undefined;
   const open = nodeFixProblem(s.node, path);
-  return open ? `warning: ${open}; ${nodeAdvice(typeof s.nodeStart === 'string' ? s.nodeStart : path)}` : `node ${s.node}${path ? ` at ${path}` : ''} (has the CVE-2026-111497 fix)`;
+  return open ? `warning: ${open}; ${nodeAdvice(typeof s.nodeStart === 'string' ? s.nodeStart : undefined, typeof s.nodeStart === 'string')}` : `node ${s.node}${path ? ` at ${path}` : ''} (has the CVE-2026-111497 fix)`;
 }
 
 export function readStatus(): string {

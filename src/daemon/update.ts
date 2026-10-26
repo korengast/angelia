@@ -61,7 +61,9 @@ export function serviceMismatch(updated: string, plist: string): string | undefi
 export function serviceNodeProblem(plist: string): string | undefined {
   const prog = plistProgram(plist);
   if (!prog) return undefined;
-  const r = spawnSync(prog.node, ['-p', 'process.versions.node'], { encoding: 'utf8', timeout: 10_000 });
+  const r = spawnSync(prog.node, ['-p', 'process.versions.node'], { encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL',
+    // This update's NODE_OPTIONS can carry flags an older Node does not know, and it would fail for that.
+    env: { ...process.env, NODE_OPTIONS: '' } });
   if (r.status !== 0) return `The service starts the Node ${prog.node}, which did not run (${r.error?.message ?? (r.stderr || `exit ${r.status}`).trim()}). Write the plist again: angelia service install <routing.yaml>`;
   const open = nodeFixProblem(r.stdout.trim(), prog.node);
   return open && `The service's ${open}: ${nodeAdvice(prog.node)}`;

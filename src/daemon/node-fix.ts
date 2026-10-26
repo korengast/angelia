@@ -41,8 +41,8 @@ export function versionedNode(path: string): boolean {
 
 /** What the owner does about a Node without the fix, when the daemon starts as `path`: a path that
  *  stays on its version needs the plist written again, or launchd keeps starting the old Node. */
-export function nodeAdvice(path?: string): string {
-  return path && versionedNode(path)
-    ? `install a fixed Node, then angelia service install <routing.yaml> so the service starts it (${path} stays on this version)`
-    : 'install a fixed Node, then angelia restart';
+export function nodeAdvice(path?: string, service = true): string {
+  if (path && versionedNode(path)) return `install a fixed Node, then angelia service install <routing.yaml> so the service starts it (${path} stays on this version)`;
+  // Under launchd a restart starts the plist's node; without it, restart reuses the Node it runs on.
+  return service ? 'install a fixed Node, then angelia restart' : 'install a fixed Node, then angelia restart from a terminal where it comes first on PATH';
 }

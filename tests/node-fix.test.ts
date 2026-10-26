@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import { NODE_FIX, nodeAdvice, nodeFixProblem, nodeHasFix, versionedNode } from '../src/daemon/node-fix.js';
 import { updateCommand } from '../src/daemon/update.js';
 import { nodeLine, nodeStart } from '../src/daemon/daemon.js';
@@ -18,7 +18,8 @@ const underNode = (version: string, script: string) => spawnSync(process.execPat
 /** `angelia <args>` from the source, on an instance of its own, with process.versions.node set to `version`
  *  and argv[0] set to `argv0` (launchd passes the plist's node path there). */
 const cli = (state: string, version: string, args: string[], argv0 = '/opt/node/bin/node') => {
-  const r = spawnSync(process.execPath, ['--import', 'tsx', join(root, 'src', 'cli', 'cli.ts'), ...args], { encoding: 'utf8', argv0, env: { ...fake(version), ANGELIA_STATE_DIR: state } });
+  // No launchd parent here, whatever the test runner inherited: nodeStart sees a start without the service.
+  const r = spawnSync(process.execPath, ['--import', 'tsx', join(root, 'src', 'cli', 'cli.ts'), ...args], { encoding: 'utf8', argv0, env: { ...fake(version), ANGELIA_STATE_DIR: state, XPC_SERVICE_NAME: '' } });
   return `${r.stdout}${r.stderr}`;
 };
 const nvm = '/Users/example/.nvm/versions/node/v23.9.0/bin/node';
@@ -40,10 +41,14 @@ test('a node path tied to one version is told to write the plist again, any othe
   for (const p of loose) assert.equal(versionedNode(p), false, p);
   assert.equal(nodeAdvice(nvm), `install a fixed Node, then angelia service install <routing.yaml> so the service starts it (${nvm} stays on this version)`);
   assert.equal(nodeAdvice('/opt/homebrew/bin/node'), 'install a fixed Node, then angelia restart');
+  assert.equal(nodeAdvice('/opt/homebrew/bin/node', false), 'install a fixed Node, then angelia restart from a terminal where it comes first on PATH');
   assert.equal(nodeAdvice(undefined), 'install a fixed Node, then angelia restart');
-  // launchd's argv[0] is the plist's path; a bare `node` from a shell gives the path service install would write.
-  assert.equal(nodeStart('/opt/homebrew/bin/node'), '/opt/homebrew/bin/node');
-  assert.ok(isAbsolute(nodeStart('node')));
+  // launchd's argv[0] is the plist's path; without the service (a shell, or angelia restart spawning the real
+  // binary of a versioned folder) there is no plist, and the advice must not send anyone to service install.
+  assert.equal(nodeStart('/opt/homebrew/bin/node', true), '/opt/homebrew/bin/node');
+  assert.equal(nodeStart(nvm, false), undefined);
+  assert.equal(nodeStart('node', true), undefined);
+  assert.equal(nodeLine({ node: '25.1.0', nodePath: nvm.replace('23.9.0', '25.1.0') }).endsWith('then angelia restart from a terminal where it comes first on PATH'), true);
 });
 
 test('install.sh and nodeHasFix give the same answer for every version', () => {
@@ -78,11 +83,13 @@ test('the daemon logs a warning on a Node without the fix, and goes on starting'
   // A table that does not exist ends the start right after the check: nothing else runs, no socket, no tmux.
   assert.match(cli(state, '23.9.0', ['daemon', join(state, 'none.yaml')]), /cannot read .*none\.yaml/, 'it got past the check');
   const at = process.execPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  assert.match(readFileSync(join(state, 'daemon.log'), 'utf8'), new RegExp(`WARNING: Node 23\\.9\\.0 at ${at} is open to CVE-2026-111497.*: install a fixed Node, then angelia restart\\.$`, 'm'), 'names the binary it runs on');
-  // Started by launchd from a plist that names nvm's folder: a new Node never lands there.
+  assert.match(readFileSync(join(state, 'daemon.log'), 'utf8'), new RegExp(`WARNING: Node 23\\.9\\.0 at ${at} is open to CVE-2026-111497.*: install a fixed Node, then angelia restart from a terminal where it comes first on PATH\\.$`, 'm'), 'names the binary it runs on');
+  // Started by hand from nvm's folder: no plist to write, so no service install advice.
   const tied = mkdtempSync(join(tmpdir(), 'angelia-nodefix-'));
   cli(tied, '23.9.0', ['daemon', join(tied, 'none.yaml')], nvm);
-  assert.ok(readFileSync(join(tied, 'daemon.log'), 'utf8').includes(`then angelia service install <routing.yaml> so the service starts it (${nvm} stays on this version).`));
+  assert.ok(readFileSync(join(tied, 'daemon.log'), 'utf8').includes('then angelia restart from a terminal where it comes first on PATH.'));
+  // Under launchd from a plist that names nvm's folder, a new Node never lands there.
+  assert.match(nodeAdvice(nodeStart(nvm, true), true), /then angelia service install <routing\.yaml> so the service starts it/);
 });
 
 test('status names the daemon\'s Node from status.json, not the one status runs on', () => {
