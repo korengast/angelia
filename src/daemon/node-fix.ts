@@ -24,7 +24,25 @@ export function nodeHasFix(version = process.versions.node): boolean {
   return a > 26 || (!!f && (b > f[0] || (b === f[0] && c >= f[1])));
 }
 
-/** What is wrong with this Node, or undefined when it has the fix. */
-export function nodeFixProblem(version = process.versions.node): string | undefined {
-  return nodeHasFix(version) ? undefined : `Node ${version || '(no version)'} is open to CVE-2026-111497 (Node2Shell, remote code execution through the Brotli decoder); ${NODE_FIX} has the fix`;
+/** What is wrong with this Node, or undefined when it has the fix. `path`, when given, says which binary. */
+export function nodeFixProblem(version = process.versions.node, path?: string): string | undefined {
+  return nodeHasFix(version) ? undefined : `Node ${version || '(no version)'}${path ? ` at ${path}` : ''} is open to CVE-2026-111497 (Node2Shell, remote code execution through the Brotli decoder); ${NODE_FIX} has the fix`;
+}
+
+/**
+ * Whether a node path stays on one version, so a fixed Node installed later never lands there.
+ * stableNode() (service.ts) writes the PATH link into the plist when it resolves to the node that
+ * runs, and the real path otherwise: for nvm, fnm, asdf, Volta, Homebrew's Cellar or an unpacked
+ * tarball, a folder named after the version (fnm's per-shell links go away besides).
+ */
+export function versionedNode(path: string): boolean {
+  return /\/[^/]*\d+\.\d+\.\d+[^/]*\/|\/fnm_multishells\//.test(path);
+}
+
+/** What the owner does about a Node without the fix, when the daemon starts as `path`: a path that
+ *  stays on its version needs the plist written again, or launchd keeps starting the old Node. */
+export function nodeAdvice(path?: string): string {
+  return path && versionedNode(path)
+    ? `install a fixed Node, then angelia service install <routing.yaml> so the service starts it (${path} stays on this version)`
+    : 'install a fixed Node, then angelia restart';
 }

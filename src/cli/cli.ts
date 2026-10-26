@@ -55,7 +55,7 @@ try {
       const overridden = selfOverrideWarning();
       if (overridden) warnings.push(overridden);
       // The Node running this check, which is the one `angelia daemon` from this shell would run on.
-      const open = nodeFixProblem();
+      const open = nodeFixProblem(process.versions.node, process.execPath);
       if (open) warnings.push(open);
       // Read only: a table nobody accepted yet is the daemon's to record at its next start.
       try {
