@@ -62,7 +62,7 @@ npm does not check the release signature the way the installer does; from 0.3.21
 
 You need:
 
-- **Node 22 or newer** and **git** (it comes with the Xcode command line tools).
+- **Node 22.23.4+, 24.22.1+ or 26.12.1+** and **git** (it comes with the Xcode command line tools).
 - **A supported coding agent CLI**, installed and signed in to your own account. See [Backends](#backends).
 - **A Telegram bot.** Open [@BotFather](https://t.me/BotFather), send `/newbot` and keep the token ready. It is stored on your disk, never in a chat.
 - Optional: `brew install openai-whisper ffmpeg` for voice notes, and `brew install tmux` (3.7+) to run a Claude Code profile in its full screen, so the chat also shows up in the Claude app.

@@ -89,10 +89,11 @@ stop_anim() {
 step() { if [ -n "$anim_pid" ]; then printf '%s' "$*" > "$tmp/step"; say "$*" >> "$tmp/said"; else say "$*"; fi; }
 
 command -v git >/dev/null 2>&1 || die "git is required (xcode-select --install on macOS)"
-command -v node >/dev/null 2>&1 || die "Node 22 or newer is required: https://nodejs.org"
+command -v node >/dev/null 2>&1 || die "Node 22.23.4+, 24.22.1+ or 26.12.1+ is required: https://nodejs.org"
 command -v npm >/dev/null 2>&1 || die "npm is required (it ships with Node)"
-major=$(node -p 'process.versions.node.split(".")[0]')
-[ "$major" -ge 22 ] 2>/dev/null || die "Node 22 or newer is required; found $(node --version)"
+# Node2Shell (CVE-2026-111497): Brotli RCE in the runtime, fixed in 22.23.4, 24.22.1, 26.12.1; 23 and 25 get no fix.
+node -e 'const [a,b,c]=process.versions.node.split(".").map(Number),f={22:[23,4],24:[22,1],26:[12,1]}[a];process.exit(a>26||f&&(b>f[0]||b===f[0]&&c>=f[1])?0:1)' \
+  || die "Node 22.23.4+, 24.22.1+ or 26.12.1+ is required (CVE-2026-111497); found $(node --version)"
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/angelia-install.XXXXXX")
 trap 'stop_anim; rm -rf "$tmp"' EXIT
