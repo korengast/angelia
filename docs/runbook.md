@@ -6,7 +6,7 @@ Angelia is; this says what to type. Paths are the defaults (`~/.angelia`, `ANGEL
 ## Install and first run
 
 ```bash
-curl -fsSL <the install.sh in the repository> | sh   # Node 22+, git; the README has the exact line
+curl -fsSL <the install.sh in the repository> | sh   # Node 22.23.4+, 24.22.1+ or 26.12.1+, git; the README has the exact line
 angelia init                    # bot token, which CLI, first directory, pair a chat
 angelia service install         # macOS: a LaunchAgent that starts at login and returns after a crash
 angelia status                  # instance paths, daemon pid, each platform's state, warm sessions

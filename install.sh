@@ -1,10 +1,10 @@
 #!/bin/sh
 # Angelia installer: curl -fsSL https://raw.githubusercontent.com/korengast/angelia/<release tag>/install.sh | sh
 #
-# Does three things and nothing else: checks Node 22+, installs the newest release the way
-# `angelia update` does (clone the tag, build, pack, npm i -g, no dependency install scripts), then
-# runs `angelia init` unless an instance already exists. It never clones into your home, never
-# builds in place, and never touches an existing instance.
+# Does three things and nothing else: checks Node (22.23.4+, 24.22.1+ or 26.12.1+), installs the
+# newest release the way `angelia update` does (clone the tag, build, pack, npm i -g, no dependency
+# install scripts), then runs `angelia init` unless an instance already exists. It never clones into
+# your home, never builds in place, and never touches an existing instance.
 #
 # The release it installs must be a tag signed by one of the release keys below (the owner's, and the
 # release workflow's, which lives only in the repository's `release` environment on GitHub), and the
