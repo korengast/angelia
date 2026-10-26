@@ -15,6 +15,7 @@ import { checkArgs, usageLines } from './cli-args.js';
 import { parseSessionKey } from '../core/types.js';
 import { readFileSync } from 'node:fs';
 import { packageRoot, readBuild } from '../daemon/update.js';
+import { nodeFixProblem } from '../daemon/node-fix.js';
 
 const [cmd, ...rest] = process.argv.slice(2);
 
@@ -53,6 +54,9 @@ try {
       const warnings = [...configWarnings(cfg, workspaceDir(STATE_DIR)), ...cliWarnings(cfg), ...tuiHookWarnings(cfg.profiles), ...tmuxWarnings(cfg.profiles), ...floorWarnings(cfg, STATE_DIR), ...nestingWarnings(cfg)];
       const overridden = selfOverrideWarning();
       if (overridden) warnings.push(overridden);
+      // The Node running this check, which is the one `angelia daemon` from this shell would run on.
+      const open = nodeFixProblem(process.versions.node, process.execPath);
+      if (open) warnings.push(open);
       // Read only: a table nobody accepted yet is the daemon's to record at its next start.
       try {
         const { pending } = effectiveTable(cfg, STATE_DIR);

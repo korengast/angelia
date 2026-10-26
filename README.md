@@ -58,7 +58,7 @@ npm install -g --ignore-scripts angelia-gateway
 angelia init
 ```
 
-npm does not check the release signature the way the installer does; from 0.3.21 on, each release on npm is published by the release workflow with npm provenance (`npm audit signatures` checks it).
+npm only warns (EBADENGINE) about a Node without the fix and installs anyway, so check `node --version` against the versions below first. npm does not check the release signature the way the installer does; from 0.3.21 on, each release on npm is published by the release workflow with npm provenance (`npm audit signatures` checks it).
 
 You need:
 

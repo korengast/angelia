@@ -5,6 +5,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BANNER_ART } from '../src/cli/banner.js';
+import { ACCEPT, REFUSE } from './node-versions.js';
 
 const root = join(import.meta.dirname, '..');
 const script = readFileSync(join(root, 'install.sh'), 'utf8');
@@ -36,13 +37,16 @@ function rig() {
   const signers = `angelia-release namespaces="git" ${readFileSync(`${release}.pub`, 'utf8').trim()}`;
   const copy = join(dir, 'install.sh');
   writeFileSync(copy, script.replace(/^SIGNERS='[^']*'$/m, `SIGNERS='${signers}'`));
+  // The Node check reads process.versions.node: faked (tests/fake-node-version.cjs) to a version with the
+  // fix, so these tests pass on any host Node; FAKE_NODE_VERSION in `env` sets another.
+  const base = { ...process.env, PATH: `${bin}:${process.env.PATH}`, ANGELIA_REPO: `file://${repo}`, ANGELIA_STATE_DIR: join(dir, 'state'), NODE_OPTIONS: `--require ${JSON.stringify(join(import.meta.dirname, 'fake-node-version.cjs'))}`, FAKE_NODE_VERSION: '22.23.4' };
   /** In a terminal (macOS script(1) gives it one), as `curl … | sh` runs it. */
   const runTty = (env: Record<string, string> = {}) => {
-    const r = spawnSync('script', ['-q', '/dev/null', 'sh', copy], { encoding: 'utf8', stdio: [openSync('/dev/null', 'r'), 'pipe', 'pipe'], env: { ...process.env, TERM: 'xterm-256color', PATH: `${bin}:${process.env.PATH}`, ANGELIA_REPO: `file://${repo}`, ANGELIA_STATE_DIR: join(dir, 'state'), ...env } });
+    const r = spawnSync('script', ['-q', '/dev/null', 'sh', copy], { encoding: 'utf8', stdio: [openSync('/dev/null', 'r'), 'pipe', 'pipe'], env: { ...base, TERM: 'xterm-256color', ...env } });
     return `${r.stdout}${r.stderr}`;
   };
   const run = (env: Record<string, string> = {}) => {
-    const r = spawnSync('sh', [copy], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ANGELIA_REPO: `file://${repo}`, ANGELIA_STATE_DIR: join(dir, 'state'), ...env } });
+    const r = spawnSync('sh', [copy], { encoding: 'utf8', env: { ...base, ...env } });
     return `${r.stdout}${r.stderr}`;
   };
   return { git, tag, release, other, run, runTty };
@@ -65,6 +69,17 @@ test('install.sh installs only a tag signed by the key it carries, and one that 
   r.git('tag', 'v1.0.0');
   assert.match(r.run(), /v1\.0\.0 is not a signed release tag/, 'a lightweight tag');
   assert.match(r.run({ ANGELIA_REF: 'main' }), /main is not a release tag: installing it unsigned[\s\S]*npm reached/);
+});
+
+test('install.sh refuses a Node without the Node2Shell fix before it fetches anything, and takes one with it', () => {
+  const r = rig();
+  for (const v of REFUSE) {
+    const out = r.run({ FAKE_NODE_VERSION: v });
+    assert.match(out, /install: Node 22\.23\.4\+, 24\.22\.1\+ or 26\.12\.1\+ is required \(CVE-2026-111497\)/, JSON.stringify(v));
+    assert.doesNotMatch(out, /finding the newest release|npm reached/, JSON.stringify(v));
+  }
+  // Past the check is all that is asked here (the test above goes on to npm): a source with no tags stops it at once.
+  for (const v of ACCEPT) assert.match(r.run({ FAKE_NODE_VERSION: v, ANGELIA_REPO: 'file:///nonexistent' }), /finding the newest release[\s\S]*no release tag/, v);
 });
 
 test('install.sh draws the same banner as angelia init, and its blink only shuts the eyes', () => {

@@ -1,10 +1,10 @@
 #!/bin/sh
 # Angelia installer: curl -fsSL https://raw.githubusercontent.com/korengast/angelia/<release tag>/install.sh | sh
 #
-# Does three things and nothing else: checks Node 22+, installs the newest release the way
-# `angelia update` does (clone the tag, build, pack, npm i -g, no dependency install scripts), then
-# runs `angelia init` unless an instance already exists. It never clones into your home, never
-# builds in place, and never touches an existing instance.
+# Does three things and nothing else: checks Node (22.23.4+, 24.22.1+ or 26.12.1+), installs the
+# newest release the way `angelia update` does (clone the tag, build, pack, npm i -g, no dependency
+# install scripts), then runs `angelia init` unless an instance already exists. It never clones into
+# your home, never builds in place, and never touches an existing instance.
 #
 # The release it installs must be a tag signed by one of the release keys below (the owner's, and the
 # release workflow's, which lives only in the repository's `release` environment on GitHub), and the
@@ -92,7 +92,7 @@ command -v git >/dev/null 2>&1 || die "git is required (xcode-select --install o
 command -v node >/dev/null 2>&1 || die "Node 22.23.4+, 24.22.1+ or 26.12.1+ is required: https://nodejs.org"
 command -v npm >/dev/null 2>&1 || die "npm is required (it ships with Node)"
 # Node2Shell (CVE-2026-111497): Brotli RCE in the runtime, fixed in 22.23.4, 24.22.1, 26.12.1; 23 and 25 get no fix.
-node -e 'const [a,b,c]=process.versions.node.split(".").map(Number),f={22:[23,4],24:[22,1],26:[12,1]}[a];process.exit(a>26||f&&(b>f[0]||b===f[0]&&c>=f[1])?0:1)' \
+node -e 'const v=process.versions.node,[a,b,c]=v.split(".").map(Number),f={22:[23,4],24:[22,1],26:[12,1]}[a];process.exit(/^\d+\.\d+\.\d+$/.test(v)&&(a>26||f&&(b>f[0]||b===f[0]&&c>=f[1]))?0:1)' \
   || die "Node 22.23.4+, 24.22.1+ or 26.12.1+ is required (CVE-2026-111497); found $(node --version)"
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/angelia-install.XXXXXX")

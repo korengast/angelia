@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STATE_DIR } from './daemon.js';
 import { plistPath, plistProgram, serviceInstalled } from './service.js';
+import { nodeAdvice, nodeFixProblem } from './node-fix.js';
 
 /**
  * `angelia update`: replace the installed package with the newest signed release of its source, and
@@ -21,6 +22,8 @@ import { plistPath, plistProgram, serviceInstalled } from './service.js';
  * - no dependency runs an install script: `npm ci --ignore-scripts`, then this package's own build;
  *   the tarball carries every dependency at its locked version, so the install resolves nothing.
  * `--head` installs the branch tip instead, unsigned, and says so: that is for development.
+ * A Node without the fix for CVE-2026-111497 (node-fix.ts) gets a warning, not a refusal: refusing
+ * would not take the daemon off its Node, and it would keep Angelia's own security fixes out.
  *
  * It never restarts anything. The running daemon keeps the code it loaded; the user restarts when
  * it suits them, from a chat (/restart) or a terminal.
@@ -48,6 +51,22 @@ export function serviceMismatch(updated: string, plist: string): string | undefi
   try { here = realpathSync(updated); } catch { return undefined; }
   if (!runs || runs === here) return undefined;
   return `The service does not run this copy: it starts ${runs}, and this update went to ${here}. Update that one with its own Node first on PATH: PATH=${dirname(prog.node)}:$PATH angelia update`;
+}
+
+/**
+ * What is wrong with the Node the service starts (the plist's ProgramArguments[0]), or undefined when
+ * it has the fix. That one, not the Node this update runs on, is the one under the daemon: a shell
+ * can have a fixed Node first on PATH while launchd still starts an older one by its own path.
+ */
+export function serviceNodeProblem(plist: string): string | undefined {
+  const prog = plistProgram(plist);
+  if (!prog) return undefined;
+  const r = spawnSync(prog.node, ['-p', 'process.versions.node'], { encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL',
+    // This update's NODE_OPTIONS can carry flags an older Node does not know, and it would fail for that.
+    env: { ...process.env, NODE_OPTIONS: '' } });
+  if (r.status !== 0) return `The service starts the Node ${prog.node}, which did not run (${r.error?.message ?? (r.stderr || `exit ${r.status}`).trim()}). Write the plist again: angelia service install <routing.yaml>`;
+  const open = nodeFixProblem(r.stdout.trim(), prog.node);
+  return open && `The service's ${open}: ${nodeAdvice(prog.node)}`;
 }
 
 /** The installed package's root: dist/daemon/update.js lives two levels down. */
@@ -179,6 +198,8 @@ function run(cmd: string, args: string[], cwd?: string): string {
 
 export async function updateCommand(argv: string[]): Promise<void> {
   const check = argv.includes('--check'), head = argv.includes('--head'), force = argv.includes('--force');
+  const open = nodeFixProblem();
+  if (open) console.log(`Warning: ${open}. Updating anyway: install a fixed Node too.`);
   const fromAt = argv.indexOf('--from');
   let source = fromAt >= 0 ? argv[fromAt + 1] : undefined;
   if (fromAt >= 0 && !source) throw new Error('--from needs a git URL or a folder');
@@ -225,6 +246,8 @@ export async function updateCommand(argv: string[]): Promise<void> {
       try { plist = readFileSync(plistPath(), 'utf8'); } catch { /* no plist to compare with */ }
       const off = plist && serviceMismatch(join(globalRoot, name), plist);
       if (off) console.log(`Warning: ${off}`);
+      const node = plist && serviceNodeProblem(plist);
+      if (node) console.log(`Warning: ${node}.`);
     }
   } finally {
     rmSync(tmp, { recursive: true, force: true });

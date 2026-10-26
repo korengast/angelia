@@ -2,7 +2,7 @@ import { isDaemonPid, pidAlive } from './pid.js';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, statSync } from 'node:fs';
 import { workspaceDir } from '../instance/instance.js';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { loadConfig, configWarnings } from '../instance/config/load.js';
 import { effectiveTable, writeAccepted } from '../instance/accepted.js';
@@ -24,6 +24,8 @@ import { launchChatRestart, takeRestartNote } from './restart.js';
 import { onboardChat } from '../instance/onboard.js';
 import { apiDeps } from './api/deps.js';
 import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
+import { nodeAdvice, nodeFixProblem } from './node-fix.js';
+import { LABEL } from './service.js';
 import type { Inbound } from '../core/types.js';
 
 export const STATE_DIR = process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia');
@@ -79,6 +81,9 @@ export async function runDaemon(configPath: string): Promise<void> {
     if (old) logLine(`daemon.pid named pid ${old}, which is not a running angelia daemon (left by a crash?); replaced`);
   }
   writeFileSync(pidFile, String(process.pid));
+  // A warning, not a refusal: refusing would take every chat down, and the fix is the owner's to install.
+  const started = nodeStart(), open = nodeFixProblem(process.versions.node, process.execPath);
+  if (open) logLine(`WARNING: ${open}. This process decodes what Telegram and WhatsApp send: ${nodeAdvice(started, started !== undefined)}.`);
 
   // Held in memory, never copied into process.env: everything this process starts inherits that.
   const secrets = envFile();
@@ -197,7 +202,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   let telegram: TelegramAdapter | undefined;
   const tgState = () => telegram?.state ?? 'off';
   let waState = 'off';
-  const statusNow = () => ({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), tg: tgState(), wa: waState, sessions: orch.status() });
+  const statusNow = () => ({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), node: process.versions.node, nodePath: process.execPath, nodeStart: started, tg: tgState(), wa: waState, sessions: orch.status() });
   const api = new ApiServer(apiDeps(orch, cfg, statusNow, STATE_DIR), apiToken);
   const socket = join(STATE_DIR, API_SOCKET);
   await claimSocket(socket);
@@ -282,12 +287,31 @@ export async function runDaemon(configPath: string): Promise<void> {
   await new Promise(() => {});
 }
 
+/** The plist's node path when launchd started this daemon (launchd passes it as argv[0] and names the
+ *  job in XPC_SERVICE_NAME, which its children inherit, so the parent must be launchd too): it decides whether a new Node reaches the daemon by a restart or needs the
+ *  plist written again. Without the service there is no plist to point anywhere, so nothing. process.execPath
+ *  is no use here: it is always the real binary, a versioned folder even when the plist names a link
+ *  that follows upgrades, and `angelia restart` spawns that same binary. */
+export function nodeStart(argv0 = process.argv0, service = process.ppid === 1 && process.env.XPC_SERVICE_NAME === LABEL): string | undefined {
+  return service && isAbsolute(argv0) ? argv0 : undefined;
+}
+
+/** status's line about the daemon's Node, from what status.json recorded: fine, unknown, or what is wrong with it. */
+export function nodeLine(s: { node?: unknown; nodePath?: unknown; nodeStart?: unknown }): string {
+  if (typeof s.node !== 'string') return "daemon's Node unknown (started before this version); angelia restart records it";
+  const path = typeof s.nodePath === 'string' ? s.nodePath : undefined;
+  const open = nodeFixProblem(s.node, path);
+  return open ? `warning: ${open}; ${nodeAdvice(typeof s.nodeStart === 'string' ? s.nodeStart : undefined, typeof s.nodeStart === 'string')}` : `node ${s.node}${path ? ` at ${path}` : ''} (has the CVE-2026-111497 fix)`;
+}
+
 export function readStatus(): string {
   const p = join(STATE_DIR, 'status.json');
   if (!existsSync(p)) return 'no daemon status file';
   const s = JSON.parse(readFileSync(p, 'utf8'));
   const alive = pidAlive(Number(s.pid));
   const lines = [`daemon pid ${s.pid} ${alive ? 'alive' : 'DEAD'} · written ${s.at}`, `telegram: ${s.tg} · whatsapp: ${s.wa}`];
+  // The daemon's own Node, which launchd picks from the plist: not always the one this command runs on.
+  lines.push(nodeLine(s));
   for (const x of s.sessions ?? []) lines.push(`  ${x.key} ${x.alive ? 'warm' : 'cold'} queued=${x.queued}`);
   return lines.join('\n');
 }
