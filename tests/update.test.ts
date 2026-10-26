@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { changesText, chooseTarget, defaultSource, newCommits, readBuild, refusal, releaseTags, serviceMismatch, verifyTag } from '../src/daemon/update.js';
+import { changesText, chooseTarget, defaultSource, newCommits, readBuild, refusal, releaseTags, serviceMismatch, serviceNodeProblem, verifyTag } from '../src/daemon/update.js';
 import { buildPlist } from '../src/daemon/service.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-upd-'));
@@ -136,4 +136,25 @@ test('update says when the copy it updated is not the one the service runs', () 
   // The other copy was removed and its bin link dangles: the service runs nothing at all.
   const gone = buildPlist({ node: '/n/node', entry: join(base, 'removed', 'bin', 'angelia'), config: '/t/r.yaml', stateDir: '/s', path: '/usr/bin', home: '/h' });
   assert.match(serviceMismatch(runs, gone) ?? '', /no longer exists.*angelia service install/);
+});
+
+test('update asks the Node the service starts for its version, not the one it runs on', () => {
+  const dir = tmp();
+  /** A node that answers `-p process.versions.node` with `version`, at `path` under dir. */
+  const fakeNode = (path: string, version: string) => {
+    const p = join(dir, path);
+    mkdirSync(join(p, '..'), { recursive: true });
+    writeFileSync(p, `#!/bin/sh\n[ "$1 $2" = "-p process.versions.node" ] && echo ${version}\n`);
+    chmodSync(p, 0o755);
+    return p;
+  };
+  const plist = (node: string) => buildPlist({ node, entry: '/e/angelia', config: '/t/routing.yaml', stateDir: '/s', path: '/usr/bin', home: '/h' });
+  assert.equal(serviceNodeProblem(plist(fakeNode('bin/node', '24.22.1'))), undefined, 'a fixed Node says nothing');
+  const link = fakeNode('opt/bin/node', '24.22.0');
+  assert.equal(serviceNodeProblem(plist(link)), `The service's Node 24.22.0 at ${link} is open to CVE-2026-111497 (Node2Shell, remote code execution through the Brotli decoder); Node 22.23.4+, 24.22.1+ or 26.12.1+ has the fix: install a fixed Node, then angelia restart`);
+  // nvm's folder stays on its version: the plist has to name the new one.
+  const nvm = fakeNode('.nvm/versions/node/v25.1.0/bin/node', '25.1.0');
+  assert.match(serviceNodeProblem(plist(nvm)) ?? '', /Node 25\.1\.0 .*then angelia service install <routing\.yaml> so the service starts it/);
+  assert.match(serviceNodeProblem(plist(join(dir, 'gone', 'node'))) ?? '', /^The service starts the Node .*gone\/node, which did not run .*angelia service install <routing\.yaml>$/);
+  assert.equal(serviceNodeProblem('<plist/>'), undefined, 'a plist it cannot read');
 });
