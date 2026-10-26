@@ -21,7 +21,7 @@ const cli = (state: string, version: string, args: string[], argv0 = '/opt/node/
   const r = spawnSync(process.execPath, ['--import', 'tsx', join(root, 'src', 'cli', 'cli.ts'), ...args], { encoding: 'utf8', argv0, env: { ...fake(version), ANGELIA_STATE_DIR: state } });
   return `${r.stdout}${r.stderr}`;
 };
-const nvm = '/Users/someone/.nvm/versions/node/v23.9.0/bin/node';
+const nvm = '/Users/example/.nvm/versions/node/v23.9.0/bin/node';
 
 test('nodeHasFix takes the fixed lines at or past their fix, and nothing else', () => {
   for (const v of ACCEPT) assert.equal(nodeHasFix(v), true, v);
@@ -33,9 +33,9 @@ test('nodeHasFix takes the fixed lines at or past their fix, and nothing else', 
 });
 
 test('a node path tied to one version is told to write the plist again, any other to restart', () => {
-  const tied = [nvm, '/opt/homebrew/Cellar/node/24.1.0/bin/node', '/usr/local/Cellar/node@22/22.20.0/bin/node', '/Users/someone/.local/share/fnm/node-versions/v24.1.0/installation/bin/node',
-    '/Users/someone/.local/state/fnm_multishells/123_456/bin/node', '/Users/someone/.asdf/installs/nodejs/24.1.0/bin/node', '/usr/local/lib/node-v24.1.0-darwin-arm64/bin/node'];
-  const loose = ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/opt/homebrew/opt/node@22/bin/node', '/Users/someone/.volta/bin/node'];
+  const tied = [nvm, '/opt/homebrew/Cellar/node/24.1.0/bin/node', '/usr/local/Cellar/node@22/22.20.0/bin/node', '/Users/example/.local/share/fnm/node-versions/v24.1.0/installation/bin/node',
+    '/Users/example/.local/state/fnm_multishells/123_456/bin/node', '/Users/example/.asdf/installs/nodejs/24.1.0/bin/node', '/usr/local/lib/node-v24.1.0-darwin-arm64/bin/node'];
+  const loose = ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/opt/homebrew/opt/node@22/bin/node', '/Users/example/.volta/bin/node'];
   for (const p of tied) assert.equal(versionedNode(p), true, p);
   for (const p of loose) assert.equal(versionedNode(p), false, p);
   assert.equal(nodeAdvice(nvm), `install a fixed Node, then angelia service install <routing.yaml> so the service starts it (${nvm} stays on this version)`);
