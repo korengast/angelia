@@ -24,6 +24,7 @@ import { launchChatRestart, takeRestartNote } from './restart.js';
 import { onboardChat } from '../instance/onboard.js';
 import { apiDeps } from './api/deps.js';
 import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
+import { nodeFixProblem } from './node-fix.js';
 import type { Inbound } from '../core/types.js';
 
 export const STATE_DIR = process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia');
@@ -79,6 +80,9 @@ export async function runDaemon(configPath: string): Promise<void> {
     if (old) logLine(`daemon.pid named pid ${old}, which is not a running angelia daemon (left by a crash?); replaced`);
   }
   writeFileSync(pidFile, String(process.pid));
+  // A warning, not a refusal: refusing would take every chat down, and the fix is the owner's to install.
+  const open = nodeFixProblem();
+  if (open) logLine(`WARNING: ${open}. This process decodes what Telegram and WhatsApp send: install a fixed Node, then angelia restart.`);
 
   // Held in memory, never copied into process.env: everything this process starts inherits that.
   const secrets = envFile();
@@ -197,7 +201,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   let telegram: TelegramAdapter | undefined;
   const tgState = () => telegram?.state ?? 'off';
   let waState = 'off';
-  const statusNow = () => ({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), tg: tgState(), wa: waState, sessions: orch.status() });
+  const statusNow = () => ({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), node: process.versions.node, tg: tgState(), wa: waState, sessions: orch.status() });
   const api = new ApiServer(apiDeps(orch, cfg, statusNow, STATE_DIR), apiToken);
   const socket = join(STATE_DIR, API_SOCKET);
   await claimSocket(socket);
@@ -282,12 +286,20 @@ export async function runDaemon(configPath: string): Promise<void> {
   await new Promise(() => {});
 }
 
+/** status's line about the daemon's Node: fine, or what is wrong with it. */
+export function nodeLine(version: string): string {
+  const open = nodeFixProblem(version);
+  return open ? `warning: ${open}; install one, then angelia restart` : `node ${version} (has the CVE-2026-111497 fix)`;
+}
+
 export function readStatus(): string {
   const p = join(STATE_DIR, 'status.json');
   if (!existsSync(p)) return 'no daemon status file';
   const s = JSON.parse(readFileSync(p, 'utf8'));
   const alive = pidAlive(Number(s.pid));
   const lines = [`daemon pid ${s.pid} ${alive ? 'alive' : 'DEAD'} · written ${s.at}`, `telegram: ${s.tg} · whatsapp: ${s.wa}`];
+  // The daemon's own Node, which launchd picks from the plist: not always the one this command runs on.
+  if (typeof s.node === 'string') lines.push(nodeLine(s.node));
   for (const x of s.sessions ?? []) lines.push(`  ${x.key} ${x.alive ? 'warm' : 'cold'} queued=${x.queued}`);
   return lines.join('\n');
 }
