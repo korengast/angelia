@@ -12,11 +12,14 @@
 export const NODE_FIX = 'Node 22.23.4+, 24.22.1+ or 26.12.1+';
 
 /**
- * install.sh's rule, read the same way (a test runs both over one table): a major above 26, or 22, 24
- * or 26 at or past its fix. Anything that does not split into numbers is refused, a prerelease of
- * the fix included (`26.12.1-rc.1`): it is not the release that carries the fix.
+ * install.sh's rule, read the same way (a test runs both over one table). Accepted: exactly three
+ * dot-separated runs of digits (`^\d+\.\d+\.\d+$`), and then a major above 26, or 22, 24 or 26 at or
+ * past its fix. Everything else is refused before the numbers are compared: a prerelease of the fix
+ * (`26.12.1-rc.1`, which is not the release that carries it), a leading `v` or space, a short `27`,
+ * and what Number() would read as a large major (`Infinity`, `1e2.0.0`).
  */
 export function nodeHasFix(version = process.versions.node): boolean {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) return false;
   const [a, b, c] = version.split('.').map(Number), f = ({ 22: [23, 4], 24: [22, 1], 26: [12, 1] } as Record<number, [number, number] | undefined>)[a];
   return a > 26 || (!!f && (b > f[0] || (b === f[0] && c >= f[1])));
 }
