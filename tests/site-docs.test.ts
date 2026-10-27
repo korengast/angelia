@@ -56,6 +56,10 @@ test('site docs: a link goes only to the web, to mail, to a heading or to a rela
   // Two slashes (forward or back) reach another host; a control character can hide a scheme.
   assert.equal(inline('[a](//evil.example) [b](\\\\evil.example) [c](\u0001javascript:x) [d](/docs/)'),
     '[a](//evil.example) [b](\\\\evil.example) [c](\u0001javascript:x) <a href="/docs/">d</a>');
+  // A target ends at a double quote, so a quote cannot leave the href; a title is not a link.
+  assert.equal(inline('[a](x"onmouseover="y) [b](x.md "title")'), '[a](x&quot;onmouseover=&quot;y) [b](x.md &quot;title&quot;)');
+  // The text cannot forge the place of a held piece: the private-use mark is taken out first.
+  assert.equal(inline('`c` \uE0000\uE000 and \u00000\u0000'), '<code>c</code> 0 and \u00000\u0000');
 });
 
 test('site docs: heading ids follow github-slugger, and a # in a heading is kept', () => {

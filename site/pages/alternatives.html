@@ -7,7 +7,7 @@
   "draft": false
 }-->
 <p class="lede">Several tools put an AI agent in your chat app. They differ most in one thing: whose agent does the work. Angelia runs a CLI you already use. OpenClaw and Hermes Agent bring an agent of their own, and OpenClaw can also run Claude Code or Gemini CLI as its engine. This page is on Angelia's site, so it says where the others are the better choice, and what Angelia cannot do.</p>
-<p class="fine">Facts checked against each project's own docs in October 2026. These projects change fast; check their docs before you decide.</p>
+<p class="fine">Facts checked against each project's own docs on 27 October 2026. These projects change fast; check their docs before you decide.</p>
 
 <h2 id="side-by-side">Side by side</h2>
 <div class="table three"><table>
@@ -17,10 +17,10 @@
 <tr><td>Chat apps</td><td>WhatsApp (second number), Telegram</td><td>WhatsApp, Telegram, Discord, iMessage, Slack, Teams, Signal, Google Chat and 20+ more</td><td>Telegram, Discord, Slack, WhatsApp, Signal, email</td></tr>
 <tr><td>Runs on</td><td>macOS</td><td>macOS, Linux, Windows (WSL2 or PowerShell); apps for iOS and Android</td><td>macOS 12+, Windows 10/11 desktop app, Linux; Docker, Termux</td></tr>
 <tr><td>Sessions</td><td>One session and one folder per chat</td><td>Its own; with a CLI backend, sessions and warm processes</td><td>Its own, with memory and subagents</td></tr>
-<tr><td>Tools and permissions</td><td>The CLI's own: its tools, skills, MCP servers and permission prompts</td><td>OpenClaw's policy; with its tools on, Claude's Bash is replaced by OpenClaw's exec. Tools run on the host unless you set up a sandbox</td><td>Its own tools, self-made skills, scheduled tasks, 5 terminal backends</td></tr>
-<tr><td>Model access</td><td>Starts your CLI under its own login</td><td>Calls a model provider; or starts Claude Code or Gemini CLI under their login</td><td>Calls the model's API itself</td></tr>
-<tr><td>Who may write</td><td>Paired chats only; per chat, owners and an allow list; only owners approve</td><td>Unknown senders pair by code (<code>openclaw pairing approve</code>)</td><td>See <a href="https://hermes-agent.nousresearch.com">its docs</a></td></tr>
-<tr><td>Status</td><td>MIT, v0.3, one maintainer</td><td>MIT, large community (about 392k GitHub stars, October 2026)</td><td>MIT, by Nous Research</td></tr>
+<tr><td>Tools and permissions</td><td>The CLI's own: its tools, skills, MCP servers and permission prompts</td><td>OpenClaw's policy; with its tools on, Claude's Bash is replaced by OpenClaw's exec. Tools run on the host unless you set up a sandbox</td><td>Its own tools, self-made skills, scheduled tasks, five terminal backends</td></tr>
+<tr><td>Model access</td><td>Starts your CLI, signed in as you already are</td><td>Calls a model provider; or starts Claude Code or Gemini CLI, signed in as you are</td><td>Calls the model's API itself</td></tr>
+<tr><td>Who may write</td><td>Paired chats only; per chat, owners and an allow list; only owners approve</td><td>Unknown senders pair by code (<code>openclaw pairing approve</code>)</td><td>Not checked here (<a href="https://hermes-agent.nousresearch.com">its docs</a>)</td></tr>
+<tr><td>Status</td><td>MIT, v0.3, one maintainer</td><td>MIT, about 393k GitHub stars (October 2026)</td><td>MIT, by Nous Research, about 258k GitHub stars (October 2026)</td></tr>
 </tbody>
 </table></div>
 
@@ -33,7 +33,7 @@
 <p>More: <a href="/claude-code/">Claude Code</a> · <a href="/whatsapp/">WhatsApp</a> · <a href="/telegram/">Telegram</a> · <a href="/docs/">docs</a>.</p>
 
 <h2 id="openclaw">OpenClaw</h2>
-<p><a href="https://github.com/openclaw/openclaw">OpenClaw</a> is a full personal agent with its own Gateway, on any model provider, with apps for iOS and Android and the widest list of chat apps here. It can also run its turns through a local Claude Code or Gemini CLI, as the main engine or a fallback, with sessions and warm processes. It has no bundled Codex CLI backend; Codex goes through an app-server harness. With the Gateway's tools on, OpenClaw's own exec replaces Claude's Bash, and the permission policy is OpenClaw's, not Claude Code's.</p>
+<p><a href="https://github.com/openclaw/openclaw">OpenClaw</a> is a full personal agent with its own Gateway, on any model provider, with apps for iOS and Android and the widest list of chat apps here. It can also run its turns through a local Claude Code or Gemini CLI, as the main engine or a fallback, with sessions and warm processes. Codex is not one of its built-in engines.</p>
 <ul>
   <li><strong>Pick it when:</strong> you want many chat apps, Linux or Windows, phone apps, or an agent that is not tied to one CLI.</li>
   <li><strong>Keep in mind:</strong> tools run on the host unless you set up its sandbox. Even with Claude Code as its engine, the rules in front of it are OpenClaw's.</li>

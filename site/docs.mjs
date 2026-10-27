@@ -26,18 +26,24 @@ function slugger() {
 const SAFE_HREF = /^(?![\u0000- ]|[/\\]{2})(?:https?:|mailto:|#|(?![a-z][a-z0-9+.-]*:))/i;
 const CODE_SPAN = /(`+)([\s\S]*?[^`])\1(?!`)/g;
 
-/** One line of Markdown text into HTML. `link(href)` gives the URL a link points at on the site. */
+/** Marks the place of a piece of HTML held back while the rest is marked up: a private-use character,
+ *  which no doc writes, and which is taken out of the text first, so the text cannot forge a place. */
+const HELD = '\uE000';
+
+/** One line of Markdown text into HTML. `link(href)` gives the URL a link points at on the site. A
+ *  link's target ends at a space, a ) or a double quote: a title ("…") is not supported. */
 export function inline(md, link = (h) => h) {
   const held = [];
-  const hold = (html) => `\u0000${held.push(html) - 1}\u0000`;
+  const hold = (html) => `${HELD}${held.push(html) - 1}${HELD}`;
   const marks = (t) => esc(t)
     .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^\w*])\*(?=[^\s*])([^*]*?[^\s*])\*(?![\w*])/g, '$1<em>$2</em>');
   // Code spans first: nothing inside one is Markdown, brackets included. A link's text may hold them.
-  let t = md.replace(CODE_SPAN, (_, _ticks, code) => hold(`<code>${esc(code.replace(/^ (.*) $/, '$1'))}</code>`))
-    .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (all, text, href) => SAFE_HREF.test(href) ? hold(`<a href="${esc(link(href))}">${marks(text)}</a>`) : all);
+  let t = md.replaceAll(HELD, '').replace(CODE_SPAN, (_, _ticks, code) => hold(`<code>${esc(code.replace(/^ (.*) $/, '$1'))}</code>`))
+    .replace(/\[([^\]]*)\]\(([^)\s"]+)\)/g, (all, text, href) => SAFE_HREF.test(href) ? hold(`<a href="${esc(link(href))}">${marks(text)}</a>`) : all);
   t = marks(t);
-  while (/\u0000\d+\u0000/.test(t)) t = t.replace(/\u0000(\d+)\u0000/g, (_, i) => held[Number(i)]);
+  // A held piece may hold others (a code span in a link's text): put them back until none is left.
+  while (t.includes(HELD)) t = t.replace(new RegExp(`${HELD}(\\d+)${HELD}`, 'g'), (_, i) => held[Number(i)]);
   return t;
 }
 
@@ -69,7 +75,7 @@ function unsupported(md) {
   const flush = () => {
     const text = para.map(([, l]) => (l.trimStart().startsWith('|') ? l.replace(/\\\|/g, '') : l)).join('\n').replace(CODE_SPAN, '');
     for (const [re, what] of UNSUPPORTED_TEXT) if (re.test(text)) found.push(`${what} near line ${para[0][0]}`);
-    if (BARE_URL.test(text.replace(/\]\([^)\s]+\)/g, ']'))) found.push(`a bare URL (an autolink) near line ${para[0][0]}`);
+    if (BARE_URL.test(text.replace(/\]\([^)\s"]+\)/g, ']'))) found.push(`a bare URL (an autolink) near line ${para[0][0]}`);
     para = [];
   };
   let inList = false;
@@ -93,7 +99,7 @@ function unsupported(md) {
 /** A Markdown file with each inline link's target passed through `to`, leaving fenced code and code
  *  spans as they are: the site's Markdown copy of a doc. */
 export function rewriteLinks(md, to) {
-  return md.replace(/^ {0,3}```[\s\S]*?^ {0,3}```\s*$|(`+)[\s\S]*?[^`]\1(?!`)|\]\(([^)\s]+)\)/gm, (all, _ticks, href) => (href === undefined ? all : `](${to(href)})`));
+  return md.replace(/^ {0,3}```[\s\S]*?^ {0,3}```\s*$|(`+)[\s\S]*?[^`]\1(?!`)|\]\(([^)\s"]+)\)/gm, (all, _ticks, href) => (href === undefined ? all : `](${to(href)})`));
 }
 
 const plain = (md) => inline(md).replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');

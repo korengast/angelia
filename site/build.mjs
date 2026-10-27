@@ -101,6 +101,8 @@ const longDate = (d) => { const [y, m, day] = d.split('-').map(Number); return `
 const slugify = (t) => t.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const withIds = (body) => body.replace(/<h2>([\s\S]*?)<\/h2>/g, (_, inner) => `<h2 id="${slugify(inner)}">${inner}</h2>`);
 // Search results cut a title past 60 characters and a description past 155: the build refuses longer ones.
+// A description made from a file (an ADR's heading) is cut to fit instead, at a word, with an ellipsis.
+const clip = (text, max = 155) => (text.length <= max ? text : `${text.slice(0, max).replace(/\s+\S*$/, '').replace(/[\s,;:—-]+$/, '')}…`);
 const fits = (title, description) => {
   if (pageTitle(title).length > 60) throw new Error(`title over 60 characters: ${title}`);
   if (description.length > 155) throw new Error(`description over 155 characters (${description.length}): ${title}`);
@@ -192,14 +194,16 @@ const DOCS = [
   const sentences = said.split(/(?<=\.)\s+/);
   const status = [sentences[0], ...sentences.slice(1).filter((t) => /supersed|historical|amended|replaced/i.test(t))].filter(Boolean).join(' ');
   const changed = /supersed|historical in part/i.test(status) ? ' (superseded in part)' : /amended|replaced by/i.test(status) ? ' (amended)' : '';
-  return { ...d, md, path, modified, title, status, description: `Angelia design decision ${d.adr}: ${what}${changed}.`, ogImage: card('docs') };
+  return { ...d, md, path, modified, title, status, description: clip(`Angelia design decision ${d.adr}: ${what}${changed}.`), ogImage: card('docs') };
 });
 const docPath = new Map([...DOCS.map((d) => [d.file, d.path]), ['docs/decisions', '/docs/decisions/'], ['docs/api.md', '/docs/api.md']]);
-/** Where a link in a doc goes: another doc's page, the API page the site serves as it is, or the file on GitHub. */
+/** Where a link in a doc goes: another doc's page, the API page the site serves as it is, or the file on
+ *  GitHub. A link out of the repository has no page to go to, so the build refuses it. */
 const docLink = (from) => (href) => {
   if (/^(https?:|mailto:|#)/.test(href)) return href;
   const [file, hash] = href.split('#');
   const target = posix.normalize(posix.join(posix.dirname(from), file)).replace(/\/$/, '');
+  if (target === '..' || target.startsWith('../') || target.startsWith('/')) throw new Error(`${from}: the link ${href} leaves the repository`);
   return (docPath.get(target) ?? `${BLOB}/${target}`) + (hash ? `#${hash}` : '');
 };
 const MORE_DOCS = [['/docs/reference/', 'Reference'], ['/docs/security/', 'Security model'], ['/docs/runbook/', 'Runbook'], ['/docs/decisions/', 'Decisions'], ['/docs/api.md', 'Local API (Markdown)']];
@@ -223,27 +227,27 @@ for (const d of DOCS) {
   }));
 }
 const adrs = DOCS.filter((d) => d.adr);
-const docIndex = (path, title, description, body) => {
+const docIndex = (path, title, name, description, body) => {
   mkdirSync(join(out, path), { recursive: true });
   writeFileSync(join(out, path, 'index.html'), guidePage({
     title, description, url: SITE + path, byline: path === '/docs/' ? 'Angelia' : '<a href="/docs/">Docs</a>', ogType: 'website',
     ogImage: card('docs'), ogAlt: title, body: `<div class="doc">\n${body}\n</div>`,
-    jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: `Angelia ${title.toLowerCase()}`, url: SITE + path },
+    jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name, url: SITE + path },
   }));
 };
-docIndex('/docs/', 'Docs', 'The Angelia docs: the reference, the security model, the runbook, the local API and the design decisions, built from the repository.',
-  `<p class="lede">These pages are the Markdown files in the repository's <code>docs/</code> folder, rebuilt with the site. They follow the main branch, so they can be ahead of the latest release. Each page links to its file on GitHub.</p>
+docIndex('/docs/', 'Angelia docs: reference, security, runbook, API, decisions', 'Angelia docs', 'The Angelia docs: the reference, the security model, the runbook, the local API and the design decisions, built from the repository.',
+  `<p class="lede">These pages are the Markdown files in the repository's <code>docs/</code> folder, rebuilt with the site. They follow the main branch, so they may describe things the latest release does not have yet. Each page links to its file on GitHub.</p>
 <ul>
 <li><a href="/docs/reference/">Reference</a><br><span class="meta">Features in detail, capabilities per profile, the backends, setting things up by hand, the instance folder, every file Angelia keeps.</span></li>
 <li><a href="/docs/security/">Security model</a><br><span class="meta">Who can reach and command the agent, tokens, secrets, the sandbox, logs, what leaves your machine.</span></li>
 <li><a href="/docs/runbook/">Runbook</a><br><span class="meta">Day-to-day commands, where to look, known failures and their fixes, cutting a release, uninstalling.</span></li>
-<li><a href="/docs/api.md">Local API</a> (Markdown) and its <a href="/openapi.json">OpenAPI document</a><br><span class="meta">Scripts and agents talk to the daemon: tokens, routes, events, the stability promise.</span></li>
+<li><a href="/docs/api.md">Local API</a> (Markdown, with an <a href="/openapi.json">OpenAPI document</a>)<br><span class="meta">Scripts and agents talk to the daemon: tokens, routes, events, the stability promise.</span></li>
 <li><a href="/docs/decisions/">Decisions</a><br><span class="meta">Why it is built this way, with the CLI versions each finding was measured on.</span></li>
 </ul>
 <p>The <a href="https://github.com/{{REPO}}#readme">README</a> covers install, the quick start and the chat commands. For agents, <a href="/llms.txt">llms.txt</a> lists the same docs, and every page here is also served as Markdown.</p>`);
-docIndex('/docs/decisions/', 'Decisions', 'Why Angelia is built this way: the architecture decision records, with the CLI versions each finding was measured on.',
+docIndex('/docs/decisions/', 'Decisions', 'Angelia decisions', 'Why Angelia is built this way: the architecture decision records, with the CLI versions each finding was measured on.',
   `<p class="lede">Each record says what was decided, what else was tried, and what it costs. A later record can amend an earlier one; the status line at the top of each says so.</p>
-<ul>${adrs.map((d) => `<li><a href="${d.path}">${esc(d.heading)}</a>${d.status ? `<br><span class="meta">${inline(d.status, docLink(d.file))}</span>` : ''}</li>`).join('\n')}</ul>`);
+<ul>${adrs.map((d) => `<li><a href="${d.path}">${esc(d.heading)}</a>${d.status ? `<br><span class="meta">${inline(d.status, docLink(d.file))}</span>` : ''}</li>`).join('\n')}</ul>${adrs.some((d) => d.adr === '0010') ? '' : '\n<p>There is no 0010. It recorded a design that was removed before the code was published, and the record was left out with it.</p>'}`);
 // The comparison guide, linked from the home page once it is published.
 const COMPARE = 'claude-code-whatsapp-telegram';
 const html = page('index.html')

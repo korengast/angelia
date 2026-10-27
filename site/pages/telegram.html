@@ -12,7 +12,6 @@
 <ul>
   <li>A Mac with Node 22.23.4+, 24.22.1+ or 26.12.1+ and git.</li>
   <li>A supported CLI, installed and signed in: Claude Code 2.1.270+, Codex 0.157+, Grok Build 1.0.13+ or pi 0.80.4+ (<a href="/docs/reference/#backends-in-detail">backends</a>).</li>
-  <li>Tested on Telegram so far: Claude Code. Codex, Grok Build and pi on Telegram are not tested yet.</li>
   <li>A bot token. Open <a href="https://t.me/BotFather">@BotFather</a> in Telegram, send <code>/newbot</code>, pick a name, and keep the token it gives you.</li>
   <li>Optional: <code>brew install openai-whisper ffmpeg</code> for voice notes.</li>
 </ul>
@@ -26,26 +25,26 @@ angelia service install</code></pre>
   <li>Pick a CLI and a folder for the first profile.</li>
   <li>Send your bot any message from your phone. The wizard shows who wrote and asks you to pair that chat.</li>
 </ol>
-<p><code>angelia service install</code> keeps Angelia running: it starts at login and comes back after a crash. Now send the bot <em>"what is in this folder?"</em>. The agent answers from the profile's folder, on your Mac.</p>
+<p><code>angelia service install</code> keeps Angelia running: it starts at login and comes back after a crash. Now send the bot "what is in this folder?". The agent answers from the profile's folder, on your Mac.</p>
 
 <h2 id="groups">Groups and topics</h2>
 <ul>
-  <li><strong>Make the bot a group admin.</strong> Telegram's privacy mode otherwise hides plain @mentions from bots.</li>
+  <li><strong>Make the bot a group admin.</strong> Otherwise Telegram's privacy mode hides plain @mentions from it, and it will not answer.</li>
   <li>In a group, the agent answers only when someone mentions the bot or replies to it. A command tapped in the group's menu, such as <code>/status@yourbot</code>, counts as a mention. A route with <code>mention: any</code> answers every message.</li>
   <li>Only the route's owners are heard, unless <code>allow_from</code> names others by their numeric user id, or says <code>"*"</code>. Only owners approve commands, change the session or restart.</li>
-  <li>A direct chat's id is your numeric user id. A group's id is negative and starts with <code>-100</code>. Both appear in the daemon log the first time an unrouted chat writes.</li>
+  <li>A direct chat's id is your numeric user id. A group's id is negative and starts with <code>-100</code>. Both appear in <code>~/.angelia/daemon.log</code> the first time a chat that is not in the routing table writes.</li>
   <li>A route can name one forum topic with <code>thread:</code>. That topic then has its own profile and session, apart from the rest of the group.</li>
   <li>Messages sent as a channel or by an anonymous group admin are ignored: Angelia cannot tell who sent them.</li>
 </ul>
 
 <h2 id="what-works">What works</h2>
+<p>Approvals, voice notes, files, long answers and chat commands work the same on Telegram and WhatsApp: <a href="/claude-code/#what-works">what works from the chat</a>. What is particular to Telegram:</p>
 <ul>
-  <li><strong>Approvals.</strong> A command the profile may not run on its own comes to the chat as <code>🔐 Bash: npm test</code>, with a short id. An owner answers <code>yes &lt;id&gt;</code> or <code>no &lt;id&gt;</code>. No answer in ten minutes means no. This works for Claude Code, Grok Build and pi. Codex runs in its own sandbox and asks only for more access than the sandbox gives.</li>
-  <li><strong>Voice notes</strong> (tested with Claude Code). A voice note reaches the agent as a file, and the agent runs <code>angelia transcribe</code>, which uses Whisper on your Mac. An audio file the agent sends back arrives as a voice message when it can be converted to ogg/opus (ffmpeg).</li>
-  <li><strong>Photos, videos and documents.</strong> Files up to 20 MB, the Bot API's limit, land in the profile's <code>.inbox/</code> folder for the agent to read. The agent sends files back with <code>angelia send-media</code>, up to 50 MB.</li>
-  <li><strong>Long answers.</strong> Progress lines while the agent works, then the answer, split at paragraph breaks into messages of up to 4,000 characters. A code block cut in two is closed and opened again. The chat shows "typing" while a turn runs.</li>
-  <li><strong>A command menu.</strong> <code>/new</code>, <code>/stop</code>, <code>/status</code>, <code>/resume</code>, <code>/model</code> and the others are answered by Angelia itself, and are listed in Telegram's command menu. The menu is set in routed chats only, so a stranger who opens the bot does not see it.</li>
-  <li><strong>Strangers get nothing.</strong> A chat that is not in the routing table gets no reply. The daemon log gets one line with its chat id.</li>
+  <li><strong>Voice notes</strong> (tested with Claude Code). An audio file the agent sends back arrives as a voice message when it can be converted to ogg/opus (ffmpeg).</li>
+  <li><strong>Files.</strong> Photos, videos and documents up to 20 MB, the Bot API's limit, reach the agent. The agent sends files back up to 50 MB.</li>
+  <li><strong>Long answers</strong> are split into messages of up to 4,000 characters.</li>
+  <li><strong>A command menu.</strong> Angelia's chat commands are listed in Telegram's command menu. The menu is set in routed chats only, so a stranger who opens the bot does not see it.</li>
+  <li><strong>Strangers get nothing.</strong> A chat that is not in the routing table gets no reply. <code>~/.angelia/daemon.log</code> gets one line with its chat id.</li>
 </ul>
 
 <h2 id="privacy">Privacy</h2>
@@ -56,9 +55,10 @@ angelia service install</code></pre>
   <li>Angelia reads the bot's updates by long polling, and Telegram allows one reader per token. Give Angelia a bot of its own, not one another program also uses.</li>
   <li>Answers are sent as plain text. Markdown marks in an answer show as typed.</li>
   <li>macOS only for now, and the Mac must be on. Linux is next.</li>
+  <li>Tested on Telegram so far: Claude Code. Codex, Grok Build and pi on Telegram are not tested yet.</li>
   <li>It is a young project (v0.3), maintained by one person.</li>
+  <li>To remove the bot itself after you uninstall Angelia, send <code>/deletebot</code> to @BotFather.</li>
 </ul>
-<p>To remove the bot itself after you uninstall Angelia, send <code>/deletebot</code> to @BotFather.</p>
 
 <div class="try" id="try">
 <h2 id="try-angelia">Try Angelia</h2>

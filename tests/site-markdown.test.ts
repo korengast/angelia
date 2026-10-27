@@ -113,3 +113,8 @@ b: &lt;2&gt;</pre>
     '- [B](https://useangelia.com/guides/b/)',
   ].join('\n\n') + '\n');
 });
+
+test('site markdown: a code span that holds backticks gets a longer fence', () => {
+  const md = htmlToMarkdown('<html><body><main><p>Its <code>```</code> marks and <code>a`b</code>.</p></main></body></html>', 'https://useangelia.com/x/');
+  assert.match(md, /Its ```` ``` ```` marks and ``a`b``\./);
+});
