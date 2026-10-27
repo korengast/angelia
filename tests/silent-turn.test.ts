@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
@@ -148,40 +148,37 @@ const CASES: Case[] = [
   { name: 'a CLI that goes silent', text: 'HANG', fast: true, out: /./, ok: false, chat: /Nothing new from the agent/ },
 ];
 
-/** What every case's chat turn sends, by method; the control below fills it. */
-const seen = new Set<string>();
-
-for (const c of CASES) {
-  test(`silent control: a chat turn with ${c.name} reaches the chat`, async (t) => {
-    const { calls } = await runTurn(t, DM, c.text, { caller: false, allow: c.allow, fast: c.fast });
-    const want = c.chat;
-    assert.ok(want === 'file' ? calls.some((x) => x.method === 'sendMedia') : calls.some((x) => x.method === 'send' && want.test(String(x.text))), JSON.stringify(calls).slice(0, 2000));
-    for (const x of calls) seen.add(x.method);
-  });
-  for (const key of [DM, GROUP]) {
-    test(`silent: reply: caller in ${key === DM ? 'the owner\'s DM' : 'a group'}, ${c.name}: the caller gets the turn, the chat gets nothing`, async (t) => {
-      const { events, calls } = await runTurn(t, key, c.text, { caller: true, allow: c.allow, fast: c.fast });
-      assert.equal(events[0]?.type, 'turn');
-      assert.equal(turnEnd(events)?.ok, c.ok, JSON.stringify(turnEnd(events)));
-      assert.ok(outs(events).some((x) => c.out.test(x)), JSON.stringify(outs(events)).slice(0, 2000));
-      assert.deepEqual(calls, [], 'no call of any kind on the chat adapter');
+// Each turn has a daemon of its own, so they run side by side: one after the other they would pass
+// the file's time limit on a slow runner.
+describe('silent', { concurrency: 6 }, () => {
+  for (const c of CASES) {
+    test(`silent control: a chat turn with ${c.name} reaches the chat`, async (t) => {
+      const { calls } = await runTurn(t, DM, c.text, { caller: false, allow: c.allow, fast: c.fast });
+      const want = c.chat;
+      assert.ok(want === 'file' ? calls.some((x) => x.method === 'sendMedia') : calls.some((x) => x.method === 'send' && want.test(String(x.text))), JSON.stringify(calls).slice(0, 2000));
+      assert.equal(calls[0]?.method, 'typing', 'the chat saw typing first');
     });
+    for (const key of [DM, GROUP]) {
+      test(`silent: reply: caller in ${key === DM ? 'the owner\'s DM' : 'a group'}, ${c.name}: the caller gets the turn, the chat gets nothing`, async (t) => {
+        const { events, calls } = await runTurn(t, key, c.text, { caller: true, allow: c.allow, fast: c.fast });
+        assert.equal(events[0]?.type, 'turn');
+        assert.equal(turnEnd(events)?.ok, c.ok, JSON.stringify(turnEnd(events)));
+        assert.ok(outs(events).some((x) => c.out.test(x)), JSON.stringify(outs(events)).slice(0, 2000));
+        assert.deepEqual(calls, [], 'no call of any kind on the chat adapter');
+      });
+    }
   }
-}
 
-test('silent control: the chat turns above used typing, send and sendMedia, so an empty record means something', () => {
-  for (const m of ['typing', 'send', 'sendMedia']) assert.ok(seen.has(m), `${m}: ${JSON.stringify([...seen])}`);
-});
-
-test('silent: /ask in a group sends the group nothing; in the owner\'s DM only the one documented line', async (t) => {
-  const { o, calls } = await setup(t);
-  await o.ask(GROUP, 'what changed today?', 'telegram:2');
-  await settle();
-  assert.deepEqual(calls(), []);
-  await o.ask(DM, 'what changed today?', 'telegram:2');
-  await settle();
-  assert.deepEqual(calls().map((c) => [c.method, c.text]), [['send', '📨 b asked: what changed today? (answered)']]);
-  await o.ask(DM, 'and from the owner?');
-  await settle();
-  assert.equal(calls().length, 1, 'the owner asking from a terminal is not announced');
+  test('silent: /ask in a group sends the group nothing; in the owner\'s DM only the one documented line', async (t) => {
+    const { o, calls } = await setup(t);
+    await o.ask(GROUP, 'what changed today?', 'telegram:2');
+    await settle();
+    assert.deepEqual(calls(), []);
+    await o.ask(DM, 'what changed today?', 'telegram:2');
+    await settle();
+    assert.deepEqual(calls().map((c) => [c.method, c.text]), [['send', '📨 b asked: what changed today? (answered)']]);
+    await o.ask(DM, 'and from the owner?');
+    await settle();
+    assert.equal(calls().length, 1, 'the owner asking from a terminal is not announced');
+  });
 });
