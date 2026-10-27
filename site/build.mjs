@@ -5,11 +5,12 @@
 //                                into static/og.png (1200x630) and static/banner.png (1280x400 at 2x)
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { htmlToMarkdown } from './markdown.mjs';
-import { renderMarkdown, toc } from './docs.mjs';
+import { renderMarkdown, toc, inline } from './docs.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SITE = 'https://useangelia.com';
@@ -164,6 +165,12 @@ if (guides.length) writeFileSync(join(out, 'guides', 'index.html'), guidePage({
 // something its file does not. docs/<name>.md is /docs/<name>/, an ADR is /docs/decisions/<file name>/.
 // Each page's Markdown copy is the file itself, with its links pointing at the site.
 const BLOB = `https://github.com/${REPO}/blob/main`;
+// A doc's date for the sitemap: its last commit. None in a shallow clone, where every file would get
+// the newest commit's date, or without git.
+const git = (...args) => { try { return execFileSync('git', args, { cwd: join(here, '..'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+const history = git('rev-parse', '--is-shallow-repository') === 'false';
+const lastCommit = (file) => (history && git('log', '-1', '--format=%cs', '--', file)) || undefined;
+const newest = (dates) => dates.filter(Boolean).sort().at(-1);
 const DOCS = [
   { file: 'docs/reference.md', description: 'Every Angelia feature in full: capabilities per profile, the backends, setting up by hand, the instance folder, and every file Angelia keeps.' },
   { file: 'docs/security.md', description: 'Who can reach and command the agent, tokens, secrets, the sandbox, logs, and what leaves your machine. Read it before you give the bot to anyone.' },
@@ -172,14 +179,20 @@ const DOCS = [
 ].map((d) => {
   const md = readFileSync(join(here, '..', d.file), 'utf8');
   const path = `/${d.file.replace(/\.md$/, '')}/`;
-  if (!d.adr) return { ...d, md, path, ogImage: card('docs') };
+  const modified = lastCommit(d.file);
+  if (!d.adr) return { ...d, md, path, modified, ogImage: card('docs') };
   // An ADR's heading is long ("ADR 0008 — Host mode per profile: print mode by default, …"): the tab
   // title keeps the part before its first colon or semicolon, the description says the whole.
   const heading = md.match(/^# (.+)$/m)[1];
   const what = heading.replace(/^ADR \d+ — /, '');
   let title = `ADR ${d.adr}: ${what.split(/[:;]/)[0]}`;
   if (title.length > 60) title = title.split(',')[0];
-  return { ...d, md, path, title, description: `Angelia design decision ${d.adr}: ${what}.`, ogImage: card('docs') };
+  // The status paragraph's first sentence, and any later one that says the record changed since.
+  const said = (md.match(/^Status: ([\s\S]*?)(?:\n\s*\n|(?![\s\S]))/m)?.[1] ?? '').replace(/\s+/g, ' ').trim();
+  const sentences = said.split(/(?<=\.)\s+/);
+  const status = [sentences[0], ...sentences.slice(1).filter((t) => /supersed|historical|amended|replaced/i.test(t))].filter(Boolean).join(' ');
+  const changed = /supersed|historical in part/i.test(status) ? ' (superseded in part)' : /amended|replaced by/i.test(status) ? ' (amended)' : '';
+  return { ...d, md, path, modified, title, status, description: `Angelia design decision ${d.adr}: ${what}${changed}.`, ogImage: card('docs') };
 });
 const docPath = new Map([...DOCS.map((d) => [d.file, d.path]), ['docs/decisions', '/docs/decisions/'], ['docs/api.md', '/docs/api.md']]);
 /** Where a link in a doc goes: another doc's page, the API page the site serves as it is, or the file on GitHub. */
@@ -219,7 +232,7 @@ const docIndex = (path, title, description, body) => {
   }));
 };
 docIndex('/docs/', 'Docs', 'The Angelia docs: the reference, the security model, the runbook, the local API and the design decisions, built from the repository.',
-  `<p class="lede">These pages are the Markdown files in the repository's <code>docs/</code> folder, rebuilt with the site. Each page links to its file on GitHub.</p>
+  `<p class="lede">These pages are the Markdown files in the repository's <code>docs/</code> folder, rebuilt with the site. They follow the main branch, so they can be ahead of the latest release. Each page links to its file on GitHub.</p>
 <ul>
 <li><a href="/docs/reference/">Reference</a><br><span class="meta">Features in detail, capabilities per profile, the backends, setting things up by hand, the instance folder, every file Angelia keeps.</span></li>
 <li><a href="/docs/security/">Security model</a><br><span class="meta">Who can reach and command the agent, tokens, secrets, the sandbox, logs, what leaves your machine.</span></li>
@@ -230,10 +243,7 @@ docIndex('/docs/', 'Docs', 'The Angelia docs: the reference, the security model,
 <p>The <a href="https://github.com/{{REPO}}#readme">README</a> covers install, the quick start and the chat commands. For agents, <a href="/llms.txt">llms.txt</a> lists the same docs, and every page here is also served as Markdown.</p>`);
 docIndex('/docs/decisions/', 'Decisions', 'Why Angelia is built this way: the architecture decision records, with the CLI versions each finding was measured on.',
   `<p class="lede">Each record says what was decided, what else was tried, and what it costs. A later record can amend an earlier one; the status line at the top of each says so.</p>
-<ul>${adrs.map((d) => {
-    const status = d.md.match(/^Status: (accepted \d{4}-\d{2}-\d{2})/m)?.[1];
-    return `<li><a href="${d.path}">${esc(d.heading)}</a>${status ? `<br><span class="meta">${status}</span>` : ''}</li>`;
-  }).join('\n')}</ul>`);
+<ul>${adrs.map((d) => `<li><a href="${d.path}">${esc(d.heading)}</a>${d.status ? `<br><span class="meta">${inline(d.status, docLink(d.file))}</span>` : ''}</li>`).join('\n')}</ul>`);
 // The comparison guide, linked from the home page once it is published.
 const COMPARE = 'claude-code-whatsapp-telegram';
 const html = page('index.html')
@@ -286,7 +296,8 @@ writeFileSync(join(out, 'sitemap.xml'),
   (guides.length ? `<url><loc>${SITE}/guides/</loc></url>` : '') +
   guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') +
   pages.map((p) => `<url><loc>${SITE}/${p.slug}/</loc><lastmod>${p.updated ?? p.date}</lastmod></url>`).join('') +
-  ['/docs/', ...DOCS.filter((d) => !d.adr).map((d) => d.path), '/docs/decisions/', ...adrs.map((d) => d.path)].map((p) => `<url><loc>${SITE}${p}</loc></url>`).join('') + '</urlset>\n');
+  [['/docs/', newest(DOCS.map((d) => d.modified))], ...DOCS.filter((d) => !d.adr).map((d) => [d.path, d.modified]), ['/docs/decisions/', newest(adrs.map((d) => d.modified))], ...adrs.map((d) => [d.path, d.modified])]
+    .map(([p, date]) => `<url><loc>${SITE}${p}</loc>${date ? `<lastmod>${date}</lastmod>` : ''}</url>`).join('') + '</urlset>\n');
 copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
@@ -340,6 +351,9 @@ writeFileSync(join(out, '_headers'), [
   '  Cache-Control: public, max-age=2592000',
   '/angelia-demo*',
   '  Cache-Control: public, max-age=2592000',
+  // A page's Markdown copy names the page as the one to index: search engines keep the HTML.
+  ...['/', ...(guides.length ? ['/guides/'] : []), ...guides.map((g) => `/guides/${g.slug}/`), ...pages.map((p) => `/${p.slug}/`), '/docs/', '/docs/decisions/', ...DOCS.map((d) => d.path)]
+    .flatMap((p) => [`${p}index.md`, `  Link: <${SITE}${p}>; rel="canonical"`]),
   '',
 ].join('\n'));
 console.log('site/dist written', (html.length / 1024).toFixed(1) + ' kB', `install -> v${version}`, `guides: ${guides.length}`);
