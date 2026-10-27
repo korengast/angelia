@@ -1,6 +1,6 @@
 <!--{
-  "title": "Use Claude Code from WhatsApp or Telegram",
-  "description": "Angelia runs your own Claude Code on your Mac for each WhatsApp or Telegram chat: your CLAUDE.md, skills and MCP servers, approvals in the chat.",
+  "title": "Angelia for Claude Code: setup, approvals and limits",
+  "description": "What Angelia gives Claude Code: a session and folder per chat, your CLAUDE.md, skills and MCP servers as they are, approvals, voice notes, files, limits.",
   "date": "2026-10-27",
   "nav": "Claude Code",
   "card": "One session per chat, on your Mac.",
@@ -31,9 +31,10 @@ angelia service install</code></pre>
 <p>The agent works in its profile's folder, not in your current repo. To let it work on a repo, list the repo in the profile's <code>add_dirs</code> in <code>~/.angelia/workspace/routing.yaml</code>:</p>
 <pre><code>profiles:
   main: { cwd: ~/.angelia/workspace/profiles/main, permission_mode: acceptEdits, add_dirs: [~/code/my-app] }</code></pre>
-<p>Then compile the profile and restart:</p>
-<pre><code>angelia compile main --write</code></pre>
-<p>Send <code>/restart</code> in the chat. It checks the table first. If the table gives new rights since you last accepted it, it lists them and waits for <code>/restart confirm</code>. Every step, in more detail: <a href="/guides/claude-code-from-phone/">how to control Claude Code from your phone</a>.</p>
+<p>Then take the change and apply the profile's rules. Compile refuses while the table has changes you have not accepted, so accept first:</p>
+<pre><code>angelia accept
+angelia compile main --write</code></pre>
+<p>Send <code>/restart</code> in the chat. It checks the table first. If it lists new rights, send <code>/restart confirm</code>. Every step, in more detail: <a href="/guides/claude-code-from-phone/">how to control Claude Code from your phone</a>.</p>
 
 <h2 id="what-works">What works from the chat</h2>
 <h3 id="approvals">Approvals</h3>

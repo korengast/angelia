@@ -21,6 +21,7 @@
   <li>A Mac with Node 22.23.4+, 24.22.1+ or 26.12.1+ and git.</li>
   <li>A supported CLI, installed and signed in: Claude Code 2.1.270+, Codex 0.157+, Grok Build 1.0.13+ or pi 0.80.4+ (<a href="/docs/reference/#backends-in-detail">backends</a>).</li>
   <li>A phone with the second number on WhatsApp, to scan the QR code once.</li>
+  <li>Tested on WhatsApp so far: Claude Code and Grok Build. Codex and pi on WhatsApp are not tested yet.</li>
   <li>Optional: <code>brew install openai-whisper ffmpeg</code> for voice notes.</li>
 </ul>
 
@@ -33,7 +34,10 @@ angelia service install</code></pre>
   <li>Pick a CLI and a folder for the first profile.</li>
   <li>From your own phone, send the second number a message in the chat it should answer, and confirm it in the wizard.</li>
 </ol>
-<p><code>angelia service install</code> keeps Angelia running: it starts at login and comes back after a crash. On a setup you already have, add <code>whatsapp: { auth_dir: ~/.angelia/wa }</code> to <code>~/.angelia/workspace/routing.yaml</code> and run <code>angelia pair</code>.</p>
+<p><code>angelia service install</code> keeps Angelia running: it starts at login and comes back after a crash. On a setup you already have, add <code>whatsapp: { auth_dir: ~/.angelia/wa }</code> to <code>~/.angelia/workspace/routing.yaml</code>, then:</p>
+<pre><code>angelia accept
+angelia pair</code></pre>
+<p><code>angelia pair</code> reads the table you accepted, so accept first. Then send <code>/restart</code> in a chat you own, or run <code>angelia restart</code>.</p>
 
 <h2 id="groups">Groups</h2>
 <ul>
@@ -55,6 +59,7 @@ angelia service install</code></pre>
 <h2 id="privacy">Security and privacy</h2>
 <ul>
   <li>WhatsApp messages are end-to-end encrypted to the linked device, which is your Mac. Angelia has no server and keeps no copy of your messages.</li>
+  <li>Each turn goes to your CLI's model provider, under that CLI's own terms.</li>
   <li>The WhatsApp login lives in <code>auth_dir</code> (<code>~/.angelia/wa</code>, mode 700). It is as good as the account, so every profile's file tools are denied it.</li>
   <li>The daemon keeps the last hour of messages it sent (up to 500) in memory, never on disk, so a device that could not decrypt one gets it again.</li>
   <li><code>angelia unpair</code> logs that one linked device out and deletes its login. The phone and its other linked devices are not touched.</li>

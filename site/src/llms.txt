@@ -13,10 +13,10 @@ Install with `curl -fsSL {{SITE}}/install | sh` (it checks the release signature
 
 ## Pages
 
-- [Use Claude Code from WhatsApp or Telegram]({{SITE}}/claude-code/): what Angelia does for Claude Code, setup, approvals, voice notes, files, limits
+- [Angelia for Claude Code: setup, approvals and limits]({{SITE}}/claude-code/): what Angelia does for Claude Code, setup, approvals, voice notes, files, limits
 - [Your coding agent CLI on WhatsApp]({{SITE}}/whatsapp/): the second number, linking by QR, groups, what works, privacy, limits
 - [Your coding agent CLI on Telegram]({{SITE}}/telegram/): the bot, groups and topics, what works, privacy, limits
-- [Angelia vs OpenClaw, Hermes Agent and Remote Control]({{SITE}}/alternatives/): whose agent runs, chat apps, sessions, and when another tool fits better
+- [Angelia vs OpenClaw and Hermes Agent]({{SITE}}/alternatives/): whose agent runs, chat apps, sessions, and when another tool fits better
 
 ## Local API
 
