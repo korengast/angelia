@@ -283,8 +283,8 @@ const html = page('index.html')
   .replace('<!--GUIDE-LINKS-->', guides.some((g) => g.slug !== COMPARE)
     ? `<p class="more-guides">Guides: ${guides.filter((g) => g.slug !== COMPARE).map((g) => `<a href="/guides/${g.slug}/">${esc(g.title)}</a>`).join(' · ')}</p>` : '')
   .replace('<!--COMPARE-HERO-->', guides.some((g) => g.slug === COMPARE) ? ` <a href="/guides/${COMPARE}/">How it compares</a>.` : '')
-  // The docs and every page, in the footer: short names, since the footer is one line on a laptop.
-  .replace('<!--PAGE-LINKS-->', `<span>${[['/docs/', 'Docs'], ...pages.map((p) => [`/${p.slug}/`, p.nav ?? p.title])].map(([href, t]) => `<a href="${href}">${esc(t)}</a>`).join(' · ')}</span>`);
+  // The docs, the tools and every page, in the footer: short names, since the footer is one line on a laptop.
+  .replace('<!--PAGE-LINKS-->', `<span>${[['/docs/', 'Docs'], ...(tools.length ? [['/tools/', 'Tools']] : []), ...pages.map((p) => [`/${p.slug}/`, p.nav ?? p.title])].map(([href, t]) => `<a href="${href}">${esc(t)}</a>`).join(' · ')}</span>`);
 writeFileSync(join(out, 'index.html'), html);
 writeFileSync(join(out, '404.html'), page('404.html'));
 // Every page as Markdown beside its index.html, for an agent that sends Accept: text/markdown (the Worker
