@@ -1,0 +1,68 @@
+<!--{
+  "title": "Angelia vs OpenClaw and Hermes Agent",
+  "description": "Angelia, OpenClaw and Hermes Agent compared: whose agent does the work, chat apps, platforms, sessions, permissions, and when each one fits better.",
+  "date": "2026-10-27",
+  "nav": "Alternatives",
+  "card": "Compared, limits included.",
+  "draft": false
+}-->
+<p class="lede">Several tools put an AI agent in your chat app. They differ most in one thing: whose agent does the work. Angelia runs a CLI you already use. OpenClaw and Hermes Agent bring an agent of their own, and OpenClaw can also run Claude Code or Gemini CLI as its engine. This page is on Angelia's site, so it says where the others are the better choice, and what Angelia cannot do.</p>
+<p class="fine">Facts checked against each project's own docs on 27 October 2026. These projects change fast; check their docs before you decide.</p>
+
+<h2 id="side-by-side">Side by side</h2>
+<div class="table three"><table>
+<thead><tr><th></th><th>Angelia</th><th>OpenClaw</th><th>Hermes Agent</th></tr></thead>
+<tbody>
+<tr><td>Whose agent</td><td>Your installed CLI: Claude Code, Codex, Grok Build or pi</td><td>Its own (the Gateway), on any model provider; can also run a local Claude Code or Gemini CLI</td><td>Its own agent loop, on your model provider or Nous Portal</td></tr>
+<tr><td>Chat apps</td><td>WhatsApp (second number), Telegram</td><td>WhatsApp, Telegram, Discord, iMessage, Slack, Teams, Signal, Google Chat and 20+ more</td><td>Telegram, Discord, Slack, WhatsApp, Signal, email</td></tr>
+<tr><td>Runs on</td><td>macOS</td><td>macOS, Linux, Windows (WSL2 or PowerShell); apps for iOS and Android</td><td>macOS 12+, Windows 10/11 desktop app, Linux; Docker, Termux</td></tr>
+<tr><td>Sessions</td><td>One session and one folder per chat</td><td>Its own; with a CLI backend, sessions and warm processes</td><td>Its own, with memory and subagents</td></tr>
+<tr><td>Tools and permissions</td><td>The CLI's own: its tools, skills, MCP servers and permission prompts</td><td>OpenClaw's policy; with its tools on, Claude's Bash is replaced by OpenClaw's exec. Tools run on the host unless you set up a sandbox</td><td>Its own tools, self-made skills, scheduled tasks, five terminal backends</td></tr>
+<tr><td>Model access</td><td>Starts your CLI, signed in as you already are</td><td>Calls a model provider; or starts Claude Code or Gemini CLI, signed in as you are</td><td>Calls the model's API itself</td></tr>
+<tr><td>Who may write</td><td>Paired chats only; per chat, owners and an allow list; only owners approve</td><td>Unknown senders pair by code (<code>openclaw pairing approve</code>)</td><td>Not checked here (<a href="https://hermes-agent.nousresearch.com">its docs</a>)</td></tr>
+<tr><td>Status</td><td>MIT, v0.3, one maintainer</td><td>MIT, about 393k GitHub stars (October 2026)</td><td>MIT, by Nous Research, about 258k GitHub stars (October 2026)</td></tr>
+</tbody>
+</table></div>
+
+<h2 id="angelia">Angelia</h2>
+<p>A small daemon on your Mac. It connects to WhatsApp and Telegram and starts your CLI for each chat, in that chat's own folder (a profile). It is not an agent and runs no model: the CLI you already set up does the work, with its own tools, skills, MCP servers and permission prompts. A command the profile may not run on its own comes to the chat and waits for an owner's yes; for Codex and pi, every command also runs in an OS sandbox by default. There is no Angelia server.</p>
+<ul>
+  <li><strong>Pick it when:</strong> you already trust one CLI and want it in your chats, with a separate session, folder and set of rules for each chat, running in the background.</li>
+  <li><strong>Limits:</strong> macOS only for now. WhatsApp needs a second number. Two chat apps, not twenty. A young project (v0.3), maintained by one person.</li>
+</ul>
+<p>More: <a href="/claude-code/">Claude Code</a> · <a href="/whatsapp/">WhatsApp</a> · <a href="/telegram/">Telegram</a> · <a href="/docs/">docs</a>.</p>
+
+<h2 id="openclaw">OpenClaw</h2>
+<p><a href="https://github.com/openclaw/openclaw">OpenClaw</a> is a full personal agent with its own Gateway, on any model provider, with apps for iOS and Android and the widest list of chat apps here. It can also run its turns through a local Claude Code or Gemini CLI, as the main engine or a fallback, with sessions and warm processes. Codex is not one of its built-in engines.</p>
+<ul>
+  <li><strong>Pick it when:</strong> you want many chat apps, Linux or Windows, phone apps, or an agent that is not tied to one CLI.</li>
+  <li><strong>Keep in mind:</strong> tools run on the host unless you set up its sandbox. Even with Claude Code as its engine, the rules in front of it are OpenClaw's.</li>
+</ul>
+
+<h2 id="hermes-agent">Hermes Agent</h2>
+<p><a href="https://hermes-agent.nousresearch.com">Hermes Agent</a>, from Nous Research, is an agent of its own: memory, skills it writes itself, scheduled tasks, subagents, and five terminal backends (local, Docker, SSH, Singularity, Modal). It runs on your model provider, or on Nous Portal, an optional paid service. It calls the model's API itself; it does not run your Claude Code as the agent.</p>
+<ul>
+  <li><strong>Pick it when:</strong> you want one agent that grows its own memory and skills, on the model you choose, on macOS, Windows or Linux.</li>
+  <li><strong>Keep in mind:</strong> it is a different agent from your CLI. What you set up in Claude Code or Codex is not what answers in the chat.</li>
+</ul>
+
+<h2 id="claude-code-own">Claude Code's own: Remote Control and channels</h2>
+<ul>
+  <li><strong>Remote Control</strong> shows one Claude Code session from your computer in the Claude app. Pick it to keep steering one coding session from your phone.</li>
+  <li><strong>Channels</strong> are official plugins that push Telegram, Discord or iMessage messages into the Claude Code session you have open. Pick one for a quick question to that session.</li>
+</ul>
+<p>Both, with their setup and limits, are compared with Angelia in <a href="/guides/claude-code-whatsapp-telegram/">Claude Code on WhatsApp and Telegram: four ways compared</a>.</p>
+
+<h2 id="which">Which one</h2>
+<ul>
+  <li>Many chat apps, Linux or Windows, or an agent not tied to one CLI: <strong>OpenClaw</strong>.</li>
+  <li>An agent that keeps its own memory and writes its own skills: <strong>Hermes Agent</strong>.</li>
+  <li>The CLI you already set up, one session and folder per chat, on WhatsApp or Telegram, from your Mac: <strong>Angelia</strong>.</li>
+  <li>One Claude Code session you started at your desk: <strong>Remote Control</strong> or a <strong>channel</strong>.</li>
+</ul>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/docs/security/">Security model</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>

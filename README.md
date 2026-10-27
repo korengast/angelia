@@ -161,7 +161,7 @@ Back at your desk? In a Claude Code chat, `/status` ends with a line such as `cd
 
 ## WhatsApp
 
-`angelia init` offers WhatsApp beside Telegram: it opens a local page with a QR code; on the phone that owns the number, choose *Linked devices > Link a device* and scan it. Then you send the number a message from the chat it should answer, and confirm. On an existing setup, add `whatsapp: { auth_dir: ~/.angelia/wa }` to the table and run `angelia pair`.
+`angelia init` offers WhatsApp beside Telegram: it opens a local page with a QR code; on the phone that owns the number, choose *Linked devices > Link a device* and scan it. Then you send the number a message from the chat it should answer, and confirm. On an existing setup, add `whatsapp: { auth_dir: ~/.angelia/wa }` to the table, run `angelia accept`, then `angelia pair`, then `/restart`. Then send the number a message from the chat it should answer, take that chat's id from `~/.angelia/daemon.log`, add a `platform: whatsapp` route for it, and `/restart` again (then `/restart confirm` if it lists new rights).
 
 > **Use a second, established number, not your personal one.** Angelia ignores what its own account sends, so on your personal number it would not hear you, and it would answer as you. Its link can also read every chat on that account. And WhatsApp bans newly created numbers that start acting like robots, often within hours.
 

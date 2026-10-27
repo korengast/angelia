@@ -4,10 +4,18 @@
 // scripts, styles, icons, buttons, the skip link, and anything hidden from screen readers.
 
 const VOID = new Set(['br', 'img', 'source', 'meta', 'link', 'input', 'hr', 'use', 'rect', 'path', 'circle']);
-const SKIP = new Set(['head', 'script', 'style', 'svg', 'button', 'nav', 'header', 'template']);
-const BLOCK = new Set(['p', 'div', 'nav', 'section', 'figure', 'figcaption', 'main', 'article', 'header', 'footer', 'table', 'pre', 'ul', 'ol', 'blockquote']);
+const SKIP = new Set(['head', 'script', 'style', 'svg', 'button', 'nav', 'header', 'template', 'select', 'textarea']);
+// A tool's form (site/tools/) reads as its legends, labels and the choices' lists; the controls themselves are left out.
+const BLOCK = new Set(['p', 'div', 'nav', 'section', 'figure', 'figcaption', 'main', 'article', 'header', 'footer', 'table', 'pre', 'ul', 'ol', 'blockquote', 'form', 'fieldset', 'legend']);
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', middot: '·', mdash: '—', ndash: '–', hellip: '…', rarr: '→', larr: '←', copy: '©' };
 
+/** A code span that holds backticks: a fence one longer than its longest run, with a space inside
+ *  when the code starts or ends with one (CommonMark). */
+const codeSpan = (code) => {
+  const fence = '`'.repeat(Math.max(0, ...[...code.matchAll(/`+/g)].map((m) => m[0].length)) + 1);
+  const pad = /^`|`$/.test(code) ? ' ' : '';
+  return fence + pad + code + pad + fence;
+};
 const decode = (t) => t.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => e[0] === '#'
   ? String.fromCodePoint(e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : Number(e.slice(1)))
   : ENTITIES[e.toLowerCase()] ?? m);
@@ -59,7 +67,7 @@ export function htmlToMarkdown(html, base) {
     const inner = () => inline(n.children);
     switch (n.tag) {
       case 'br': return '\n';
-      case 'code': return '`' + textOf(n).replace(/\s+/g, ' ') + '`';
+      case 'code': return codeSpan(textOf(n).replace(/\s+/g, ' '));
       case 'b': case 'strong': { const t = inner().trim(); return t ? `**${t}** ` : ''; }
       case 'em': case 'i': { const t = inner().trim(); return t ? `*${t}* ` : ''; }
       case 'a': { const t = inner().trim(); return t ? `[${t}](${url(n.attrs.href)})` : ''; }

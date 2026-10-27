@@ -1,0 +1,88 @@
+<!--{
+  "title": "Your coding agent CLI on WhatsApp",
+  "description": "Angelia links a second WhatsApp number to your Mac and routes each chat to Claude Code, Codex, Grok Build or pi: groups, approvals, voice notes and files.",
+  "date": "2026-10-27",
+  "nav": "WhatsApp",
+  "card": "Claude Code, Codex, Grok Build or pi.",
+  "draft": false
+}-->
+<p class="lede">Angelia joins WhatsApp as a linked device, like WhatsApp Web, on a second number. Each chat or group you route gets its own session of the coding agent CLI on your Mac: Claude Code, Codex, Grok Build or pi. You write to that number like to a person, and the answer comes back to the chat.</p>
+
+<h2 id="second-number">Why a second number</h2>
+<p>Link a second, established number, not your personal one.</p>
+<ul>
+  <li>Angelia ignores what its own account sends. On your personal number it would not hear you, and it would answer as you.</li>
+  <li>A linked device can read every chat on its account. On a second number, that is only the chats you bring to it.</li>
+  <li>WhatsApp bans newly created numbers that start acting like robots, usually within hours. A number that has been in use for a while is safer.</li>
+</ul>
+
+<h2 id="what-you-need">What you need</h2>
+<ul>
+  <li>A Mac with Node 22.23.4+, 24.22.1+ or 26.12.1+ and git.</li>
+  <li>A supported CLI, installed and signed in: Claude Code 2.1.270+, Codex 0.157+, Grok Build 1.0.13+ or pi 0.80.4+ (<a href="/docs/reference/#backends-in-detail">backends</a>).</li>
+  <li>A phone with the second number on WhatsApp, to scan the QR code once.</li>
+  <li>Optional: <code>brew install openai-whisper ffmpeg</code> for voice notes.</li>
+</ul>
+
+<h2 id="set-up">Set it up</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh
+angelia service install</code></pre>
+<ol>
+  <li>The installer checks the release's signature and starts the setup wizard. Pick Quick (one chat, one folder) or Advanced, then WhatsApp (or both apps).</li>
+  <li>The wizard opens a local page with a live QR code; the terminal shows it too. On the phone with the second number, open WhatsApp › Settings › Linked devices › Link a device and scan it.<br>Do not pick "Link with phone number": WhatsApp currently rejects pairing codes from third-party clients. If the phone asks for a passkey, create it and scan again.</li>
+  <li>Pick a CLI and a folder for the first profile.</li>
+  <li>From your own phone, send the second number a message in the chat it should answer, and confirm it in the wizard.</li>
+</ol>
+<p><code>angelia service install</code> keeps Angelia running: it starts at login and comes back after a crash.</p>
+<p>To add WhatsApp to a setup you already have:</p>
+<ol>
+  <li>Add <code>whatsapp: { auth_dir: ~/.angelia/wa }</code> to <code>~/.angelia/workspace/routing.yaml</code>.</li>
+  <li>Run <code>angelia accept</code>.</li>
+  <li>Run <code>angelia pair</code> and scan the QR code.</li>
+  <li>Send <code>/restart</code> in a chat you own, or run <code>angelia restart</code>.</li>
+  <li>From your phone, send the number a message in the chat it should answer.</li>
+  <li>Take that chat's id from <code>~/.angelia/daemon.log</code>.</li>
+  <li>Add a route: <code>{ platform: whatsapp, chat: &lt;id&gt;, profile: main }</code>.</li>
+  <li>Send <code>/restart</code> again, then <code>/restart confirm</code> if it lists new rights.</li>
+</ol>
+
+<h2 id="groups">Groups</h2>
+<ul>
+  <li>Add the second number to a group and route the group to a profile. In a group, the agent answers only when someone mentions it or replies to it. A route with <code>mention: any</code> answers every message.</li>
+  <li>Only the route's owners are heard, unless <code>allow_from</code> names others or says <code>"*"</code>. Only owners approve commands, change the session or restart.</li>
+  <li>People appear by phone number or by a <code>@lid</code> id (WhatsApp's newer hidden id). <code>allow_from</code> and <code>owners</code> accept the phone number once WhatsApp has told Angelia which <code>@lid</code> is which number. Group ids look like <code>1203630000…@g.us</code>.</li>
+  <li>With onboarding on (<code>defaults.unmatched: onboard</code>), an onboarding owner mentions the number in a new group, and Angelia makes a profile for that group: a folder, a starter instruction file and a route. Its agent then asks what the group is for.</li>
+</ul>
+
+<h2 id="what-works">What works</h2>
+<p>Approvals, voice notes, files, long answers and chat commands work the same on WhatsApp and Telegram: <a href="/claude-code/#what-works">what works from the chat</a>. What is particular to WhatsApp:</p>
+<ul>
+  <li><strong>Voice notes</strong> (tested with Claude Code). An audio file the agent sends back arrives as a real voice note: Angelia converts it to ogg/opus when ffmpeg is installed.</li>
+  <li><strong>Files.</strong> Photos, videos and documents up to 20 MB reach the agent. Stickers are not downloaded. The agent sends files back up to 64 MB.</li>
+  <li><strong>Long answers</strong> are split into messages of up to 3,500 characters.</li>
+  <li><strong>Chat commands.</strong> WhatsApp has no command menu, so type them.</li>
+</ul>
+
+<h2 id="privacy">Security and privacy</h2>
+<ul>
+  <li>WhatsApp messages are end-to-end encrypted to the linked device, which is your Mac. Angelia has no server and keeps no copy of your messages.</li>
+  <li>Each turn goes to your CLI's model provider, under that CLI's own terms.</li>
+  <li>The WhatsApp login lives in <code>auth_dir</code> (<code>~/.angelia/wa</code> by default, mode 700). Whoever holds it holds the WhatsApp account, so every profile's file tools are denied the default folder.</li>
+  <li>Angelia keeps the last hour of messages it sent (up to 500) in memory, never on disk, so a phone that could not decrypt one can get it again.</li>
+  <li><code>angelia unpair</code> logs that one linked device out and deletes its login. The phone and its other linked devices are not touched.</li>
+</ul>
+
+<h2 id="limits">Limits</h2>
+<ul>
+  <li>It needs a second number.</li>
+  <li>Tested on WhatsApp so far: Claude Code and Grok Build. Codex and pi on WhatsApp are not tested yet.</li>
+  <li>Angelia links as an unofficial client, not through the WhatsApp Business API. WhatsApp can ban a number it sees acting like a bot.</li>
+  <li>macOS only for now, and the Mac must be on. Linux is next.</li>
+  <li>It is a young project (v0.3), maintained by one person.</li>
+</ul>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard links the number and pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/docs/security/">Security model</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>

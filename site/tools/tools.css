@@ -1,0 +1,35 @@
+/* The free tools under /tools/: forms on the guide page's type and colours (site/src/guide.html). */
+.tool{margin:24px 0 8px}
+.tool fieldset{border:1px solid var(--rule);border-radius:10px;padding:14px 18px 6px;margin:0 0 18px;min-width:0}
+.tool legend{font-weight:600;padding:0 6px}
+.tool label{display:block;font-weight:600;font-size:14.5px;margin:14px 0 4px}
+/* The box sits in the margin, so the label's words and its rules flow and wrap as one line of text. */
+.tool label.inline,.choices label{display:block;position:relative;padding-left:28px;font-weight:400;margin:0}
+.tool label.inline input,.choices label input{position:absolute;left:0;top:0}
+.choices{list-style:none;padding:0;margin:8px 0 6px}
+.choices li{margin:0 0 10px}
+.choices code{font-size:13px;overflow-wrap:anywhere}
+.tool input[type=checkbox]{flex:none;width:18px;height:18px;margin:3px 0 0;accent-color:var(--accent)}
+.tool textarea,.tool select,.tool input[type=password],.tool input[type=text]{display:block;width:100%;font:inherit;font-size:14.5px;color:var(--fg);background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:9px 11px}
+.tool textarea{resize:vertical;min-height:3.2em}
+/* A text field drawn as dots: a password field would make browsers offer to save the token. */
+.tool input.masked{-webkit-text-security:disc}
+.tool .fine{margin:4px 0 8px}
+.btn{font:inherit;font-size:14.5px;font-weight:600;cursor:pointer;border-radius:999px;padding:8px 18px;border:1px solid var(--fg);background:var(--fg);color:var(--bg)}
+.btn.light{background:transparent;color:var(--fg)}
+.btn.small{font-size:13px;padding:3px 12px}
+.btn:disabled{opacity:.55;cursor:progress}
+.result{margin:28px 0 0}
+.result pre{max-height:32em;overflow:auto}
+.warnings{border-left:3px solid var(--accent);padding:4px 0 4px 30px;margin:0 0 14px}
+.error{border-left:3px solid var(--accent);padding:4px 0 4px 14px;font-weight:600}
+.card{border:1px solid var(--rule);border-radius:10px;padding:12px 16px;margin:0 0 14px;background:var(--bg)}
+.card.warn{border-color:var(--accent)}
+.card h3,.card h4{margin:0 0 8px;font-size:16px;overflow-wrap:anywhere}
+.card p{margin:0 0 8px;overflow-wrap:anywhere}
+.card pre{margin:4px 0 8px}
+.chats{list-style:none;padding:0}
+.card dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:0;font-size:14px}
+.card dt{color:var(--soft)}
+.card dd{margin:0;overflow-wrap:anywhere}
+@media (max-width:560px){.tool fieldset{padding:12px 12px 4px}.card dl{grid-template-columns:1fr}.card dd{margin-bottom:6px}}

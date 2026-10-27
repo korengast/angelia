@@ -9,6 +9,14 @@ Install with `curl -fsSL {{SITE}}/install | sh` (it checks the release signature
 - [README]({{RAW}}/README.md): what Angelia is, install, quick start, chat commands, security in one minute, backends, FAQ
 - [Reference]({{RAW}}/docs/reference.md): features in detail, capabilities per profile, setting things up by hand, the instance folder, every file Angelia keeps
 - [Security model]({{RAW}}/docs/security.md): who can reach and command the agent, tokens, secrets, the sandbox, what leaves the machine
+- [Docs on the site]({{SITE}}/docs/): the reference, security model, runbook and decisions as web pages, built from the repository's main branch; each page's Markdown is at its URL plus `index.md`
+
+## Pages
+
+- [Angelia for Claude Code: setup, approvals and limits]({{SITE}}/claude-code/): what Angelia does for Claude Code, setup, approvals, voice notes, files, limits
+- [Your coding agent CLI on WhatsApp]({{SITE}}/whatsapp/): the second number, linking by QR, groups, what works, privacy, limits
+- [Your coding agent CLI on Telegram]({{SITE}}/telegram/): the bot, groups and topics, what works, privacy, limits
+- [Angelia vs OpenClaw and Hermes Agent]({{SITE}}/alternatives/): whose agent runs, chat apps, sessions, and when another tool fits better
 
 ## Local API
 
@@ -22,6 +30,8 @@ Install with `curl -fsSL {{SITE}}/install | sh` (it checks the release signature
 - [How to control Claude Code from your phone]({{SITE}}/guides/claude-code-from-phone/)
 - [How to run Claude Code 24/7 on your own machine]({{SITE}}/guides/claude-code-24-7/)
 - [Claude Code notifications and approvals on your phone]({{SITE}}/guides/claude-code-phone-notifications/)
+- [Claude Code permissions builder]({{SITE}}/tools/claude-code-permissions/): tick boxes into a `.claude/settings.json` permissions block (allow, ask, deny, defaultMode)
+- [Telegram bot token and chat id checker]({{SITE}}/tools/telegram-bot-check/): getMe and getUpdates from the browser, to find the chat id a route needs
 - [Runbook]({{RAW}}/docs/runbook.md): day-to-day commands, known failures and fixes, uninstalling
-- [Decisions]({{TREE}}/docs/decisions): why it is built this way
+- [Decisions]({{SITE}}/docs/decisions/): why it is built this way
 - [Everything above in one file]({{SITE}}/llms-full.txt)
