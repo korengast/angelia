@@ -87,6 +87,20 @@ header nav a.install-link{background:#D06B6B;color:#1A120D;opacity:1;padding:6px
 /* The table is wider than a phone: say so, and keep the hint in view while it scrolls. */
 .table::before{content:"Swipe sideways for all four columns →";display:none;position:sticky;left:0;padding:8px 11px;font-size:12.5px;color:var(--soft);background:var(--bg-2);border-bottom:1px solid var(--rule)}
 @media (max-width:760px){.table::before{display:block}}
+/* A docs page (/docs/): the repository's Markdown. Its tables fit the column unless they are wide, and a
+   code block keeps its lines, since some draw a folder tree. */
+.toc{margin:6px 0 30px;padding:14px 18px 4px;border:1px solid var(--rule);border-radius:10px;font-size:14px}
+.toc-h{font-weight:600;margin:0 0 6px}
+.toc ul{padding-left:1.2em;margin:0 0 10px}
+.toc li{margin:0 0 3px}
+.toc ul ul{margin:3px 0 0}
+h3[id]{scroll-margin-top:16px}
+.doc table{min-width:0}
+.doc .table.wide table{min-width:720px}
+.doc .table:not(.wide)::before{display:none}
+.doc .table.wide::before{content:"Swipe sideways for the whole table →"}
+.doc code{overflow-wrap:anywhere}
+.doc pre{white-space:pre;overflow-wrap:normal}
 </style>
 <script type="application/ld+json">{{JSONLD}}</script>
 </head>
@@ -96,13 +110,13 @@ header nav a.install-link{background:#D06B6B;color:#1A120D;opacity:1;padding:6px
 <header>
   <div class="wrap">
     <a class="brand" href="/" aria-label="Angelia home"><svg><use href="#mark"/></svg><span>Angelia</span></a>
-    <nav aria-label="Main"><a href="/guides/">Guides</a><a class="docs" href="https://github.com/{{REPO}}#readme">Docs</a><a href="https://github.com/{{REPO}}">GitHub</a><a class="install-link" href="/#top">Install</a></nav>
+    <nav aria-label="Main"><a href="/guides/">Guides</a><a class="docs" href="/docs/">Docs</a><a href="https://github.com/{{REPO}}">GitHub</a><a class="install-link" href="/#top">Install</a></nav>
   </div>
 </header>
 <main class="wrap" id="content">
 <article>
 <p class="meta">{{BYLINE}}</p>
-<h1>{{TITLE}}</h1>
+<h1>{{HEADING}}</h1>
 <!--BODY-->
 </article>
 </main>

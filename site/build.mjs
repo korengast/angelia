@@ -6,9 +6,10 @@
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { htmlToMarkdown } from './markdown.mjs';
+import { renderMarkdown, toc } from './docs.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SITE = 'https://useangelia.com';
@@ -65,6 +66,8 @@ if (process.argv.includes('--og')) {
     const { title } = JSON.parse(readFileSync(join(here, 'guides', f), 'utf8').match(/^<!--(\{[\s\S]*?\})-->\n/)[1]);
     writeFileSync(join(out, `og-${f}`), page('og.html').replace(/<h1>[\s\S]*?<\/h1>/, `<h1 class="guide">${esc(title)}</h1>`).replace('On WhatsApp and Telegram. On your machine.', 'A guide from Angelia.'));
   }
+  // The docs share one card: render og-docs.html into site/static/docs/og.png.
+  writeFileSync(join(out, 'og-docs.html'), page('og.html').replace(/<h1>[\s\S]*?<\/h1>/, '<h1 class="guide">The docs: reference, security, runbook, decisions</h1>').replace('On WhatsApp and Telegram. On your machine.', 'Built from the repository.'));
   cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
   console.log(`${out}: og.html at 1200x630 into site/static/og.png, banner.html at 1280x400 (2x) into site/static/banner.png`);
   process.exit(0);
@@ -86,16 +89,25 @@ const longDate = (d) => { const [y, m, day] = d.split('-').map(Number); return `
 // Every h2 gets an id (from its text when it has none), so a section can be linked to.
 const slugify = (t) => t.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const withIds = (body) => body.replace(/<h2>([\s\S]*?)<\/h2>/g, (_, inner) => `<h2 id="${slugify(inner)}">${inner}</h2>`);
-const guidePage = ({ title, description, url, date, modified = date, byline, body, jsonld, ogType = 'article', ogImage = `${SITE}/og.png`, ogAlt = 'Angelia. Your coding agent. Your personal assistant.' }) => page('guide.html')
+// Search results cut a title past 60 characters and a description past 155: the build refuses longer ones.
+const fits = (title, description) => {
+  if (pageTitle(title).length > 60) throw new Error(`title over 60 characters: ${title}`);
+  if (description.length > 155) throw new Error(`description over 155 characters (${description.length}): ${title}`);
+};
+const guidePage = ({ title, heading = title, description, url, date, modified = date, byline, body, jsonld, ogType = 'article', ogImage = `${SITE}/og.png`, ogAlt = 'Angelia. Your coding agent. Your personal assistant.' }) => {
+  fits(title, description);
+  return page('guide.html')
   .replace('{{OGTYPE}}', ogType).replace('{{OGIMAGE}}', ogImage).replace('{{OGALT}}', esc(ogAlt))
   .replace('<!--ARTICLE-->', ogType === 'article' ? `<meta property="article:published_time" content="${date}">\n<meta property="article:modified_time" content="${modified}">` : '')
   .replaceAll('{{PAGETITLE}}', esc(pageTitle(title))).replaceAll('{{MODIFIED}}', modified)
-  .replaceAll('{{TITLE}}', esc(title)).replaceAll('{{DESCRIPTION}}', esc(description)).replaceAll('{{URL}}', url)
+  .replace('{{HEADING}}', esc(heading)).replaceAll('{{TITLE}}', esc(title)).replaceAll('{{DESCRIPTION}}', esc(description)).replaceAll('{{URL}}', url)
   .replaceAll('{{DATE}}', date).replace('{{BYLINE}}', byline).replace('{{JSONLD}}', JSON.stringify(jsonld).replace(/</g, '\\u003c'))
   .replace('<!--BODY-->', withIds(body).replaceAll('{{SITE}}', SITE).replaceAll('{{REPO}}', REPO).replaceAll('{{VERSION}}', version));
+};
 
-// A guide's own share card, when one has been rendered: site/static/guides/<slug>/og.png (see --og).
-const guideOg = (slug) => existsSync(join(here, 'static', 'guides', slug, 'og.png')) ? `${SITE}/guides/${slug}/og.png` : `${SITE}/og.png`;
+// A page's own share card, when one has been rendered: site/static/<page>/og.png (see --og).
+const card = (dir) => existsSync(join(here, 'static', dir, 'og.png')) ? `${SITE}/${dir}/og.png` : `${SITE}/og.png`;
+const guideOg = (slug) => card(`guides/${slug}`);
 const out = join(here, 'dist');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
@@ -121,6 +133,81 @@ if (guides.length) writeFileSync(join(out, 'guides', 'index.html'), guidePage({
   body: '<ul>' + guides.map((g) => `<li><a href="/guides/${g.slug}/">${esc(g.title)}</a><br><span class="meta">${g.date} · ${esc(g.description)}</span></li>`).join('') + '</ul>',
   jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: 'Angelia guides', url: `${SITE}/guides/` },
 }));
+
+// Docs: the repository's own Markdown, rendered at build time (site/docs.mjs), so a page never says
+// something its file does not. docs/<name>.md is /docs/<name>/, an ADR is /docs/decisions/<file name>/.
+// Each page's Markdown copy is the file itself, with its links pointing at the site.
+const BLOB = `https://github.com/${REPO}/blob/main`;
+const DOCS = [
+  { file: 'docs/reference.md', description: 'Every Angelia feature in full: capabilities per profile, the backends, setting up by hand, the instance folder, and every file Angelia keeps.' },
+  { file: 'docs/security.md', description: 'Who can reach and command the agent, tokens, secrets, the sandbox, logs, and what leaves your machine. Read it before you give the bot to anyone.' },
+  { file: 'docs/runbook.md', description: 'Day-to-day Angelia commands, where to look, known failures and their fixes, backup, cutting a release, and uninstalling.' },
+  ...readdirSync(join(here, '..', 'docs', 'decisions')).filter((f) => /^\d{4}-.+\.md$/.test(f)).sort().map((f) => ({ file: `docs/decisions/${f}`, adr: f.slice(0, 4) })),
+].map((d) => {
+  const md = readFileSync(join(here, '..', d.file), 'utf8');
+  const path = `/${d.file.replace(/\.md$/, '')}/`;
+  if (!d.adr) return { ...d, md, path, ogImage: card('docs') };
+  // An ADR's heading is long ("ADR 0008 — Host mode per profile: print mode by default, …"): the tab
+  // title keeps the part before its first colon or semicolon, the description says the whole.
+  const heading = md.match(/^# (.+)$/m)[1];
+  const what = heading.replace(/^ADR \d+ — /, '');
+  let title = `ADR ${d.adr}: ${what.split(/[:;]/)[0]}`;
+  if (title.length > 60) title = title.split(',')[0];
+  return { ...d, md, path, title, description: `Angelia design decision ${d.adr}: ${what}.`, ogImage: card('docs') };
+});
+const docPath = new Map([...DOCS.map((d) => [d.file, d.path]), ['docs/decisions', '/docs/decisions/'], ['docs/api.md', '/docs/api.md']]);
+/** Where a link in a doc goes: another doc's page, the API page the site serves as it is, or the file on GitHub. */
+const docLink = (from) => (href) => {
+  if (/^(https?:|mailto:|#)/.test(href)) return href;
+  const [file, hash] = href.split('#');
+  const target = posix.normalize(posix.join(posix.dirname(from), file)).replace(/\/$/, '');
+  return (docPath.get(target) ?? `${BLOB}/${target}`) + (hash ? `#${hash}` : '');
+};
+const MORE_DOCS = [['/docs/reference/', 'Reference'], ['/docs/security/', 'Security model'], ['/docs/runbook/', 'Runbook'], ['/docs/decisions/', 'Decisions'], ['/docs/api.md', 'Local API (Markdown)']];
+const moreDocs = (path) => `<nav class="more" aria-label="More docs"><h2 id="more-docs">More docs</h2><ul>${MORE_DOCS.filter(([p]) => p !== path).map(([p, t]) => `<li><a href="${p}">${t}</a></li>`).join('')}</ul></nav>`;
+const docByline = (d) => `<a href="/docs/">Docs</a>${d.adr ? ' · <a href="/docs/decisions/">Decisions</a>' : ''} · <a href="${BLOB}/${d.file}">${d.file} on GitHub</a>`;
+for (const d of DOCS) {
+  const { title, html, headings } = renderMarkdown(d.md, docLink(d.file));
+  // A long page opens with its contents, after the lines that introduce it.
+  const body = headings.filter((h) => h.level === 2).length >= 4 && html.includes('<h2') ? html.replace('<h2', `${toc(headings)}\n<h2`) : html;
+  d.title ??= title;
+  d.heading = title;
+  mkdirSync(join(out, d.path), { recursive: true });
+  writeFileSync(join(out, d.path, 'index.html'), guidePage({
+    title: d.title, heading: d.heading, description: d.description, url: SITE + d.path, byline: docByline(d), ogType: 'website',
+    ogImage: d.ogImage, ogAlt: d.title, body: `<div class="doc">\n${body}\n${moreDocs(d.path)}\n</div>`,
+    jsonld: { '@context': 'https://schema.org', '@type': 'TechArticle', headline: d.title, description: d.description, url: SITE + d.path, isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } },
+  }));
+  writeFileSync(join(out, d.path, 'index.md'), d.md.replace(/\]\(([^)\s]+)\)/g, (_, h) => {
+    const to = docLink(d.file)(h);
+    return `](${to.startsWith('/') ? SITE + to : to})`;
+  }));
+}
+const adrs = DOCS.filter((d) => d.adr);
+const docIndex = (path, title, description, body) => {
+  mkdirSync(join(out, path), { recursive: true });
+  writeFileSync(join(out, path, 'index.html'), guidePage({
+    title, description, url: SITE + path, byline: path === '/docs/' ? 'Angelia' : '<a href="/docs/">Docs</a>', ogType: 'website',
+    ogImage: card('docs'), ogAlt: title, body: `<div class="doc">\n${body}\n</div>`,
+    jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: `Angelia ${title.toLowerCase()}`, url: SITE + path },
+  }));
+};
+docIndex('/docs/', 'Docs', 'The Angelia docs: the reference, the security model, the runbook, the local API and the design decisions, built from the repository.',
+  `<p class="lede">These pages are the Markdown files in the repository's <code>docs/</code> folder, rebuilt with the site. Each page links to its file on GitHub.</p>
+<ul>
+<li><a href="/docs/reference/">Reference</a><br><span class="meta">Features in detail, capabilities per profile, the backends, setting things up by hand, the instance folder, every file Angelia keeps.</span></li>
+<li><a href="/docs/security/">Security model</a><br><span class="meta">Who can reach and command the agent, tokens, secrets, the sandbox, logs, what leaves your machine.</span></li>
+<li><a href="/docs/runbook/">Runbook</a><br><span class="meta">Day-to-day commands, where to look, known failures and their fixes, cutting a release, uninstalling.</span></li>
+<li><a href="/docs/api.md">Local API</a> (Markdown) and its <a href="/openapi.json">OpenAPI document</a><br><span class="meta">Scripts and agents talk to the daemon: tokens, routes, events, the stability promise.</span></li>
+<li><a href="/docs/decisions/">Decisions</a><br><span class="meta">Why it is built this way, with the CLI versions each finding was measured on.</span></li>
+</ul>
+<p>The <a href="https://github.com/{{REPO}}#readme">README</a> covers install, the quick start and the chat commands. For agents, <a href="/llms.txt">llms.txt</a> lists the same docs, and every page here is also served as Markdown.</p>`);
+docIndex('/docs/decisions/', 'Decisions', 'Why Angelia is built this way: the architecture decision records, with the CLI versions each finding was measured on.',
+  `<p class="lede">Each record says what was decided, what else was tried, and what it costs. A later record can amend an earlier one; the status line at the top of each says so.</p>
+<ul>${adrs.map((d) => {
+    const status = d.md.match(/^Status: (accepted \d{4}-\d{2}-\d{2})/m)?.[1];
+    return `<li><a href="${d.path}">${esc(d.heading)}</a>${status ? `<br><span class="meta">${status}</span>` : ''}</li>`;
+  }).join('\n')}</ul>`);
 // The comparison guide, linked from the home page once it is published.
 const COMPARE = 'claude-code-whatsapp-telegram';
 const html = page('index.html')
@@ -134,14 +221,15 @@ const html = page('index.html')
 writeFileSync(join(out, 'index.html'), html);
 writeFileSync(join(out, '404.html'), page('404.html'));
 // Every page as Markdown beside its index.html, for an agent that sends Accept: text/markdown (the Worker
-// picks the file, site/worker/ranges.js). The 404 page has its own text: where to look instead.
-for (const dir of ['', ...(guides.length ? ['guides'] : []), ...guides.map((g) => `guides/${g.slug}`)]) {
+// picks the file, site/worker/ranges.js). The 404 page has its own text: where to look instead. The docs
+// pages wrote theirs above, from the Markdown they were made of.
+for (const dir of ['', ...(guides.length ? ['guides'] : []), ...guides.map((g) => `guides/${g.slug}`), 'docs', 'docs/decisions']) {
   const path = dir ? `/${dir}/` : '/';
   writeFileSync(join(out, dir, 'index.md'), htmlToMarkdown(readFileSync(join(out, dir, 'index.html'), 'utf8'), SITE + path));
 }
 writeFileSync(join(out, '404.md'), `# Not found\n\nNothing is at this address on ${SITE}. The page may have moved, or the link has a typo.\n\n` +
   `- [Home page](${SITE}/) ([Markdown](${SITE}/index.md))\n- [llms.txt](${SITE}/llms.txt): the documentation, listed for agents\n` +
-  `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [GitHub](https://github.com/${REPO})\n`);
+  `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [Docs](${SITE}/docs/)\n- [GitHub](https://github.com/${REPO})\n`);
 // For agents (llmstxt.org): /llms.txt lists the docs, /llms-full.txt holds them in one file, and the API
 // page and its OpenAPI document are served as they are. Links point at this release's tag, so an agent
 // reads the docs of the version the install line gives.
@@ -167,7 +255,8 @@ writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SI
 writeFileSync(join(out, 'sitemap.xml'),
   `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc></url>` +
   (guides.length ? `<url><loc>${SITE}/guides/</loc></url>` : '') +
-  guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') + '</urlset>\n');
+  guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') +
+  ['/docs/', ...DOCS.filter((d) => !d.adr).map((d) => d.path), '/docs/decisions/', ...adrs.map((d) => d.path)].map((p) => `<url><loc>${SITE}${p}</loc></url>`).join('') + '</urlset>\n');
 copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
@@ -199,11 +288,11 @@ for (const [name, sha] of Object.entries(MEDIA)) {
 // the signed tag (it carries that release's key), because GitHub counts an asset's downloads.
 writeFileSync(join(out, '_redirects'),
   `/install https://github.com/${REPO}/releases/download/v${version}/install.sh 302\n` +
-  `/docs https://github.com/${REPO}#readme 302\n/docs/ https://github.com/${REPO}#readme 302\n` +
   // Permanent, so search engines keep only the slash form. Cloudflare's own slash and index.html
   // redirects are 307, which Search Console reports as "Page with redirect" for months.
   ['/index.html /', ...(guides.length ? ['/guides /guides/', '/guides/index.html /guides/'] : []),
-    ...guides.flatMap((g) => [`/guides/${g.slug} /guides/${g.slug}/`, `/guides/${g.slug}/index.html /guides/${g.slug}/`])]
+    ...guides.flatMap((g) => [`/guides/${g.slug} /guides/${g.slug}/`, `/guides/${g.slug}/index.html /guides/${g.slug}/`]),
+    ...['/docs/', '/docs/decisions/', ...DOCS.map((d) => d.path)].flatMap((p) => [`${p.slice(0, -1)} ${p}`, `${p}index.html ${p}`])]
     .map((r) => `${r} 301\n`).join(''));
 writeFileSync(join(out, '_headers'), [
   '/*',
