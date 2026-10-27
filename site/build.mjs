@@ -55,6 +55,16 @@ const page = (name) => readFileSync(join(here, 'src', name), 'utf8')
 
 const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+// Guides (site/guides/<slug>.html) and pages (site/pages/<slug>.html) are an HTML body headed by a JSON
+// comment: title, description, date, optional updated (and for a page, card), draft. A draft is left out of the site and the
+// sitemap unless --drafts.
+const headed = (dir) => readdirSync(join(here, dir)).filter((f) => f.endsWith('.html')).map((f) => {
+  const src = readFileSync(join(here, dir, f), 'utf8');
+  const m = src.match(/^<!--(\{[\s\S]*?\})-->\n/);
+  if (!m) throw new Error(`site/${dir}/${f}: no JSON header`);
+  return { slug: f.replace(/\.html$/, ''), body: src.slice(m[0].length), ...JSON.parse(m[1]) };
+}).filter((g) => !g.draft || process.argv.includes('--drafts')).sort((a, b) => b.date.localeCompare(a.date));
+
 if (process.argv.includes('--og')) {
   const out = join(tmpdir(), 'angelia-og');
   rmSync(out, { recursive: true, force: true });
@@ -62,26 +72,22 @@ if (process.argv.includes('--og')) {
   writeFileSync(join(out, 'og.html'), page('og.html'));
   writeFileSync(join(out, 'banner.html'), page('banner.html'));
   // One card per guide, its title in place of the slogan: render og-<slug>.html into site/static/guides/<slug>/og.png.
-  for (const f of readdirSync(join(here, 'guides')).filter((x) => x.endsWith('.html'))) {
-    const { title } = JSON.parse(readFileSync(join(here, 'guides', f), 'utf8').match(/^<!--(\{[\s\S]*?\})-->\n/)[1]);
-    writeFileSync(join(out, `og-${f}`), page('og.html').replace(/<h1>[\s\S]*?<\/h1>/, `<h1 class="guide">${esc(title)}</h1>`).replace('On WhatsApp and Telegram. On your machine.', 'A guide from Angelia.'));
-  }
+  // A page's card keeps the slogan's second line, or says its own ("card" in its header): render
+  // og-<slug>.html into site/static/<slug>/og.png.
+  const titled = (title, line) => page('og.html').replace(/<h1>[\s\S]*?<\/h1>/, `<h1 class="guide">${esc(title)}</h1>`).replace('On WhatsApp and Telegram. On your machine.', line);
+  for (const { slug, title } of headed('guides')) writeFileSync(join(out, `og-${slug}.html`), titled(title, 'A guide from Angelia.'));
+  for (const { slug, title, card } of headed('pages')) writeFileSync(join(out, `og-${slug}.html`), titled(title, card ?? 'On WhatsApp and Telegram. On your machine.'));
   // The docs share one card: render og-docs.html into site/static/docs/og.png.
-  writeFileSync(join(out, 'og-docs.html'), page('og.html').replace(/<h1>[\s\S]*?<\/h1>/, '<h1 class="guide">The docs: reference, security, runbook, decisions</h1>').replace('On WhatsApp and Telegram. On your machine.', 'Built from the repository.'));
+  writeFileSync(join(out, 'og-docs.html'), titled('The docs: reference, security, runbook, decisions', 'Built from the repository.'));
   cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
   console.log(`${out}: og.html at 1200x630 into site/static/og.png, banner.html at 1280x400 (2x) into site/static/banner.png`);
   process.exit(0);
 }
 
-// Guides: site/guides/<slug>.html is the article body, headed by a JSON comment (title, description,
-// date, optional updated, draft). A draft is left out of the site and the sitemap unless --drafts.
 const AUTHOR = { '@type': 'Person', name: 'Koren Gast', url: 'https://github.com/korengast' };
-const guides = readdirSync(join(here, 'guides')).filter((f) => f.endsWith('.html')).map((f) => {
-  const src = readFileSync(join(here, 'guides', f), 'utf8');
-  const m = src.match(/^<!--(\{[\s\S]*?\})-->\n/);
-  if (!m) throw new Error(`site/guides/${f}: no JSON header`);
-  return { slug: f.replace(/\.html$/, ''), body: src.slice(m[0].length), ...JSON.parse(m[1]) };
-}).filter((g) => !g.draft || process.argv.includes('--drafts')).sort((a, b) => b.date.localeCompare(a.date));
+const guides = headed('guides');
+// Pages: what Angelia does for one CLI or chat app, and how it compares. Each lives at /<slug>/.
+const pages = headed('pages');
 // The tab and search title: the brand after it only while the whole stays within what results show.
 const pageTitle = (title) => (title.length + 10 <= 60 ? `${title} · Angelia` : title);
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -116,7 +122,8 @@ const moreGuides = (slug) => {
   const others = guides.filter((o) => o.slug !== slug);
   return others.length ? `<nav class="more" aria-label="More guides"><h2 id="more-guides">More guides</h2><ul>${others.map((o) => `<li><a href="/guides/${o.slug}/">${esc(o.title)}</a></li>`).join('')}</ul></nav>\n` : '';
 };
-const withMore = (g) => g.body.includes('<div class="try"') ? g.body.replace('<div class="try"', `${moreGuides(g.slug)}<div class="try"`) : g.body + moreGuides(g.slug);
+const aboveTry = (body, more) => body.includes('<div class="try"') ? body.replace('<div class="try"', `${more}<div class="try"`) : body + more;
+const withMore = (g) => aboveTry(g.body, moreGuides(g.slug));
 for (const g of guides) {
   const url = `${SITE}/guides/${g.slug}/`;
   mkdirSync(join(out, 'guides', g.slug), { recursive: true });
@@ -125,6 +132,21 @@ for (const g of guides) {
     ogImage: guideOg(g.slug), ogAlt: g.title,
     byline: `Koren Gast · Updated <time datetime="${g.updated ?? g.date}">${longDate(g.updated ?? g.date)}</time>`,
     jsonld: { '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: guideOg(g.slug), publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
+  }));
+}
+// Every page ends with links to the other pages, the docs and the guides.
+const morePages = (slug) => `<nav class="more" aria-label="More about Angelia"><h2 id="more-about-angelia">More about Angelia</h2><ul>${
+  [...pages.filter((o) => o.slug !== slug).map((o) => [`/${o.slug}/`, o.title]), ['/docs/', 'Docs'], ...(guides.length ? [['/guides/', 'Guides']] : [])]
+    .map(([href, t]) => `<li><a href="${href}">${esc(t)}</a></li>`).join('')}</ul></nav>\n`;
+for (const p of pages) {
+  const url = `${SITE}/${p.slug}/`;
+  const modified = p.updated ?? p.date;
+  mkdirSync(join(out, p.slug), { recursive: true });
+  writeFileSync(join(out, p.slug, 'index.html'), guidePage({
+    title: p.title, description: p.description, url, date: p.date, modified, body: aboveTry(p.body, morePages(p.slug)),
+    ogType: 'website', ogImage: card(p.slug), ogAlt: p.title,
+    byline: `Angelia · Updated <time datetime="${modified}">${longDate(modified)}</time>`,
+    jsonld: { '@context': 'https://schema.org', '@type': 'WebPage', name: p.title, description: p.description, dateModified: modified, url, image: card(p.slug), isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } },
   }));
 }
 if (guides.length) writeFileSync(join(out, 'guides', 'index.html'), guidePage({
@@ -223,7 +245,7 @@ writeFileSync(join(out, '404.html'), page('404.html'));
 // Every page as Markdown beside its index.html, for an agent that sends Accept: text/markdown (the Worker
 // picks the file, site/worker/ranges.js). The 404 page has its own text: where to look instead. The docs
 // pages wrote theirs above, from the Markdown they were made of.
-for (const dir of ['', ...(guides.length ? ['guides'] : []), ...guides.map((g) => `guides/${g.slug}`), 'docs', 'docs/decisions']) {
+for (const dir of ['', ...(guides.length ? ['guides'] : []), ...guides.map((g) => `guides/${g.slug}`), ...pages.map((p) => p.slug), 'docs', 'docs/decisions']) {
   const path = dir ? `/${dir}/` : '/';
   writeFileSync(join(out, dir, 'index.md'), htmlToMarkdown(readFileSync(join(out, dir, 'index.html'), 'utf8'), SITE + path));
 }
@@ -256,6 +278,7 @@ writeFileSync(join(out, 'sitemap.xml'),
   `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc></url>` +
   (guides.length ? `<url><loc>${SITE}/guides/</loc></url>` : '') +
   guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') +
+  pages.map((p) => `<url><loc>${SITE}/${p.slug}/</loc><lastmod>${p.updated ?? p.date}</lastmod></url>`).join('') +
   ['/docs/', ...DOCS.filter((d) => !d.adr).map((d) => d.path), '/docs/decisions/', ...adrs.map((d) => d.path)].map((p) => `<url><loc>${SITE}${p}</loc></url>`).join('') + '</urlset>\n');
 copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
@@ -292,7 +315,7 @@ writeFileSync(join(out, '_redirects'),
   // redirects are 307, which Search Console reports as "Page with redirect" for months.
   ['/index.html /', ...(guides.length ? ['/guides /guides/', '/guides/index.html /guides/'] : []),
     ...guides.flatMap((g) => [`/guides/${g.slug} /guides/${g.slug}/`, `/guides/${g.slug}/index.html /guides/${g.slug}/`]),
-    ...['/docs/', '/docs/decisions/', ...DOCS.map((d) => d.path)].flatMap((p) => [`${p.slice(0, -1)} ${p}`, `${p}index.html ${p}`])]
+    ...['/docs/', '/docs/decisions/', ...DOCS.map((d) => d.path), ...pages.map((p) => `/${p.slug}/`)].flatMap((p) => [`${p.slice(0, -1)} ${p}`, `${p}index.html ${p}`])]
     .map((r) => `${r} 301\n`).join(''));
 writeFileSync(join(out, '_headers'), [
   '/*',

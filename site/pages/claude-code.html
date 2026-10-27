@@ -1,0 +1,75 @@
+<!--{
+  "title": "Use Claude Code from WhatsApp or Telegram",
+  "description": "Angelia runs your own Claude Code on your Mac for each WhatsApp or Telegram chat: your CLAUDE.md, skills and MCP servers, approvals in the chat.",
+  "date": "2026-10-27",
+  "card": "One session per chat, on your Mac.",
+  "draft": false
+}-->
+<p class="lede">Angelia connects the Claude Code on your Mac to WhatsApp and Telegram. Each chat gets its own Claude Code session, in its own folder. Your <code>CLAUDE.md</code>, settings, skills, MCP servers and hooks work there as they do in your terminal. Angelia runs no model of its own: Claude Code does the work, under your own claude.ai login.</p>
+
+<h2 id="what-it-does">What Angelia does for Claude Code</h2>
+<ul>
+  <li><strong>One session per chat.</strong> Each chat is routed to a profile: a folder with its own instructions and memory. The session is resumed after a restart or an idle period. <code>/new</code> in one chat never touches another.</li>
+  <li><strong>Your Claude Code, unchanged.</strong> Angelia starts the <code>claude</code> you installed, in the profile's folder. Anything Claude Code reads in a project works the same.</li>
+  <li><strong>Approvals in the chat.</strong> A command the profile may not run on its own comes to the chat and waits for an owner's yes.</li>
+  <li><strong>It keeps running.</strong> As a LaunchAgent, Angelia starts at login and comes back after a crash. The chat answers whenever the Mac is on and awake.</li>
+</ul>
+
+<h2 id="what-you-need">What you need</h2>
+<ul>
+  <li>A Mac with Node 22.23.4+, 24.22.1+ or 26.12.1+ and git.</li>
+  <li>Claude Code 2.1.270 or newer, signed in to claude.ai. Check with <code>claude --version</code>.</li>
+  <li>A chat app on your phone. For Telegram, a bot token from <a href="https://t.me/BotFather">@BotFather</a> (<a href="/telegram/">more</a>). For WhatsApp, a second, established number, not your personal one (<a href="/whatsapp/">why</a>).</li>
+  <li>Optional: <code>brew install openai-whisper ffmpeg</code> for voice notes, and <code>brew install tmux</code> (3.7 or newer) to see the chat in the Claude app.</li>
+</ul>
+
+<h2 id="set-up">Set it up</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh
+angelia service install</code></pre>
+<p>The first line checks the release's signature, installs Angelia and starts a setup wizard (<a href="https://github.com/{{REPO}}/blob/v{{VERSION}}/install.sh">read the script</a>). The wizard asks for Quick (one chat, one folder) or Advanced (several profiles), then Telegram, WhatsApp or both. Pick Claude Code as the CLI, then send your bot a message from your phone to pair the chat. The second line keeps Angelia running.</p>
+<p>The agent works in its profile's folder, not in your current repo. To let it work on a repo, list the repo in the profile's <code>add_dirs</code> in <code>~/.angelia/workspace/routing.yaml</code>:</p>
+<pre><code>profiles:
+  main: { cwd: ~/.angelia/workspace/profiles/main, permission_mode: acceptEdits, add_dirs: [~/code/my-app] }</code></pre>
+<p>Then compile the profile and restart:</p>
+<pre><code>angelia compile main --write</code></pre>
+<p>Send <code>/restart</code> in the chat. It checks the table first. If the table gives new rights since you last accepted it, it lists them and waits for <code>/restart confirm</code>. Every step, in more detail: <a href="/guides/claude-code-from-phone/">how to control Claude Code from your phone</a>.</p>
+
+<h2 id="what-works">What works from the chat</h2>
+<h3 id="approvals">Approvals</h3>
+<p>Under <code>permission_mode: acceptEdits</code>, Claude Code edits files on its own and asks before other commands. The question comes to the chat:</p>
+<pre><code>🔐 Bash: npm test
+Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
+<p>An owner answers <code>yes 6b480a6f</code> and the turn goes on. No answer in ten minutes means no. In a group, other members can talk to the agent but cannot approve. The mode is Claude Code's own: <code>default</code>, <code>acceptEdits</code>, <code>plan</code> or <code>bypassPermissions</code>. <code>sandbox: true</code> on the profile turns Claude Code's own sandbox on, so the deny rules hold for every program the agent runs. More in <a href="/guides/claude-code-phone-notifications/">notifications and approvals on your phone</a>.</p>
+<h3 id="voice-notes">Voice notes</h3>
+<p>A voice note reaches Claude Code as <code>[voice note: path]</code>. Claude Code runs <code>angelia transcribe &lt;path&gt;</code>, which prints the text. Whisper runs on your Mac, so the audio stays there, and it detects the language by itself. For a spoken answer, <code>angelia speak "&lt;text&gt;"</code> makes an audio file with the voice built into macOS, and the agent sends it back as a voice note.</p>
+<h3 id="files">Photos and files</h3>
+<p>A photo or document you send lands in the profile's <code>.inbox/</code> folder, up to 20 MB, and Claude Code gets a <code>[file: path]</code> line. It sends files back with <code>angelia send-media</code>: an image, a video, a voice note or a document. Every path is checked first: never a credential location, never another profile's folder.</p>
+<h3 id="long-answers">Long answers</h3>
+<p>Short progress lines arrive while Claude Code works, then the answer. A long answer is split at paragraph breaks into messages of up to 4,000 characters on Telegram and 3,500 on WhatsApp. A code block cut in two is closed and opened again. Angelia sends at most 10 messages a minute per platform by default (<code>max_out_per_min</code>), and progress lines always leave room for the answer and for approvals.</p>
+<h3 id="commands">Chat commands</h3>
+<p><code>/new</code>, <code>/stop</code>, <code>/status</code>, <code>/resume</code>, <code>/model</code> and <code>/effort</code> are answered by Angelia, without spending a token. Any other slash command goes to Claude Code, so <code>/compact</code> or your own commands work from the chat too (owners only). When Claude Code hits a usage limit, the chat gets its limit line and how to go on: <code>/model opus</code> or <code>/model sonnet</code> for this session, <code>/model default</code> once the limit resets.</p>
+<h3 id="desk">From the chat to your desk, and back</h3>
+<ul>
+  <li><strong>Chat to terminal:</strong> for an owner, <code>/status</code> ends with a command such as <code>claude --resume &lt;id&gt;</code>, with the profile's folder and permissions. Paste it in a terminal and the same session opens there.</li>
+  <li><strong>Terminal to chat:</strong> type <code>/angelia-handoff</code> in a Claude Code session at your desk. In a profile's own folder, the session itself moves to that chat. In any other folder, the chat starts a fresh session from a written brief.</li>
+</ul>
+<h3 id="claude-app">The Claude app, too</h3>
+<p>Set <code>tui: true</code> on a profile and install tmux 3.7 or newer. The profile then runs Claude Code as a real interactive session in tmux, which registers with Remote Control. The chat also shows up in the Claude app, and you can carry on there. What you type in the app stays in the app; it does not go back to the chat. Trade-offs in <a href="/docs/decisions/0008-tui-host-mode/">ADR 0008</a>.</p>
+<h3 id="scheduled">Scheduled turns</h3>
+<p>A profile lists jobs in <code>angelia-jobs.yaml</code> in its folder: a schedule and a prompt, a message or a command. <code>angelia jobs install</code> turns each into a LaunchAgent, so macOS runs the timer and the answer lands in the chat. The <a href="/guides/claude-code-24-7/">24/7 guide</a> covers sleep settings and reboots.</p>
+
+<h2 id="limits">Limits</h2>
+<ul>
+  <li>macOS only for now. Linux is next. The Mac must be on and awake: while it sleeps, nothing answers.</li>
+  <li>Claude Code profiles use your claude.ai login. API keys are kept out of the agent's environment, and in the default mode a session that would bill a Console API key is refused.</li>
+  <li>Each chat runs its own Claude Code process. All chats share your plan's limits.</li>
+  <li>Claude Code's auto memory is off in every session Angelia starts. Each profile keeps its memory in its own folder.</li>
+  <li>Prompt injection is not solved. A web page or a forwarded message can still talk the agent into what its permission mode allows. Read the <a href="/docs/security/">security model</a> before you give the bot to anyone but yourself.</li>
+  <li>It is a young project (v0.3), maintained by one person.</li>
+</ul>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/docs/reference/">Reference</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>
