@@ -1,0 +1,87 @@
+<!--{
+  "title": "Angelia for pi: setup, sandbox, approvals and limits",
+  "description": "Run the pi coding agent from WhatsApp or Telegram: a session per chat, any model pi signs in to, every command in a macOS sandbox, approvals in the chat.",
+  "date": "2026-10-27",
+  "nav": "pi",
+  "card": "Any model pi signs in to, from your chat.",
+  "draft": false
+}-->
+<p class="lede">Angelia connects the pi coding agent on your Mac to WhatsApp and Telegram. Each chat gets its own pi session, in its own folder, on the model you pick. pi has no permission prompt and no sandbox of its own, so Angelia adds both: a gate that asks in the chat, and macOS's sandbox around every shell command. Angelia runs no model of its own: pi does the work, under the logins you gave it.</p>
+
+<h2 id="what-it-does">What Angelia does for pi</h2>
+<ul>
+  <li><strong>One session per chat.</strong> Each chat is routed to a profile: a folder with its own instructions and memory. Angelia keeps one <code>pi --mode rpc</code> process per chat, and the session comes back after a restart. <code>/new</code> in one chat never touches another.</li>
+  <li><strong>Approvals pi does not have.</strong> Angelia loads a gate extension into pi. A command or a file write that the profile's mode does not allow on its own comes to the chat and waits for an owner's yes.</li>
+  <li><strong>A sandbox pi does not have.</strong> Every shell command runs inside macOS's sandbox (<code>sandbox-exec</code>), made from the profile's deny rules. The kernel refuses a denied path however the command spells it, for every program the command starts.</li>
+  <li><strong>Your instructions and skills.</strong> pi reads the profile's <code>CLAUDE.md</code> (or an <code>AGENTS.md</code>, when the folder has one). The skills the profile was given are passed to pi one by one; pi does not read Claude's skills folder.</li>
+</ul>
+
+<h2 id="what-you-need">What you need</h2>
+<ul>
+  <li>A Mac with Node 22.23.4+, 24.22.1+ or 26.12.1+ and git.</li>
+  <li>pi 0.80.4 or newer. Check with <code>pi --version</code>.</li>
+  <li>A working login for at least one model provider. pi signs in per provider: run <code>pi</code> in a terminal and use its own <code>/login</code>. A Claude subscription used through pi draws on extra usage, and fails without it.</li>
+  <li>A chat app on your phone. For Telegram, a bot token from <a href="https://t.me/BotFather">@BotFather</a> (<a href="/telegram/">more</a>). For WhatsApp, a second, established number, not your personal one (<a href="/whatsapp/">why</a>).</li>
+  <li>Optional: <code>brew install openai-whisper ffmpeg</code> for voice notes.</li>
+</ul>
+
+<h2 id="set-up">Set it up</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh
+angelia service install</code></pre>
+<p>The first line checks the release's signature, installs Angelia and starts a setup wizard (<a href="https://github.com/{{REPO}}/blob/v{{VERSION}}/install.sh">read the script</a>). Pick Quick or Advanced, then Telegram, WhatsApp or both. Pick pi as the CLI, then send the bot (or the second number) a message from your phone to pair the chat. The second line keeps Angelia running.</p>
+<p>Already running Angelia with another CLI? An owner sends <code>/backend pi</code> in one of the profile's chats. Angelia edits the routing table, <code>~/.angelia/workspace/routing.yaml</code>, with a backup, compiles the profile for pi and starts a fresh session.</p>
+<h3 id="model">Pick a model</h3>
+<p>pi's own default model may be from a provider with no login on this Mac. So after the switch, Angelia says to pick one. <code>/model</code> lists the models pi has a login for, as <code>provider/model</code>. Then set one for this session:</p>
+<pre><code>/model xai/grok-4.7</code></pre>
+<p>To keep a model for the profile, set <code>model:</code> on it in <code>routing.yaml</code>, then <code>angelia accept</code> and <code>/restart</code>.</p>
+
+<h2 id="what-works">What works from the chat</h2>
+<h3 id="approvals">Approvals</h3>
+<p>The question comes to the chat as it does for <a href="/claude-code/#approvals">Claude Code</a>, and an owner answers <code>yes &lt;id&gt;</code> or <code>no &lt;id&gt;</code>. No answer in ten minutes means no. What asks depends on the profile's <code>permission_mode</code>:</p>
+<ul>
+  <li><code>default</code>: every shell command and every file write asks.</li>
+  <li><code>acceptEdits</code>: file writes inside the profile's folders run. Commands ask, except a short read-only list (<code>ls</code>, <code>cat</code>, <code>head</code>, <code>wc</code>, <code>echo</code> and the like) on paths inside the profile's folders.</li>
+  <li><code>bypassPermissions</code>: nothing asks. Commands and file writes then write only in the profile's folders, its cache folder and temp.</li>
+  <li><code>plan</code>: pi gets only its read, grep, find and ls tools.</li>
+</ul>
+<p>pi's file tools read without asking, unless a deny rule covers the path. A command an owner approved may write outside the profile's folders; the deny rules still hold. Sending a file back in <code>default</code> mode takes two yes answers: one to write the file, one for the command that sends it.</p>
+<h3 id="sandbox">What the sandbox does</h3>
+<ul>
+  <li>A path under a deny rule cannot be read or written: your credentials, Angelia's own files, the other profiles' folders.</li>
+  <li>The network is open to commands.</li>
+  <li>The ssh agent is not passed on. Tools that keep their login under the deny rules (gh, ssh keys, cloud CLIs) fail inside, and the agent is told so.</li>
+  <li>Package caches (npm, pip, uv) go to the profile's own cache folder.</li>
+  <li>No command runs longer than 600 seconds.</li>
+  <li><code>sandbox: false</code> on the profile runs commands without it. The deny rules then hold for pi's file tools only.</li>
+</ul>
+<h3 id="files">Voice notes, photos and files</h3>
+<p>A photo or document you send lands in the profile's <code>.inbox/</code> folder, up to 20 MB, and pi gets a <code>[file: path]</code> line. A voice note arrives as <code>[voice note: path]</code>, and the agent runs <code>angelia transcribe &lt;path&gt;</code>. pi sends files back with <code>angelia send-media</code>. Every path is checked first: never a credential location, never another profile's folder.</p>
+<h3 id="commands">Chat commands</h3>
+<p><code>/new</code>, <code>/stop</code>, <code>/status</code>, <code>/resume</code>, <code>/model</code>, <code>/effort</code>, <code>/backend</code>, <code>/restart</code> and the others <code>/help</code> lists are answered by Angelia, without spending a token. <code>/compact</code> goes to pi's own compact command. When a provider hits a usage limit, the chat says to pick another model with <code>/model</code>. Long answers are split as for <a href="/claude-code/#long-answers">every CLI</a>.</p>
+
+<h2 id="tested">Tested</h2>
+<p>On 2026-10-27, with Angelia 0.3.22 and pi 0.86.1 on macOS, in a WhatsApp group routed to one profile in <code>permission_mode: default</code>. The model was <code>xai/grok-4.7</code>, picked with <code>/model</code> in the chat.</p>
+<ul>
+  <li>The first answer came in about 16 seconds. About 14 seconds of that was pi starting.</li>
+  <li>A long answer arrived in 2 messages, in order.</li>
+  <li>Approvals worked: <code>yes &lt;id&gt;</code> ran the command, and <code>no &lt;id&gt;</code> declined it.</li>
+  <li>A file sent back with <code>angelia send-media</code> arrived in the chat.</li>
+  <li><code>/status</code>, <code>/new</code> and <code>/stop</code> work.</li>
+</ul>
+<p>pi on Telegram is not tested yet. Voice notes are tested with Claude Code only.</p>
+
+<h2 id="limits">Limits</h2>
+<ul>
+  <li>macOS only. The sandbox is macOS's own; without it, every command is refused. The Mac must be on and awake: while it sleeps, nothing answers.</li>
+  <li>No MCP servers on pi.</li>
+  <li>The sandbox is a guard rail, not a wall. A command can still ask a program outside it to act (launchd, Apple Events, <code>open</code>). That is why only <code>bypassPermissions</code> runs commands without asking, and a group open to every member is refused on a bypass pi profile.</li>
+  <li>Your own pi extensions still load, and pi's <code>shellCommandPrefix</code> setting runs outside the sandbox. <code>angelia compile</code> warns when one is set.</li>
+  <li>Prompt injection is not solved. A web page or a forwarded message can still talk the agent into what its mode allows. Read the <a href="/docs/security/">security model</a> before you give the bot to anyone but yourself.</li>
+  <li>It is a young project (v0.3), maintained by one person.</li>
+</ul>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/docs/decisions/0011-pi-backend/">Why pi runs this way</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>

@@ -1,0 +1,92 @@
+<!--{
+  "title": "Angelia for Codex: setup, sandbox, approvals and limits",
+  "description": "Run the Codex CLI from WhatsApp or Telegram: a session per chat, Codex's own OS sandbox with your profile's rules, approvals in the chat, files, limits.",
+  "date": "2026-10-27",
+  "nav": "Codex",
+  "card": "Every command in Codex's own sandbox.",
+  "draft": false
+}-->
+<p class="lede">Angelia connects the Codex CLI on your Mac to WhatsApp and Telegram. Each chat gets its own Codex session, in its own folder. Codex runs every command inside its own sandbox, which the operating system enforces, and Angelia gives that sandbox the profile's rules. Angelia runs no model of its own: Codex does the work, under your own <code>codex login</code>.</p>
+
+<h2 id="what-it-does">What Angelia does for Codex</h2>
+<ul>
+  <li><strong>One session per chat.</strong> Each chat is routed to a profile: a folder with its own instructions and memory. Angelia keeps one <code>codex app-server</code> process per chat, and the session comes back after a restart. <code>/new</code> in one chat never touches another.</li>
+  <li><strong>The sandbox holds the profile's rules.</strong> Angelia passes them on Codex's command line, where the agent cannot edit them. The agent writes only in the profile's folders and temp. It cannot read your credentials, Angelia's own files or the other profiles' folders, shell commands included.</li>
+  <li><strong>Your instructions.</strong> Codex looks for <code>AGENTS.md</code>. Angelia names the profile's <code>CLAUDE.md</code> as the fallback, so one instruction file serves every CLI. If the folder also has an <code>AGENTS.md</code>, Codex reads that one instead, and <code>angelia compile</code> warns you.</li>
+  <li><strong>It keeps running.</strong> As a LaunchAgent, Angelia starts at login and comes back after a crash. The chat answers whenever the Mac is on and awake.</li>
+</ul>
+
+<h2 id="what-you-need">What you need</h2>
+<ul>
+  <li>A Mac with Node 22.23.4+, 24.22.1+ or 26.12.1+ and git.</li>
+  <li>Codex 0.157 or newer, signed in with <code>codex login</code>. Check with <code>codex --version</code>.</li>
+  <li>A chat app on your phone. For Telegram, a bot token from <a href="https://t.me/BotFather">@BotFather</a> (<a href="/telegram/">more</a>). For WhatsApp, a second, established number, not your personal one (<a href="/whatsapp/">why</a>).</li>
+  <li>Optional: <code>brew install openai-whisper ffmpeg</code> for voice notes.</li>
+</ul>
+
+<h2 id="set-up">Set it up</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh
+angelia service install</code></pre>
+<p>The first line checks the release's signature, installs Angelia and starts a setup wizard (<a href="https://github.com/{{REPO}}/blob/v{{VERSION}}/install.sh">read the script</a>). Pick Quick or Advanced, then Telegram, WhatsApp or both. Pick Codex as the CLI, then send the bot (or the second number) a message from your phone to pair the chat. The second line keeps Angelia running.</p>
+<p>Already running Angelia with another CLI? An owner sends <code>/backend codex</code> in one of the profile's chats. Angelia edits the routing table, <code>~/.angelia/workspace/routing.yaml</code>, with a backup, compiles the profile for Codex and starts a fresh session. A session never moves between CLIs. <code>/backend</code> alone lists the CLIs installed.</p>
+<p>To let the agent write in a repo, list it in the profile's <code>add_dirs</code> in <code>routing.yaml</code>:</p>
+<pre><code>profiles:
+  main: { cwd: ~/.angelia/workspace/profiles/main, backend: codex, permission_mode: default, add_dirs: [~/code/my-app] }</code></pre>
+<p>Then accept the change to the routing table and compile the profile's rules. <code>angelia compile</code> refuses while <code>routing.yaml</code> has changes you have not accepted, so accept first:</p>
+<pre><code>angelia accept
+angelia compile main --write</code></pre>
+<p>Send <code>/restart</code> in the chat. If the restart would give the profile new rights, Angelia lists them; then send <code>/restart confirm</code>.</p>
+
+<h2 id="what-works">What works from the chat</h2>
+<h3 id="approvals">Approvals</h3>
+<p>Inside its sandbox, Codex runs commands without asking. It asks in the chat only for more access than the sandbox gives, such as write access to one more folder for this turn:</p>
+<pre><code>🔐 more access, this turn: write access to /Users/example/code/other. Or add the folder to add_dirs instead.
+Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
+<p>A yes grants exactly that, for that turn. The deny rules still hold, so a yes never opens another profile's folder or your credentials. A no grants nothing. No answer in ten minutes means no. In a group, other members can talk to the agent but cannot approve. A lasting fix is the folder in <code>add_dirs</code>.</p>
+<ul>
+  <li><code>default</code> and <code>acceptEdits</code>: Codex asks for more access as above.</li>
+  <li><code>bypassPermissions</code>: Codex never asks and never widens the sandbox.</li>
+  <li><code>plan</code>: the sandbox is read-only.</li>
+  <li><code>sandbox: false</code> on the profile turns the sandbox off. Codex then has full access and runs commands without asking, in every mode.</li>
+</ul>
+<h3 id="sandbox">What the sandbox allows</h3>
+<ul>
+  <li><strong>Writes</strong> in the profile's folder, its <code>add_dirs</code> and temp. A <code>.git</code> folder at the top of those is read-only, so the agent cannot commit there.</li>
+  <li><strong>The web only.</strong> HTTP and HTTPS go through Codex's network proxy. SSH and local ports do not work, so the agent cannot run a server and connect to it.</li>
+  <li><strong>Angelia's socket.</strong> It is the one local socket the agent can reach, so <code>angelia send-media</code> and <code>angelia turn</code> work from inside.</li>
+  <li><strong>Package caches</strong> (npm, pip, uv) go to the profile's own cache folder.</li>
+  <li><strong>MCP servers.</strong> A server in your Codex config that the profile was not given is switched off. If your Codex config would load one anyway, the session does not start. Compile does not write a Codex profile's MCP servers yet: add them with <code>codex mcp add</code>.</li>
+  <li><strong>Skills</strong> given to the profile are linked into <code>.agents/skills</code>, where Codex looks.</li>
+</ul>
+<h3 id="files">Voice notes, photos and files</h3>
+<p>A photo or document you send lands in the profile's <code>.inbox/</code> folder, up to 20 MB, and Codex gets a <code>[file: path]</code> line. A voice note arrives as <code>[voice note: path]</code>, and the agent runs <code>angelia transcribe &lt;path&gt;</code>. Codex sends files back with <code>angelia send-media</code>. Every path is checked first: never a credential location, never another profile's folder.</p>
+<h3 id="commands">Chat commands</h3>
+<p><code>/new</code>, <code>/stop</code>, <code>/status</code>, <code>/resume</code>, <code>/model</code>, <code>/effort</code>, <code>/backend</code>, <code>/restart</code> and the others <code>/help</code> lists are answered by Angelia, without spending a token. <code>/model</code> alone shows the models Codex lists, and <code>/effort</code> the levels of the model in use. A model or level Codex does not offer is refused. Without a model in the profile, Codex's own default is used. <code>/compact</code> goes to Codex's own compaction. Long answers are split as for <a href="/claude-code/#long-answers">every CLI</a>.</p>
+
+<h2 id="tested">Tested</h2>
+<p>On 2026-10-27, with Angelia 0.3.22 and Codex 0.163.0 on macOS, in a WhatsApp group routed to one profile in <code>permission_mode: default</code>:</p>
+<ul>
+  <li>An answer came in about 8 seconds. A 6,533-character answer arrived as 2 messages, in order.</li>
+  <li>Writes in the profile's folder and web access ran without a question. Access outside the sandbox brought a 🔐 question. <code>yes &lt;id&gt;</code> granted it, and <code>no &lt;id&gt;</code> declined it.</li>
+  <li>A file sent back with <code>angelia send-media</code> arrived in the chat.</li>
+  <li><code>/status</code>, <code>/new</code> and <code>/stop</code> work. <code>/stop</code> ended a running <code>sleep</code>.</li>
+  <li>A small quirk: a progress line can arrive after the 🔐 question.</li>
+</ul>
+<p>Codex on Telegram is not tested yet. Voice notes are tested with Claude Code only.</p>
+
+<h2 id="limits">Limits</h2>
+<ul>
+  <li>macOS only for now. Linux is next. The Mac must be on and awake: while it sleeps, nothing answers.</li>
+  <li>Codex marks its app-server protocol as experimental, and marks the two settings Angelia turns on for chat approvals as under development. A Codex without them still runs sandboxed, but a yes adds nothing.</li>
+  <li>The sandbox lets commands reach the web, and nothing else on the network.</li>
+  <li>The terminal resume line in <code>/status</code> and the Claude app view are for Claude Code only.</li>
+  <li>API key variables (<code>OPENAI_API_KEY</code>, <code>CODEX_API_KEY</code>) are kept out of the agent's environment.</li>
+  <li>Prompt injection is not solved. A web page or a forwarded message can still talk the agent into what its sandbox and mode allow. Read the <a href="/docs/security/">security model</a> before you give the bot to anyone but yourself.</li>
+  <li>It is a young project (v0.3), maintained by one person.</li>
+</ul>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/docs/decisions/0012-codex-backend/">Why Codex runs this way</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>

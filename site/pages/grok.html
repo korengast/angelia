@@ -1,0 +1,74 @@
+<!--{
+  "title": "Angelia for Grok Build: setup, approvals and limits",
+  "description": "Run xAI's Grok Build CLI from WhatsApp or Telegram on your Mac: a session per chat, your CLAUDE.md and deny rules, approvals in the chat from 0.3.23.",
+  "date": "2026-10-27",
+  "nav": "Grok Build",
+  "card": "One session per chat, from your phone.",
+  "draft": false
+}-->
+<p class="lede">Angelia connects Grok Build, xAI's coding agent CLI (<code>grok</code>), on your Mac to WhatsApp and Telegram. Each chat gets its own Grok Build session, in its own folder. Grok Build reads the profile's <code>CLAUDE.md</code> and Claude settings, so the instructions and rules you wrote for Claude Code work here too. Angelia runs no model of its own: Grok Build does the work, under your own <code>grok login</code>.</p>
+
+<h2 id="what-it-does">What Angelia does for Grok Build</h2>
+<ul>
+  <li><strong>One session per chat.</strong> Each chat is routed to a profile: a folder with its own instructions and memory. Angelia keeps one <code>grok agent stdio</code> process per chat, and the session comes back after a restart. <code>/new</code> in one chat never touches another.</li>
+  <li><strong>Your instructions and rules.</strong> <code>angelia compile</code> writes the profile's deny rules into its <code>.claude/settings.json</code>, which Grok Build reads. Grok Build reads a folder's <code>CLAUDE.md</code> and settings only once you trust the folder. The wizard, onboarding and <code>/backend grok</code> do that for you.</li>
+  <li><strong>Grok Build's own permission modes.</strong> The profile's <code>permission_mode</code> goes to Grok Build as its own mode. Its questions come to the chat.</li>
+  <li><strong>It keeps running.</strong> As a LaunchAgent, Angelia starts at login and comes back after a crash. The chat answers whenever the Mac is on and awake.</li>
+</ul>
+
+<h2 id="what-you-need">What you need</h2>
+<ul>
+  <li>A Mac with Node 22.23.4+, 24.22.1+ or 26.12.1+ and git.</li>
+  <li>Grok Build, signed in with <code>grok login</code>. Measured with 1.0.13 to 1.0.40; check with <code>grok --version</code>.</li>
+  <li>A chat app on your phone. For Telegram, a bot token from <a href="https://t.me/BotFather">@BotFather</a> (<a href="/telegram/">more</a>). For WhatsApp, a second, established number, not your personal one (<a href="/whatsapp/">why</a>).</li>
+  <li>Optional: <code>brew install openai-whisper ffmpeg</code> for voice notes.</li>
+</ul>
+
+<h2 id="set-up">Set it up</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh
+angelia service install</code></pre>
+<p>The first line checks the release's signature, installs Angelia and starts a setup wizard (<a href="https://github.com/{{REPO}}/blob/v{{VERSION}}/install.sh">read the script</a>). Pick Quick or Advanced, then Telegram, WhatsApp or both. Pick Grok Build as the CLI. The wizard asks to mark the profile's folder trusted in grok: say yes. Then send the bot (or the second number) a message from your phone to pair the chat. The second line keeps Angelia running.</p>
+<p>Already running Angelia with another CLI? An owner sends <code>/backend grok</code> in one of the profile's chats. Angelia edits the routing table, <code>~/.angelia/workspace/routing.yaml</code>, with a backup, compiles the profile for Grok Build, trusts its folder in grok and starts a fresh session.</p>
+<p>If you set the profile up by hand, run this once in its folder, or Grok Build will not read its <code>CLAUDE.md</code>. It trusts the folder, then prints <code>Project trusted: yes</code>:</p>
+<pre><code>grok --trust inspect</code></pre>
+
+<h2 id="what-works">What works from the chat</h2>
+<h3 id="approvals">Approvals</h3>
+<p>Grok Build decides by itself which commands to ask about. Measured in September 2026 (grok 1.0.13 and 1.0.30): <code>touch</code> ran by itself; <code>rm</code>, <code>git init</code> and <code>curl</code> asked. The question comes to the chat as it does for <a href="/claude-code/#approvals">Claude Code</a>. <code>bypassPermissions</code> approves everything without asking.</p>
+<p>Answering a Grok Build question from the chat works from Angelia 0.3.23. In 0.3.22, a bug keeps <code>yes &lt;id&gt;</code> from reaching Grok Build's questions. The fix ships in 0.3.23. Run <code>angelia update</code> once 0.3.23 is out.</p>
+<h3 id="no-sandbox">No sandbox</h3>
+<p>Angelia has no sandbox for Grok Build: <code>sandbox: true</code> is for Claude Code, Codex and pi, and compile says it is ignored here. The deny rules stop Grok Build's file tools, not a program its shell runs. So keep the shell asking in any profile other people can talk to.</p>
+<ul>
+  <li>Grok Build reads a path rule only as a full path. A rule written with <code>~</code> is ignored, and compile warns about it.</li>
+  <li>MCP servers set up for your whole user reach every folder, so compile denies each one the profile was not given. Compile does not write the servers a profile was given yet: add them with <code>grok mcp add --scope project</code> in the profile's folder.</li>
+</ul>
+<h3 id="files">Voice notes, photos and files</h3>
+<p>A photo or document you send lands in the profile's <code>.inbox/</code> folder, up to 20 MB, and Grok Build gets a <code>[file: path]</code> line. A voice note arrives as <code>[voice note: path]</code>, and the agent runs <code>angelia transcribe &lt;path&gt;</code>. Grok Build sends files back with <code>angelia send-media</code>. Every path is checked first: never a credential location, never another profile's folder.</p>
+<h3 id="commands">Chat commands</h3>
+<p><code>/new</code>, <code>/stop</code>, <code>/status</code>, <code>/resume</code>, <code>/model</code>, <code>/effort</code>, <code>/backend</code>, <code>/restart</code> and the others <code>/help</code> lists are answered by Angelia, without spending a token. <code>/model</code> alone shows the models <code>grok models</code> lists. Any other slash command is passed to Grok Build as text. Long answers are split as for <a href="/claude-code/#long-answers">every CLI</a>.</p>
+
+<h2 id="tested">Tested</h2>
+<p>On 2026-10-27, with Angelia 0.3.22 and Grok Build 1.0.40 on macOS, in a WhatsApp group routed to one profile in <code>permission_mode: default</code>:</p>
+<ul>
+  <li>An answer came in about 11 seconds. A long answer arrived in 2 messages, in order.</li>
+  <li><code>/status</code>, <code>/new</code> and <code>/stop</code> work.</li>
+  <li>Grok Build's questions could not be answered from the chat (ids starting <code>call-</code>). Fixed for 0.3.23.</li>
+</ul>
+<p>Grok Build on Telegram is not tested yet. Voice notes are tested with Claude Code only.</p>
+
+<h2 id="limits">Limits</h2>
+<ul>
+  <li>macOS only for now. Linux is next. The Mac must be on and awake: while it sleeps, nothing answers.</li>
+  <li>Approvals from the chat need Angelia 0.3.23 or newer.</li>
+  <li>No sandbox, as above.</li>
+  <li><code>angelia ask</code> (one profile asking another's agent) does not reach a Grok Build profile yet. Give it a task with <code>angelia turn</code> instead.</li>
+  <li>API key variables (<code>XAI_API_KEY</code>, <code>GROK_CODE_XAI_API_KEY</code>) are kept out of the agent's environment.</li>
+  <li>Prompt injection is not solved. A web page or a forwarded message can still talk the agent into what its mode allows. Read the <a href="/docs/security/">security model</a> before you give the bot to anyone but yourself.</li>
+  <li>It is a young project (v0.3), maintained by one person.</li>
+</ul>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/docs/decisions/0007-agy-and-grok-backends/">Why Grok Build runs this way</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>
