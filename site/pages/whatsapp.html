@@ -37,7 +37,7 @@ angelia service install</code></pre>
 <p><code>angelia service install</code> keeps Angelia running: it starts at login and comes back after a crash. On a setup you already have, add <code>whatsapp: { auth_dir: ~/.angelia/wa }</code> to <code>~/.angelia/workspace/routing.yaml</code>, then:</p>
 <pre><code>angelia accept
 angelia pair</code></pre>
-<p><code>angelia pair</code> reads the table you accepted, so accept first. Then send <code>/restart</code> in a chat you own, or run <code>angelia restart</code>.</p>
+<p><code>angelia pair</code> reads the table you accepted, so accept first. Then send <code>/restart</code> in a chat you own, or run <code>angelia restart</code>. No WhatsApp chat is routed yet, so nothing answers there: send the number a message from the chat it should answer, take that chat's id from <code>~/.angelia/daemon.log</code>, add a route such as <code>{ platform: whatsapp, chat: &lt;id&gt;, profile: main }</code>, and send <code>/restart</code> again (then <code>/restart confirm</code> if it lists new rights).</p>
 
 <h2 id="groups">Groups</h2>
 <ul>
@@ -50,7 +50,7 @@ angelia pair</code></pre>
 <h2 id="what-works">What works</h2>
 <ul>
   <li><strong>Approvals.</strong> A command the profile may not run on its own comes to the chat as <code>🔐 Bash: npm test</code>, with a short id. An owner answers <code>yes &lt;id&gt;</code> or <code>no &lt;id&gt;</code>. No answer in ten minutes means no. This works for Claude Code, Grok Build and pi. Codex runs in its own sandbox and asks only for more access than the sandbox gives.</li>
-  <li><strong>Voice notes.</strong> A voice note reaches the agent as a file, and the agent runs <code>angelia transcribe</code>, which uses Whisper on your Mac. An audio file the agent sends back arrives as a real voice note: Angelia converts it to ogg/opus when ffmpeg is installed.</li>
+  <li><strong>Voice notes</strong> (tested with Claude Code). A voice note reaches the agent as a file, and the agent runs <code>angelia transcribe</code>, which uses Whisper on your Mac. An audio file the agent sends back arrives as a real voice note: Angelia converts it to ogg/opus when ffmpeg is installed.</li>
   <li><strong>Photos, videos and documents.</strong> Files up to 20 MB land in the profile's <code>.inbox/</code> folder for the agent to read. Stickers are not downloaded. The agent sends files back with <code>angelia send-media</code>, up to 64 MB.</li>
   <li><strong>Long answers.</strong> Progress lines while the agent works, then the answer, split at paragraph breaks into messages of up to 3,500 characters. The chat shows "typing" while a turn runs.</li>
   <li><strong>Chat commands.</strong> <code>/new</code>, <code>/stop</code>, <code>/status</code>, <code>/resume</code>, <code>/model</code> and the others are answered by Angelia itself. WhatsApp has no command menu, so type them.</li>

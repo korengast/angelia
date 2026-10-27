@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { htmlToMarkdown } from './markdown.mjs';
-import { renderMarkdown, toc, inline } from './docs.mjs';
+import { renderMarkdown, toc, inline, rewriteLinks } from './docs.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SITE = 'https://useangelia.com';
@@ -217,9 +217,9 @@ for (const d of DOCS) {
     ogImage: d.ogImage, ogAlt: d.title, body: `<div class="doc">\n${body}\n${moreDocs(d.path)}\n</div>`,
     jsonld: { '@context': 'https://schema.org', '@type': 'TechArticle', headline: d.title, description: d.description, url: SITE + d.path, isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } },
   }));
-  writeFileSync(join(out, d.path, 'index.md'), d.md.replace(/\]\(([^)\s]+)\)/g, (_, h) => {
+  writeFileSync(join(out, d.path, 'index.md'), rewriteLinks(d.md, (h) => {
     const to = docLink(d.file)(h);
-    return `](${to.startsWith('/') ? SITE + to : to})`;
+    return to.startsWith('/') ? SITE + to : to;
   }));
 }
 const adrs = DOCS.filter((d) => d.adr);

@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error -- the site's build is plain JavaScript, without types
-import { renderMarkdown, anchor, toc } from '../site/docs.mjs';
+import { renderMarkdown, anchor, toc, inline, rewriteLinks } from '../site/docs.mjs';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -53,6 +53,9 @@ test('site docs: a link goes only to the web, to mail, to a heading or to a rela
   const { html } = renderMarkdown('[a](https://x.org) [b](mailto:a@x.org) [c](#part) [d](../x.md) [e](javascript:alert) [f](data:text/html,x) [`g`](y.md) and `[h](z.md)`');
   assert.equal(html, '<p><a href="https://x.org">a</a> <a href="mailto:a@x.org">b</a> <a href="#part">c</a> <a href="../x.md">d</a> ' +
     '[e](javascript:alert) [f](data:text/html,x) <a href="y.md"><code>g</code></a> and <code>[h](z.md)</code></p>');
+  // Two slashes (forward or back) reach another host; a control character can hide a scheme.
+  assert.equal(inline('[a](//evil.example) [b](\\\\evil.example) [c](\u0001javascript:x) [d](/docs/)'),
+    '[a](//evil.example) [b](\\\\evil.example) [c](\u0001javascript:x) <a href="/docs/">d</a>');
 });
 
 test('site docs: heading ids follow github-slugger, and a # in a heading is kept', () => {
@@ -62,10 +65,19 @@ test('site docs: heading ids follow github-slugger, and a # in a heading is kept
 
 test('site docs: Markdown the renderer does not handle fails the build, with where it is', () => {
   for (const [md, what] of [['> quoted', 'a blockquote'], ['Title\n===', 'a setext heading'], ['a\n\n---', 'a rule'], ['- a\n  - nested', 'an indented (nested) list item'],
-    ['+ item', 'a list marker'], ['~~~\ncode\n~~~', 'a ~~~ fence'], ['![logo](x.png)', 'an image'], ['a \\* b', 'a backslash escape'], ['a <br> b', 'raw HTML']])
+    ['+ item', 'a list marker'], ['~~~\ncode\n~~~', 'a ~~~ fence'], ['![logo](x.png)', 'an image'], ['a \\* b', 'a backslash escape'], ['a <br> b', 'raw HTML'],
+    ['[a][ref]', 'a reference link'], ['[ref]: https://x.org', 'a reference link or definition'], ['a &rarr; b', 'an HTML entity'], ['see https://x.org now', 'a bare URL'],
+    ['para\n\n    code', 'an indented code block'], ['~~gone~~', 'strikethrough'], ['an _emphasis_ here', 'underscore emphasis']])
     assert.throws(() => renderMarkdown(md), (e: Error) => e.message.includes(what), md);
   // Inside code, in a table's escaped pipe, and in a fenced block, the same characters are fine.
   assert.doesNotThrow(() => renderMarkdown('`<br> \\* ![x](y)`\n\n| a | b |\n|---|---|\n| `x \\| y` | c |\n\n```\n> quoted\n---\n```'));
+  // A link's own URL, snake_case words, and a list item's indented continuation are fine too.
+  assert.doesNotThrow(() => renderMarkdown('[site](https://x.org) and allow_from and a_b_c\n\n- item\n\n    more of the item'));
+});
+
+test('site docs: the Markdown copy rewrites link targets, never inside code', () => {
+  const md = 'See [ref](reference.md#x) and `[not](a.md)`.\n\n```\n[not](b.md)\n```\n';
+  assert.equal(rewriteLinks(md, (h: string) => `https://site/${h}`), 'See [ref](https://site/reference.md#x) and `[not](a.md)`.\n\n```\n[not](b.md)\n```\n');
 });
 
 test('site docs: every doc the site publishes renders with no Markdown left in its text', () => {

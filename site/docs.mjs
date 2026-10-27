@@ -1,7 +1,8 @@
 // The repository's Markdown docs as HTML, at build time, so the site never drifts from them. A small
 // renderer for the Markdown docs/ writes, not for any Markdown: ATX headings, paragraphs, tight and
-// loose lists, fenced code, pipe tables, code spans, links, bold and italic. Anything else (see
-// UNSUPPORTED) fails the build, so a doc never renders differently here and on GitHub without notice.
+// loose lists, fenced code, pipe tables, code spans, inline links, bold and italic with *. What
+// unsupported() knows to be outside that fails the build, so such a doc never renders differently here
+// and on GitHub without notice.
 
 const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -20,8 +21,9 @@ function slugger() {
   };
 }
 
-/** A link goes to the web, to mail, to a heading or to a relative path; any other scheme is text. */
-const SAFE_HREF = /^(https?:|mailto:|#)|^(?![a-z][a-z0-9+.-]*:)/i;
+/** A link goes to the web, to mail, to a heading or to a relative path; any other scheme is text, and
+ *  so is an href that starts with a control character or a space, or with two slashes (another host). */
+const SAFE_HREF = /^(?![\u0000- ]|[/\\]{2})(?:https?:|mailto:|#|(?![a-z][a-z0-9+.-]*:))/i;
 const CODE_SPAN = /(`+)([\s\S]*?[^`])\1(?!`)/g;
 
 /** One line of Markdown text into HTML. `link(href)` gives the URL a link points at on the site. */
@@ -52,7 +54,13 @@ const UNSUPPORTED_TEXT = [
   [/!\[/, 'an image'],
   [/\\[!-/:-@[-`{-~]/, 'a backslash escape'],
   [/<\/?[a-zA-Z!]/, 'raw HTML'],
+  [/\]\[|^ {0,3}\[[^\]]+\]:\s/m, 'a reference link or definition'],
+  [/&(#\d+|#x[0-9a-f]+|[a-z][a-z0-9]*);/i, 'an HTML entity'],
+  [/~~/, 'strikethrough'],
+  [/(^|[^\w])_(?=\S)[^_\n]*?\S_(?!\w)/, 'underscore emphasis'],
 ];
+// A bare URL GitHub would make a link; seen with the links' own targets taken out.
+const BARE_URL = /https?:\/\/|www\./;
 function unsupported(md) {
   const found = [];
   const lines = md.replace(/\r\n?/g, '\n').split('\n');
@@ -61,17 +69,31 @@ function unsupported(md) {
   const flush = () => {
     const text = para.map(([, l]) => (l.trimStart().startsWith('|') ? l.replace(/\\\|/g, '') : l)).join('\n').replace(CODE_SPAN, '');
     for (const [re, what] of UNSUPPORTED_TEXT) if (re.test(text)) found.push(`${what} near line ${para[0][0]}`);
+    if (BARE_URL.test(text.replace(/\]\([^)\s]+\)/g, ']'))) found.push(`a bare URL (an autolink) near line ${para[0][0]}`);
     para = [];
   };
+  let inList = false;
+  let afterBlank = true;
   lines.forEach((l, k) => {
-    if (FENCE.test(l) || (fenced && /^ {0,3}```\s*$/.test(l))) { flush(); fenced = !fenced; return; }
+    if (FENCE.test(l) || (fenced && /^ {0,3}```\s*$/.test(l))) { flush(); fenced = !fenced; afterBlank = false; return; }
     if (fenced) return;
-    if (/^\s*$/.test(l)) { flush(); return; }
+    if (/^\s*$/.test(l)) { flush(); afterBlank = true; return; }
+    // Four spaces after a blank line are code, unless they go on with a list item.
+    if (ITEM.test(l)) inList = true;
+    else if (!/^ {2,}/.test(l)) inList = false;
+    if (afterBlank && !inList && /^ {4,}\S/.test(l)) found.push(`an indented code block at line ${k + 1}`);
+    afterBlank = false;
     for (const [re, what] of UNSUPPORTED_LINE) if (re.test(l) && !(l.includes('|') && TABLE_RULE.test(l))) found.push(`${what} at line ${k + 1}`);
     para.push([k + 1, l]);
   });
   flush();
   return found;
+}
+
+/** A Markdown file with each inline link's target passed through `to`, leaving fenced code and code
+ *  spans as they are: the site's Markdown copy of a doc. */
+export function rewriteLinks(md, to) {
+  return md.replace(/^ {0,3}```[\s\S]*?^ {0,3}```\s*$|(`+)[\s\S]*?[^`]\1(?!`)|\]\(([^)\s]+)\)/gm, (all, _ticks, href) => (href === undefined ? all : `](${to(href)})`));
 }
 
 const plain = (md) => inline(md).replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
