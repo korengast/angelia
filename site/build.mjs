@@ -121,6 +121,35 @@ if (guides.length) writeFileSync(join(out, 'guides', 'index.html'), guidePage({
   body: '<ul>' + guides.map((g) => `<li><a href="/guides/${g.slug}/">${esc(g.title)}</a><br><span class="meta">${g.date} · ${esc(g.description)}</span></li>`).join('') + '</ul>',
   jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: 'Angelia guides', url: `${SITE}/guides/` },
 }));
+// Tools: site/tools/<slug>.html is a free tool's page, headed like a guide, and site/tools/<slug>/ holds
+// its scripts, served beside it (the page loads them as modules; tests/site-tools.test.ts imports them).
+const tools = readdirSync(join(here, 'tools')).filter((f) => f.endsWith('.html')).map((f) => {
+  const src = readFileSync(join(here, 'tools', f), 'utf8');
+  const m = src.match(/^<!--(\{[\s\S]*?\})-->\n/);
+  if (!m) throw new Error(`site/tools/${f}: no JSON header`);
+  return { slug: f.replace(/\.html$/, ''), body: src.slice(m[0].length), ...JSON.parse(m[1]) };
+}).filter((t) => !t.draft || process.argv.includes('--drafts')).sort((a, b) => a.title.localeCompare(b.title));
+const moreTools = (slug) => `<nav class="more" aria-label="More tools"><h2 id="more-tools">More tools</h2><ul>${tools.filter((o) => o.slug !== slug).map((o) => `<li><a href="/tools/${o.slug}/">${esc(o.title)}</a></li>`).join('')}<li><a href="/guides/">Guides</a></li></ul></nav>\n`;
+for (const t of tools) {
+  const url = `${SITE}/tools/${t.slug}/`;
+  mkdirSync(join(out, 'tools', t.slug), { recursive: true });
+  if (existsSync(join(here, 'tools', t.slug))) cpSync(join(here, 'tools', t.slug), join(out, 'tools', t.slug), { recursive: true });
+  writeFileSync(join(out, 'tools', t.slug, 'index.html'), guidePage({
+    title: t.title, description: t.description, url, date: t.date, modified: t.updated ?? t.date, ogType: 'website', ogAlt: t.title,
+    body: t.body.replace('<div class="try"', `${moreTools(t.slug)}<div class="try"`),
+    byline: `A free tool from Angelia · Updated <time datetime="${t.updated ?? t.date}">${longDate(t.updated ?? t.date)}</time>`,
+    jsonld: { '@context': 'https://schema.org', '@type': 'WebApplication', name: t.title, description: t.description, url, applicationCategory: 'DeveloperApplication', operatingSystem: 'Any', isAccessibleForFree: true, offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' }, dateModified: t.updated ?? t.date, author: AUTHOR, publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
+  }));
+}
+if (tools.length) {
+  copyFileSync(join(here, 'tools', 'tools.css'), join(out, 'tools', 'tools.css'));
+  writeFileSync(join(out, 'tools', 'index.html'), guidePage({
+    title: 'Free tools', description: 'Small free tools for Claude Code and Telegram bots. Each runs in your browser and sends nothing to us.',
+    url: `${SITE}/tools/`, date: tools.map((t) => t.updated ?? t.date).sort().at(-1), byline: 'Angelia', ogType: 'website',
+    body: '<ul>' + tools.map((t) => `<li><a href="/tools/${t.slug}/">${esc(t.title)}</a><br><span class="meta">${esc(t.description)}</span></li>`).join('') + '</ul>',
+    jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: 'Angelia tools', url: `${SITE}/tools/` },
+  }));
+}
 // The comparison guide, linked from the home page once it is published.
 const COMPARE = 'claude-code-whatsapp-telegram';
 const html = page('index.html')
@@ -139,6 +168,7 @@ for (const dir of ['', ...(guides.length ? ['guides'] : []), ...guides.map((g) =
   const path = dir ? `/${dir}/` : '/';
   writeFileSync(join(out, dir, 'index.md'), htmlToMarkdown(readFileSync(join(out, dir, 'index.html'), 'utf8'), SITE + path));
 }
+for (const dir of tools.length ? ['tools', ...tools.map((t) => `tools/${t.slug}`)] : []) writeFileSync(join(out, dir, 'index.md'), htmlToMarkdown(readFileSync(join(out, dir, 'index.html'), 'utf8'), `${SITE}/${dir}/`));
 writeFileSync(join(out, '404.md'), `# Not found\n\nNothing is at this address on ${SITE}. The page may have moved, or the link has a typo.\n\n` +
   `- [Home page](${SITE}/) ([Markdown](${SITE}/index.md))\n- [llms.txt](${SITE}/llms.txt): the documentation, listed for agents\n` +
   `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [GitHub](https://github.com/${REPO})\n`);
@@ -167,7 +197,8 @@ writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SI
 writeFileSync(join(out, 'sitemap.xml'),
   `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc></url>` +
   (guides.length ? `<url><loc>${SITE}/guides/</loc></url>` : '') +
-  guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') + '</urlset>\n');
+  guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') +
+  (tools.length ? `<url><loc>${SITE}/tools/</loc></url>` : '') + tools.map((t) => `<url><loc>${SITE}/tools/${t.slug}/</loc><lastmod>${t.updated ?? t.date}</lastmod></url>`).join('') + '</urlset>\n');
 copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
@@ -203,7 +234,8 @@ writeFileSync(join(out, '_redirects'),
   // Permanent, so search engines keep only the slash form. Cloudflare's own slash and index.html
   // redirects are 307, which Search Console reports as "Page with redirect" for months.
   ['/index.html /', ...(guides.length ? ['/guides /guides/', '/guides/index.html /guides/'] : []),
-    ...guides.flatMap((g) => [`/guides/${g.slug} /guides/${g.slug}/`, `/guides/${g.slug}/index.html /guides/${g.slug}/`])]
+    ...guides.flatMap((g) => [`/guides/${g.slug} /guides/${g.slug}/`, `/guides/${g.slug}/index.html /guides/${g.slug}/`]),
+    ...(tools.length ? ['/tools /tools/', '/tools/index.html /tools/'] : []), ...tools.flatMap((t) => [`/tools/${t.slug} /tools/${t.slug}/`, `/tools/${t.slug}/index.html /tools/${t.slug}/`])]
     .map((r) => `${r} 301\n`).join(''));
 writeFileSync(join(out, '_headers'), [
   '/*',

@@ -4,8 +4,9 @@
 // scripts, styles, icons, buttons, the skip link, and anything hidden from screen readers.
 
 const VOID = new Set(['br', 'img', 'source', 'meta', 'link', 'input', 'hr', 'use', 'rect', 'path', 'circle']);
-const SKIP = new Set(['head', 'script', 'style', 'svg', 'button', 'nav', 'header', 'template']);
-const BLOCK = new Set(['p', 'div', 'nav', 'section', 'figure', 'figcaption', 'main', 'article', 'header', 'footer', 'table', 'pre', 'ul', 'ol', 'blockquote']);
+const SKIP = new Set(['head', 'script', 'style', 'svg', 'button', 'nav', 'header', 'template', 'select', 'textarea']);
+// A tool's form (site/tools/) reads as its legends, labels and the choices' lists; the controls themselves are left out.
+const BLOCK = new Set(['p', 'div', 'nav', 'section', 'figure', 'figcaption', 'main', 'article', 'header', 'footer', 'table', 'pre', 'ul', 'ol', 'blockquote', 'form', 'fieldset', 'legend']);
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', middot: '·', mdash: '—', ndash: '–', hellip: '…', rarr: '→', larr: '←', copy: '©' };
 
 const decode = (t) => t.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => e[0] === '#'
