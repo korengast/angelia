@@ -87,6 +87,7 @@ header nav a.install-link{background:#D06B6B;color:#1A120D;opacity:1;padding:6px
 /* The table is wider than a phone: say so, and keep the hint in view while it scrolls. */
 .table::before{content:"Swipe sideways for all four columns →";display:none;position:sticky;left:0;padding:8px 11px;font-size:12.5px;color:var(--soft);background:var(--bg-2);border-bottom:1px solid var(--rule)}
 @media (max-width:760px){.table::before{display:block}}
+.table.five::before{content:"Swipe sideways for all five columns →"}
 /* A docs page (/docs/): the repository's Markdown. Its tables fit the column unless they are wide, and a
    code block keeps its lines, since some draw a folder tree. */
 .toc{margin:6px 0 30px;padding:14px 18px 4px;border:1px solid var(--rule);border-radius:10px;font-size:14px}
