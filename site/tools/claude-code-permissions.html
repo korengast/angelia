@@ -78,7 +78,7 @@
 </ul>
 <label for="deny-paths">Other files and folders</label>
 <textarea id="deny-paths" name="deny-paths" rows="2" spellcheck="false" autocapitalize="off" aria-describedby="deny-paths-help" placeholder="config/credentials.json&#10;~/work/private/**"></textarea>
-<p id="deny-paths-help" class="fine">Patterns as in <code>.gitignore</code>. <code>~/</code> is your home folder. <code>//</code> starts at the disk root. One <code>/</code> at the start means the project folder. A line that starts with <code>!</code> opens a file again, such as <code>!.env.example</code> after the <code>.env</code> files above.</p>
+<p id="deny-paths-help" class="fine">Patterns as in <code>.gitignore</code>. <code>~/</code> is your home folder. <code>//</code> starts at the disk root. One <code>/</code> at the start means the project folder. A line that starts with <code>!</code> opens a file again, such as <code>!.env.example</code> after the <code>.env</code> files above. It cannot open a file inside a folder blocked as a whole: <code>!secrets/public/**</code> does nothing under <code>secrets/**</code>.</p>
 <label for="deny-commands">Other commands to block</label>
 <textarea id="deny-commands" name="deny-commands" rows="2" spellcheck="false" autocapitalize="off" placeholder="terraform apply *"></textarea>
 </fieldset>

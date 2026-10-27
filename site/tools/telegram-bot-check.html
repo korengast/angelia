@@ -14,7 +14,7 @@
 <div id="check" class="tool">
 <label for="token">Bot token</label>
 <input id="token" type="text" class="masked" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-describedby="token-help" placeholder="123456789:AA…">
-<p id="token-help" class="fine">From @BotFather: digits, a colon, then about 35 letters, digits, <code>-</code> and <code>_</code>.</p>
+<p id="token-help" class="fine">From @BotFather: digits, a colon, then about 35 letters, digits, <code>-</code> and <code>_</code>. Paste the token; do not type it.</p>
 <p><label class="inline"><input type="checkbox" id="show"> Show the token</label></p>
 <p id="one-reader" class="fine"><strong>Stop Angelia, or any other program that polls this bot, first.</strong> Telegram gives a bot's updates to one reader at a time. A check interrupts the other program's open request: that program gets <code>409 Conflict</code>. Angelia retries by itself; another program may not.</p>
 <p><button type="button" id="run" class="btn" aria-describedby="one-reader">Check</button> <button type="button" id="forget" class="btn light">Forget the token</button></p>
@@ -36,7 +36,7 @@
 <ul>
   <li><strong>Your direct chat:</strong> open the bot in Telegram, press Start or send any message, then press Check. A direct chat's id is your own user id, a positive number.</li>
   <li><strong>A group:</strong> add the bot to the group, then press Check. Being added is an update every bot gets, and it carries the group's id. Or send <code>/start@your_bot</code> in the group. A group's id is negative; most start with <code>-100</code>.</li>
-  <li><strong>Privacy mode</strong> is on for every new bot. In a group, the bot then gets only commands sent to it, replies to its own messages and service messages, such as being added. It does not get plain messages, and not <code>@your_bot</code> mentions either. Angelia answers mentions in a group, so make the bot an admin of that group: an admin bot gets every message.</li>
+  <li><strong>Privacy mode</strong> is on for every new bot. In a group, the bot then gets only commands sent to it, replies to its own messages and service messages, such as being added. It does not get plain messages, and not <code>@your_bot</code> mentions either. Angelia answers mentions in a group, so make the bot an admin of that group: an admin bot gets every message. Or turn privacy mode off in @BotFather (<code>/setprivacy</code>), then add the bot to the group again.</li>
   <li><strong>Nothing shows:</strong> Telegram keeps updates for at most 24 hours, and only until a program that polls the bot takes them.</li>
 </ul>
 
@@ -44,7 +44,7 @@
 <p>Telegram gives a bot's updates to one reader at a time. <code>getUpdates</code> answers <code>409 Conflict</code> in two cases.</p>
 <ul>
   <li><strong>The bot has a webhook.</strong> Telegram pushes the updates to that address instead, and says: <code>Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first</code>. The page sees the webhook in step 2 and stops there. Angelia polls: when it starts, it removes the webhook first, so a service that gets this bot's updates by webhook stops getting them. Give Angelia a bot of its own.</li>
-  <li><strong>Another program is polling.</strong> Angelia itself is one: while it runs with this token, it keeps a <code>getUpdates</code> request open. A new request ends the older one, so a check from this page usually wins, and the other program gets <code>Conflict: terminated by other getUpdates request; make sure that only one bot instance is running</code>. Angelia then retries by itself: after 5 seconds, and after longer pauses, up to 60 seconds, if you check again within 5 minutes. <code>angelia status</code> shows <code>telegram: conflict</code> until it polls again. Another bot program may not retry, so stop it before you check. If this page gets the error, the other program asked last.</li>
+  <li><strong>Another program is polling.</strong> Angelia itself is one: while it runs with this token, it keeps a <code>getUpdates</code> request open. In practice, a new request ends the older one, so a check from this page usually wins, and the other program gets <code>Conflict: terminated by other getUpdates request; make sure that only one bot instance is running</code>. Angelia then retries by itself: after 5 seconds, and after longer pauses, up to 60 seconds, if you check again within 5 minutes. <code>angelia status</code> shows <code>telegram: conflict</code> until it polls again. Another bot program may not retry, so stop it before you check. If this page gets the error, the other program asked last.</li>
 </ul>
 <p>With Angelia running, you do not need this page to find a chat id. By default (<code>defaults.unmatched: drop</code>), a chat that is not in <code>routing.yaml</code> gets no answer, and the daemon log gets one line with its chat id.</p>
 

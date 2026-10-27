@@ -51,22 +51,29 @@ export const DEFAULTS = {
 };
 
 /** Tool names a typed line may already start with; anything else is a shell command. */
-const TOOL = /^(Bash|Read|Edit|Write|WebFetch|WebSearch|Agent|Skill|Glob|Grep|NotebookEdit|PowerShell|mcp__[\w*-]+)(\(.*\))?$/s;
+const TOOL = /^(Bash|Read|Edit|Write|MultiEdit|WebFetch|WebSearch|Agent|Skill|Glob|Grep|NotebookEdit|PowerShell|mcp__[\w*-]+)(\(.*\))?$/s;
 /** Programs that run whatever follows them, so `npx *` allows any command (the docs' wrapper list). */
 const RUNNERS = /^(npx|bunx|pnpm dlx|docker exec|devbox run|mise exec|direnv exec|sh -c|bash -c|zsh -c|env|xargs)\b/;
+/** What a rule with a * never approves (the docs: exec wrappers, and find with an action that runs,
+ *  deletes or writes): only an exact rule, with no *, approves one such command. */
+const NO_PREFIX = /^(watch|setsid|ionice|flock)\b|^find\b.*\s-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls|files0-from)\b/;
 
 const lines = (text) => (Array.isArray(text) ? text : String(text ?? '').split('\n')).map((s) => s.trim()).filter(Boolean);
 
-/** Path rules for Write, NotebookEdit and Glob are accepted and never match (the docs): Claude Code checks
- *  file paths against Edit and Read rules only, so such a rule is written as its Edit or Read twin. */
-const PATH_TWIN = { Write: 'Edit', NotebookEdit: 'Edit', Glob: 'Read' };
-const NEVER_MATCHES = /^(Write|NotebookEdit|Glob)\((.*)\)$/s;
+/** Path rules for Write, NotebookEdit, Glob and the legacy MultiEdit are accepted and never match (the
+ *  docs): Claude Code checks file paths against Edit and Read rules only, so such a rule is written as its
+ *  Edit or Read twin. */
+const PATH_TWIN = { Write: 'Edit', NotebookEdit: 'Edit', MultiEdit: 'Edit', Glob: 'Read' };
+const NEVER_MATCHES = /^(Write|NotebookEdit|MultiEdit|Glob)\((.*)\)$/s;
 
 /** A typed command line as a rule: `npm run build` becomes `Bash(npm run build)`; a full rule stays,
  *  but for a path rule that would never match. */
 export function commandRule(line) {
   const t = line.replace(/^\$\s+/, '').trim();
   if (!TOOL.test(t)) return `Bash(${t})`;
+  // `Tool(*)` and `Tool()` are the bare tool: every use (the docs: `Bash(*)` is the same as `Bash`).
+  const bare = /^(\w+)\(\*?\)$/.exec(t);
+  if (bare) return bare[1];
   const m = NEVER_MATCHES.exec(t);
   return m ? `${PATH_TWIN[m[1]]}(${m[2]})` : t;
 }
@@ -97,11 +104,12 @@ export function buildSettings(choices = DEFAULTS) {
     for (const line of lines(c.commands[list])) {
       const rule = commandRule(line);
       add(list, rule);
-      if (NEVER_MATCHES.test(line.trim())) warnings.push(`${line.trim()} would never match: Claude Code checks file paths against Edit and Read rules only. It is written as ${rule}.`);
+      if (NEVER_MATCHES.test(line.trim()) && /^(Edit|Read)\(/.test(rule)) warnings.push(`${line.trim()} would never match: Claude Code checks file paths against Edit and Read rules only. It is written as ${rule}.`);
       const inner = /^Bash\((.*)\)$/s.exec(rule)?.[1];
       if (list !== 'allow' || inner === undefined) continue;
       if (/^\S+ \*$/.test(inner) || inner === '*') warnings.push(`${rule} allows every ${inner === '*' ? '' : inner.split(' ')[0] + ' '}command. Put the * after the subcommand, as in Bash(git log *).`);
       else if (/\*(?!$)/.test(inner.replace(/ \*$/, '').replace(/:\*$/, ''))) warnings.push(`${rule} has a * before the end. It matches any text in that place, options included.`);
+      if (NO_PREFIX.test(inner) && inner.includes('*')) warnings.push(`${rule} never approves anything: a rule with a * cannot approve watch, setsid, ionice, flock, or find with -exec, -delete or a write action. Write the exact command, with no *.`);
       if (RUNNERS.test(inner) && inner.includes('*')) warnings.push(`${rule}: ${RUNNERS.exec(inner)[1]} runs the command that follows it, so this allows any command. Write one rule per command instead.`);
     }
   }
@@ -118,10 +126,18 @@ export function buildSettings(choices = DEFAULTS) {
     add('allow', `mcp__${name}__*`);
   }
   for (const line of lines(c.denyPaths)) {
-    const p = line.replace(/^(Read|Edit|Write|NotebookEdit|Glob)\((.*)\)$/s, '$2');
+    const p = line.replace(/^(Read|Edit|Write|MultiEdit|NotebookEdit|Glob)\((.*)\)$/s, '$2');
     if (/^!(\/|~\/)/.test(p)) warnings.push(`${p}: Claude Code reads a ! pattern from the current folder, so it cannot reopen a path under a ~/, / or // rule.`);
     if (/^\/[^/]/.test(p)) warnings.push(`${p} starts with one slash, so it means that path inside the project folder. For a path from the disk root, write //${p.slice(1)}.`);
     for (const r of both(p)) add('deny', r);
+  }
+
+  // The docs: a ! carve-out cannot reopen a file inside a folder a rule blocks as a whole (secrets/**).
+  const wholeDirs = lists.deny.map((r) => /^Read\((?!!)(.+)\/\*\*\)$/.exec(r)?.[1]).filter(Boolean);
+  for (const r of lists.deny) {
+    const open = /^Read\(!(.+)\)$/.exec(r)?.[1];
+    const dir = open && wholeDirs.find((d) => open.startsWith(d + '/') || (!d.includes('/') && open.includes(`/${d}/`)));
+    if (dir) warnings.push(`!${open} cannot reopen anything: ${dir}/** blocks that folder as a whole. Deny the files inside it one by one instead.`);
   }
 
   for (const r of lists.allow) {

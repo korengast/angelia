@@ -86,6 +86,15 @@ test('site tools: rules that match more, or less, than they look get a warning',
   assert.match(warn({ presets: [], dirs: '../lib', blockOutside: true }), /do not count as working folders for blockReadsOutsideWorkingDirectories/);
   assert.equal(warn({ presets: [], dirs: '../lib' }), '');
   assert.match(warn({ presets: [], denyPaths: '!~/notes/public/**' }), /cannot reopen a path under a ~\/, \/ or \/\/ rule/);
+  // A ! carve-out cannot reopen a file inside a folder blocked as a whole; outside one, it can.
+  assert.match(warn({ presets: ['secrets'], denyPaths: '!secrets/public/**' }), /!secrets\/public\/\*\* cannot reopen anything: secrets\/\*\* blocks that folder/);
+  assert.match(warn({ presets: ['secrets'], denyPaths: '!app/secrets/a.txt' }), /cannot reopen anything/);
+  assert.equal(warn({ presets: ['env', 'secrets'], denyPaths: '!.env.example' }), '');
+  // A rule with a * never approves an exec wrapper or a find that runs, deletes or writes.
+  for (const cmd of ['watch -n 5 *', 'setsid *', 'flock /tmp/l *', 'find . -name * -delete', 'find * -exec rm {} ;'])
+    assert.match(warn({ presets: [], commands: { allow: cmd } }), /never approves anything/, cmd);
+  for (const cmd of ['find . -name x -delete', 'find src -name *.ts', 'npm run *'])
+    assert.doesNotMatch(warn({ presets: [], commands: { allow: cmd } }), /never approves anything/, cmd);
   assert.equal(warn({ presets: [], commands: { allow: 'npm run *\nls -la' } }), '');
   assert.match(warn({ presets: ['web-fetch', 'no-fetch'] }), /WebFetch is in both allow and deny\. Deny wins/);
   assert.match(warn({ presets: ['no-mcp'], mcp: 'github' }), /mcp__\* in deny blocks every MCP server/);
@@ -107,6 +116,12 @@ test('site tools: a typed command becomes a Bash rule, a typed rule stays, a URL
   assert.equal(commandRule('NotebookEdit(nb/**)'), 'Edit(nb/**)');
   assert.equal(commandRule('Glob(src/**)'), 'Read(src/**)');
   assert.equal(commandRule('Write'), 'Write', 'a bare tool name matches every use and stays');
+  assert.equal(commandRule('MultiEdit(src/**)'), 'Edit(src/**)');
+  // Tool(*) and Tool() are the bare tool, before any twin rewrite.
+  assert.equal(commandRule('Bash(*)'), 'Bash');
+  assert.equal(commandRule('WebFetch()'), 'WebFetch');
+  assert.equal(commandRule('Write(*)'), 'Write');
+  assert.equal(buildSettings({ presets: [], commands: { deny: 'Write(*)' } }).warnings.length, 0);
   // A typed path rule in the deny paths is its path, never Read(Write(...)); a ! line carves out of the presets before it.
   const { settings } = buildSettings({ presets: ['env'], denyPaths: 'Write(build/secret.txt)\n!.env.example' });
   assert.deepEqual(settings.permissions.deny.slice(4), ['Read(build/secret.txt)', 'Edit(build/secret.txt)', 'Read(!.env.example)', 'Edit(!.env.example)']);
@@ -224,7 +239,7 @@ test('site tools: each failure names its step and what to do, and never carries 
   assert.equal(t.calls.length, 0);
 });
 
-test('site tools: tokens are cleaned of what a copy brings along, and route lines name an owner only when one person wrote', () => {
+test("site tools: tokens are cleaned of what a copy brings along, and a group's route line holds an owner placeholder, never a sender", () => {
   assert.equal(cleanToken(` bot${FAKE} `), FAKE);
   assert.equal(cleanToken(`BOT_TOKEN=${FAKE}`), FAKE);
   assert.equal(cleanToken(`'${FAKE}'`), FAKE);

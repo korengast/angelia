@@ -34,7 +34,7 @@ function renderBot(bot) {
       el('dt', {}, 'Can be added to groups'), el('dd', {}, bot.can_join_groups ? 'Yes' : 'No (turn it on in @BotFather, /setjoingroups)'),
       el('dt', {}, 'Reads every group message'), el('dd', {}, bot.can_read_all_group_messages
         ? 'Yes (privacy mode is off)'
-        : 'No. Privacy mode is on: in a group it gets only commands sent to it, replies to its messages and service messages, not plain @mentions. Make it a group admin to get every message, as Angelia needs.')));
+        : 'No. Privacy mode is on: in a group it gets only commands sent to it, replies to its messages and service messages, not plain @mentions. Make it a group admin to get every message, as Angelia needs, or turn privacy mode off in @BotFather (/setprivacy) and add it to the group again.')));
 }
 
 function renderWebhook(webhook) {
