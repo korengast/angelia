@@ -44,7 +44,7 @@
 <p id="mcp-help" class="fine">The server's name as you configured it. <code>github</code> becomes <code>mcp__github__*</code>, every tool of that server.</p>
 <label for="dirs">Other folders it may work in</label>
 <textarea id="dirs" name="dirs" rows="2" spellcheck="false" autocapitalize="off" aria-describedby="dirs-help" placeholder="../shared-lib"></textarea>
-<p id="dirs-help" class="fine">These go to <code>additionalDirectories</code>. Claude Code then treats them like the project folder.</p>
+<p id="dirs-help" class="fine">These go to <code>additionalDirectories</code>. Claude Code then treats them like the project folder. Like allow rules, they take effect only after you accept the trust dialog for the project.</p>
 </fieldset>
 
 <fieldset>
@@ -78,7 +78,7 @@
 </ul>
 <label for="deny-paths">Other files and folders</label>
 <textarea id="deny-paths" name="deny-paths" rows="2" spellcheck="false" autocapitalize="off" aria-describedby="deny-paths-help" placeholder="config/credentials.json&#10;~/work/private/**"></textarea>
-<p id="deny-paths-help" class="fine">Patterns as in <code>.gitignore</code>. <code>~/</code> is your home folder. <code>//</code> starts at the disk root. One <code>/</code> at the start means the project folder.</p>
+<p id="deny-paths-help" class="fine">Patterns as in <code>.gitignore</code>. <code>~/</code> is your home folder. <code>//</code> starts at the disk root. One <code>/</code> at the start means the project folder. A line that starts with <code>!</code> opens a file again, such as <code>!.env.example</code> after the <code>.env</code> files above.</p>
 <label for="deny-commands">Other commands to block</label>
 <textarea id="deny-commands" name="deny-commands" rows="2" spellcheck="false" autocapitalize="off" placeholder="terraform apply *"></textarea>
 </fieldset>
@@ -96,7 +96,7 @@
 <section class="result" aria-labelledby="your-file">
 <h2 id="your-file">Your settings file</h2>
 <p>Save it as <code>.claude/settings.json</code> in the project. If the file exists, put the <code>permissions</code> key into it. Claude Code reloads the file when it changes. The start mode applies to new sessions.</p>
-<p id="count" class="fine" role="status">5 allow, 2 ask and 33 deny rules.</p>
+<p id="count" class="fine">5 allow, 2 ask and 33 deny rules.</p>
 <ul id="warnings" class="warnings" aria-label="Warnings" hidden></ul>
 <pre><code id="settings">{
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
@@ -168,7 +168,7 @@
 <h2 id="with-angelia">With Angelia</h2>
 <p><a href="/">Angelia</a> runs Claude Code for each WhatsApp or Telegram chat, in that chat's own profile folder. It writes the deny rules for you: <code>angelia compile &lt;profile&gt; --write</code> puts them into the profile's <code>.claude/settings.json</code>.</p>
 <ul>
-  <li>Every profile is denied, for reading and editing, your credential folders and files (<code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code>, <code>~/.config/gh</code>, <code>~/.netrc</code>, <code>~/.npmrc</code>, shell history and more), Angelia's own secrets, each CLI's transcripts, and the other profiles' folders.</li>
+  <li>Every profile is denied, for reading and editing, your credential folders and files (<code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code>, <code>~/.config/gh</code>, <code>~/.netrc</code>, <code>~/.npmrc</code>, shell history and more), Angelia's own secrets, each CLI's transcripts, and the other profiles' folders. A credential folder stays open only to a profile whose <code>add_dirs</code> names it.</li>
   <li>A skill or MCP server the profile may not use is denied too. A denied skill is also kept out of the profile's skills folder, because a deny rule does not stop a skill typed as <code>/name</code>.</li>
   <li>Angelia changes only the entries it wrote. Your own rules in the same file stay.</li>
   <li>Angelia starts no agent for a profile that was never compiled, or whose compiled deny rules were removed since.</li>

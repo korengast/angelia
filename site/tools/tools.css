@@ -12,6 +12,8 @@
 .tool input[type=checkbox]{flex:none;width:18px;height:18px;margin:3px 0 0;accent-color:var(--accent)}
 .tool textarea,.tool select,.tool input[type=password],.tool input[type=text]{display:block;width:100%;font:inherit;font-size:14.5px;color:var(--fg);background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:9px 11px}
 .tool textarea{resize:vertical;min-height:3.2em}
+/* A text field drawn as dots: a password field would make browsers offer to save the token. */
+.tool input.masked{-webkit-text-security:disc}
 .tool .fine{margin:4px 0 8px}
 .btn{font:inherit;font-size:14.5px;font-weight:600;cursor:pointer;border-radius:999px;padding:8px 18px;border:1px solid var(--fg);background:var(--fg);color:var(--bg)}
 .btn.light{background:transparent;color:var(--fg)}

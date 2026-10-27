@@ -53,14 +53,22 @@ export const DEFAULTS = {
 /** Tool names a typed line may already start with; anything else is a shell command. */
 const TOOL = /^(Bash|Read|Edit|Write|WebFetch|WebSearch|Agent|Skill|Glob|Grep|NotebookEdit|PowerShell|mcp__[\w*-]+)(\(.*\))?$/s;
 /** Programs that run whatever follows them, so `npx *` allows any command (the docs' wrapper list). */
-const RUNNERS = /^(npx|bunx|pnpm dlx|docker exec|devbox run|mise exec|direnv exec|sh -c|bash -c|zsh -c|env|xargs|watch)\b/;
+const RUNNERS = /^(npx|bunx|pnpm dlx|docker exec|devbox run|mise exec|direnv exec|sh -c|bash -c|zsh -c|env|xargs)\b/;
 
 const lines = (text) => (Array.isArray(text) ? text : String(text ?? '').split('\n')).map((s) => s.trim()).filter(Boolean);
 
-/** A typed command line as a rule: `npm run build` becomes `Bash(npm run build)`; a full rule stays. */
+/** Path rules for Write, NotebookEdit and Glob are accepted and never match (the docs): Claude Code checks
+ *  file paths against Edit and Read rules only, so such a rule is written as its Edit or Read twin. */
+const PATH_TWIN = { Write: 'Edit', NotebookEdit: 'Edit', Glob: 'Read' };
+const NEVER_MATCHES = /^(Write|NotebookEdit|Glob)\((.*)\)$/s;
+
+/** A typed command line as a rule: `npm run build` becomes `Bash(npm run build)`; a full rule stays,
+ *  but for a path rule that would never match. */
 export function commandRule(line) {
   const t = line.replace(/^\$\s+/, '').trim();
-  return TOOL.test(t) ? t : `Bash(${t})`;
+  if (!TOOL.test(t)) return `Bash(${t})`;
+  const m = NEVER_MATCHES.exec(t);
+  return m ? `${PATH_TWIN[m[1]]}(${m[2]})` : t;
 }
 
 /** The host of a typed domain or URL: `https://docs.python.org/3/` is `docs.python.org`. */
@@ -89,6 +97,7 @@ export function buildSettings(choices = DEFAULTS) {
     for (const line of lines(c.commands[list])) {
       const rule = commandRule(line);
       add(list, rule);
+      if (NEVER_MATCHES.test(line.trim())) warnings.push(`${line.trim()} would never match: Claude Code checks file paths against Edit and Read rules only. It is written as ${rule}.`);
       const inner = /^Bash\((.*)\)$/s.exec(rule)?.[1];
       if (list !== 'allow' || inner === undefined) continue;
       if (/^\S+ \*$/.test(inner) || inner === '*') warnings.push(`${rule} allows every ${inner === '*' ? '' : inner.split(' ')[0] + ' '}command. Put the * after the subcommand, as in Bash(git log *).`);
@@ -109,7 +118,8 @@ export function buildSettings(choices = DEFAULTS) {
     add('allow', `mcp__${name}__*`);
   }
   for (const line of lines(c.denyPaths)) {
-    const p = line.replace(/^(Read|Edit)\((.*)\)$/s, '$2');
+    const p = line.replace(/^(Read|Edit|Write|NotebookEdit|Glob)\((.*)\)$/s, '$2');
+    if (/^!(\/|~\/)/.test(p)) warnings.push(`${p}: Claude Code reads a ! pattern from the current folder, so it cannot reopen a path under a ~/, / or // rule.`);
     if (/^\/[^/]/.test(p)) warnings.push(`${p} starts with one slash, so it means that path inside the project folder. For a path from the disk root, write //${p.slice(1)}.`);
     for (const r of both(p)) add('deny', r);
   }
@@ -120,6 +130,7 @@ export function buildSettings(choices = DEFAULTS) {
   }
   if (lists.deny.includes('mcp__*') && lists.allow.some((r) => r.startsWith('mcp__'))) warnings.push('mcp__* in deny blocks every MCP server, the ones you allowed too.');
   if (lists.deny.includes('WebFetch') && lists.allow.some((r) => r.startsWith('WebFetch'))) warnings.push('WebFetch in deny removes the tool, so the allowed domains do nothing.');
+  if (c.blockOutside && lines(c.dirs).length) warnings.push('Folders listed here in a project file do not count as working folders for blockReadsOutsideWorkingDirectories, so the file tools refuse reads in them. Add those folders in ~/.claude/settings.json or with --add-dir instead.');
   if (c.mode === 'dontAsk' && !lists.allow.length) warnings.push('dontAsk with no allow rules: Claude Code refuses every tool call that would ask, so it can only read.');
 
   const permissions = {};

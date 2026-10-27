@@ -36,7 +36,7 @@ export function explain(method, code, description) {
   if (code === 401) return 'Telegram refused the token (401 Unauthorized). It is wrong, or it was revoked in @BotFather. Copy it again from @BotFather.';
   if (code === 404) return 'Telegram does not know this token (404 Not Found). Check that you copied all of it.';
   if (code === 409 && /webhook/i.test(description)) return `getUpdates is refused while the bot has a webhook (409: ${description}).`;
-  if (code === 409) return `Another program is reading this bot's updates right now (409: ${description}). Only one reader can poll at a time. If Angelia runs with this token, that is Angelia.`;
+  if (code === 409) return `Another program polled this bot after the check started, and Telegram ended the check's request (409: ${description}). Only one reader can poll at a time. If Angelia runs with this token, that is Angelia: stop it, then check again.`;
   if (code === 429) return `Telegram asks to slow down (429: ${description}). Wait a minute and check again.`;
   return `${method} failed (${code}: ${description}).`;
 }
@@ -74,11 +74,11 @@ export function chatsFrom(updates) {
 
 export const isGroup = (chat) => chat.type === 'group' || chat.type === 'supergroup';
 
-/** The line for Angelia's routing.yaml. A group hears only its owners, who also approve the agent's
- *  commands, so a sender becomes the owner only when they are the one person who wrote there. */
+/** The line for Angelia's routing.yaml. Owners approve what the agent runs, so no sender is ever put
+ *  there: anyone in the group can be the one who wrote. A group's line holds a placeholder to replace. */
+export const OWNER_PLACEHOLDER = 'YOUR_USER_ID';
 export function routeLine(chat, profile = 'coding') {
-  const owners = isGroup(chat) && chat.senders.length === 1 ? `, owners: [${chat.senders[0].id}]` : '';
-  return `- { platform: telegram, chat: ${chat.id}, profile: ${profile}${owners} }`;
+  return `- { platform: telegram, chat: ${chat.id}, profile: ${profile}${isGroup(chat) ? `, owners: [${OWNER_PLACEHOLDER}]` : ''} }`;
 }
 
 /**

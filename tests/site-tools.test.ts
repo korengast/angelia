@@ -71,7 +71,8 @@ test('site tools: several choices give exactly the file they should', () => {
       blockReadsOutsideWorkingDirectories: true,
     },
   });
-  assert.deepEqual(warnings, ['The MCP server "my.server" appears in tool names as my_server, so the rule uses that.']);
+  assert.deepEqual(warnings, ['The MCP server "my.server" appears in tool names as my_server, so the rule uses that.',
+    'Folders listed here in a project file do not count as working folders for blockReadsOutsideWorkingDirectories, so the file tools refuse reads in them. Add those folders in ~/.claude/settings.json or with --add-dir instead.']);
   assert.deepEqual(JSON.parse(settingsText(settings)), settings);
 });
 
@@ -80,6 +81,11 @@ test('site tools: rules that match more, or less, than they look get a warning',
   assert.match(warn({ presets: [], commands: { allow: 'git *' } }), /allows every git command/);
   assert.match(warn({ presets: [], commands: { allow: 'git log * main' } }), /a \* before the end/);
   assert.match(warn({ presets: [], commands: { allow: 'npx eslint *' } }), /npx runs the command that follows/);
+  assert.doesNotMatch(warn({ presets: [], commands: { allow: 'watch -n 5 make *' } }), /runs the command that follows/, 'watch is an exec wrapper a prefix rule never approves');
+  assert.match(warn({ presets: [], commands: { deny: 'Write(docs/**)' } }), /Write\(docs\/\*\*\) would never match.*written as Edit\(docs\/\*\*\)/);
+  assert.match(warn({ presets: [], dirs: '../lib', blockOutside: true }), /do not count as working folders for blockReadsOutsideWorkingDirectories/);
+  assert.equal(warn({ presets: [], dirs: '../lib' }), '');
+  assert.match(warn({ presets: [], denyPaths: '!~/notes/public/**' }), /cannot reopen a path under a ~\/, \/ or \/\/ rule/);
   assert.equal(warn({ presets: [], commands: { allow: 'npm run *\nls -la' } }), '');
   assert.match(warn({ presets: ['web-fetch', 'no-fetch'] }), /WebFetch is in both allow and deny\. Deny wins/);
   assert.match(warn({ presets: ['no-mcp'], mcp: 'github' }), /mcp__\* in deny blocks every MCP server/);
@@ -96,6 +102,14 @@ test('site tools: a typed command becomes a Bash rule, a typed rule stays, a URL
   assert.equal(commandRule('Bash(npm run *)'), 'Bash(npm run *)');
   assert.equal(commandRule('mcp__github__get_issue'), 'mcp__github__get_issue');
   assert.equal(commandRule('WebFetch'), 'WebFetch');
+  // Write, NotebookEdit and Glob path rules never match (the docs); their Edit and Read twins do.
+  assert.equal(commandRule('Write(docs/**)'), 'Edit(docs/**)');
+  assert.equal(commandRule('NotebookEdit(nb/**)'), 'Edit(nb/**)');
+  assert.equal(commandRule('Glob(src/**)'), 'Read(src/**)');
+  assert.equal(commandRule('Write'), 'Write', 'a bare tool name matches every use and stays');
+  // A typed path rule in the deny paths is its path, never Read(Write(...)); a ! line carves out of the presets before it.
+  const { settings } = buildSettings({ presets: ['env'], denyPaths: 'Write(build/secret.txt)\n!.env.example' });
+  assert.deepEqual(settings.permissions.deny.slice(4), ['Read(build/secret.txt)', 'Edit(build/secret.txt)', 'Read(!.env.example)', 'Edit(!.env.example)']);
   assert.equal(domainOf('https://docs.python.org/3/library/'), 'docs.python.org');
   assert.equal(domainOf('example.com.'), 'example.com');
   assert.equal(mcpName('my server'), 'my_server');
@@ -197,7 +211,7 @@ test('site tools: each failure names its step and what to do, and never carries 
   assert.match(refused.message, /refused the token \(401 Unauthorized\)/);
   const busy = await fails({ getMe: ME, getWebhookInfo: NO_HOOK, getUpdates: { ok: false, error_code: 409, description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running' } });
   assert.deepEqual([busy.step, busy.code], ['getUpdates', 409]);
-  assert.match(busy.message, /Another program is reading this bot's updates.*terminated by other getUpdates request.*Angelia/);
+  assert.match(busy.message, /Another program polled this bot after the check started.*terminated by other getUpdates request.*Angelia: stop it/);
   const hooked = await fails({ getMe: ME, getWebhookInfo: NO_HOOK, getUpdates: { ok: false, error_code: 409, description: "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first" } });
   assert.match(hooked.message, /refused while the bot has a webhook/);
   const offline = await fails({ getMe: new TypeError('Failed to fetch') });
@@ -218,8 +232,9 @@ test('site tools: tokens are cleaned of what a copy brings along, and route line
   assert.ok(!TOKEN.test('123:short'));
   const [g, d] = chatsFrom(UPDATES.result);
   assert.equal(routeLine(d), '- { platform: telegram, chat: 111111111, profile: coding }');
-  assert.equal(routeLine(g), '- { platform: telegram, chat: -1001234567890, profile: coding }', 'two people wrote: the page asks for owners');
-  assert.equal(routeLine({ ...g, senders: [g.senders[0]] }, 'house'), '- { platform: telegram, chat: -1001234567890, profile: house, owners: [111111111] }');
+  // Owners approve what the agent runs: never filled in from whoever wrote, even when one person did.
+  assert.equal(routeLine(g), '- { platform: telegram, chat: -1001234567890, profile: coding, owners: [YOUR_USER_ID] }');
+  assert.equal(routeLine({ ...g, senders: [g.senders[0]] }, 'house'), '- { platform: telegram, chat: -1001234567890, profile: house, owners: [YOUR_USER_ID] }');
 });
 
 test('site tools: the bot check page connects only to api.telegram.org and runs no inline script', async () => {
@@ -239,8 +254,11 @@ test('site tools: the bot check page connects only to api.telegram.org and runs 
   const template = readFileSync(join(site, 'src', 'guide.html'), 'utf8');
   for (const html of [page('telegram-bot-check'), template])
     for (const m of html.matchAll(/<script\b([^>]*)>/g)) assert.match(m[1], /src="|type="application\/ld\+json"/, `inline script: ${m[0]}`);
-  // The token box has no name, so even a form sent without JavaScript carries no token.
-  assert.match(page('telegram-bot-check'), /<input id="token" type="password"(?![^>]*\bname=)[^>]*>/);
+  // No form and no password field: nothing is submitted, and no browser offers to save the token. The box
+  // has no name either, and is drawn as dots by its class.
+  const tg = page('telegram-bot-check');
+  assert.doesNotMatch(tg, /<form\b|type="password"|type="submit"/);
+  assert.match(tg, /<input id="token" type="text" class="masked"(?![^>]*\bname=)[^>]*>/);
 });
 
 test('site tools: each tool page has a short title and description, and loads scripts that exist', () => {

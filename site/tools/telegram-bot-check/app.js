@@ -4,7 +4,7 @@
 import { checkBot, isGroup, routeLine } from './bot.js';
 
 const $ = (id) => document.getElementById(id);
-const form = $('check'), token = $('token'), button = $('run'), status = $('status'), error = $('error'), result = $('result');
+const box = $('check'), token = $('token'), button = $('run'), status = $('status'), error = $('error'), result = $('result');
 
 /** An element with text and optional attributes; children may be nodes or strings. */
 function el(tag, attrs = {}, ...children) {
@@ -34,7 +34,7 @@ function renderBot(bot) {
       el('dt', {}, 'Can be added to groups'), el('dd', {}, bot.can_join_groups ? 'Yes' : 'No (turn it on in @BotFather, /setjoingroups)'),
       el('dt', {}, 'Reads every group message'), el('dd', {}, bot.can_read_all_group_messages
         ? 'Yes (privacy mode is off)'
-        : 'No. Privacy mode is on, so in a group it sees only commands, replies to it and messages that mention it.')));
+        : 'No. Privacy mode is on: in a group it gets only commands sent to it, replies to its messages and service messages, not plain @mentions. Make it a group admin to get every message, as Angelia needs.')));
 }
 
 function renderWebhook(webhook) {
@@ -53,7 +53,7 @@ function renderChat(chat) {
     chat.senders.length ? el('p', { class: 'fine' }, 'Written by: ', ...chat.senders.flatMap((s, i) => [i ? ', ' : '', `${s.name} (user id `, el('code', {}, String(s.id)), ')'])) : undefined,
     el('p', { class: 'fine' }, 'Route for routing.yaml (change the profile name):'),
     el('pre', {}, el('code', {}, line)), copyButton(line, `Copy the route line for ${chat.name}`),
-    isGroup(chat) && chat.senders.length !== 1 ? el('p', { class: 'fine' }, 'In a group, add owners: [your user id]. Owners approve what the agent runs.') : undefined);
+    isGroup(chat) ? el('p', { class: 'fine' }, 'Replace YOUR_USER_ID with your own user id: the chat id of your direct chat with the bot. Owners approve what the agent runs, so put only yourself there, even if someone else wrote above.') : undefined);
 }
 
 function render({ bot, webhook, chats }) {
@@ -61,7 +61,7 @@ function render({ bot, webhook, chats }) {
   if (webhook.url) parts.push(renderWebhook(webhook));
   else if (!chats.length) parts.push(el('section', { class: 'card' },
     el('h3', {}, 'No recent messages'),
-    el('p', {}, `Send @${bot.username} a message, then check again. In a group, mention it: @${bot.username} hello.`),
+    el('p', {}, `Send @${bot.username} a message, then check again. For a group, add the bot to it, or send /start@${bot.username} there.`),
     el('p', { class: 'fine' }, 'Telegram keeps updates for 24 hours, and only until a program that polls the bot takes them. If Angelia already runs with this token, it took them: find the chat id in its log instead.')));
   else parts.push(el('h3', {}, `Chats in the last updates (${chats.length})`), el('ul', { class: 'chats' }, ...chats.map(renderChat)));
   result.replaceChildren(...parts);
@@ -69,13 +69,14 @@ function render({ bot, webhook, chats }) {
   result.querySelector('#result-title').focus();
 }
 
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
+// No form and no password field: nothing is ever submitted, and no browser offers to save the token.
+// The box is a text field drawn as dots (tools.css, .masked); Enter runs the check like the button.
+async function run() {
   error.hidden = true;
   error.textContent = '';
   result.hidden = true;
   button.disabled = true;
-  form.setAttribute('aria-busy', 'true');
+  box.setAttribute('aria-busy', 'true');
   status.textContent = 'Asking Telegram…';
   try {
     const r = await checkBot(token.value);
@@ -88,11 +89,13 @@ form.addEventListener('submit', async (e) => {
     if (err.step === 'token') token.focus();
   } finally {
     button.disabled = false;
-    form.removeAttribute('aria-busy');
+    box.removeAttribute('aria-busy');
   }
-});
+}
 
-$('show').addEventListener('change', (e) => { token.type = e.target.checked ? 'text' : 'password'; });
+button.addEventListener('click', run);
+token.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !button.disabled) { e.preventDefault(); run(); } });
+$('show').addEventListener('change', (e) => { token.classList.toggle('masked', !e.target.checked); });
 $('forget').addEventListener('click', () => {
   token.value = '';
   result.replaceChildren();
