@@ -16,7 +16,8 @@
 <input id="token" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" inputmode="text" aria-describedby="token-help" placeholder="123456789:AA…">
 <p id="token-help" class="fine">From @BotFather: digits, a colon, then about 35 letters, digits, <code>-</code> and <code>_</code>.</p>
 <p><label class="inline"><input type="checkbox" id="show"> Show the token</label></p>
-<p><button type="submit" id="run" class="btn">Check</button> <button type="button" id="forget" class="btn light">Forget the token</button></p>
+<p id="one-reader" class="fine"><strong>Stop Angelia, or any other program that uses this token, first.</strong> Telegram gives a bot's updates to one reader at a time. With two readers, one of them fails with <code>409 Conflict</code>.</p>
+<p><button type="submit" id="run" class="btn" aria-describedby="one-reader">Check</button> <button type="button" id="forget" class="btn light">Forget the token</button></p>
 <p id="status" role="status" class="fine"></p>
 <p id="error" role="alert" class="error" hidden></p>
 </form>
