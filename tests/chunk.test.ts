@@ -44,6 +44,10 @@ test('permission replies parse', () => {
   assert.deepEqual(parsePermissionReply('yes 6b480a6f'), { id: '6b480a6f', allow: true });
   assert.deepEqual(parsePermissionReply(' No 6b480a6f-d386 '), { id: '6b480a6f-d386', allow: false });
   assert.equal(parsePermissionReply('yes please'), null);
+  assert.equal(parsePermissionReply('no thanks'), null);
+  // Grok Build's ids start with "call-": the 8 characters the chat shows must be answerable.
+  assert.deepEqual(parsePermissionReply('yes call-2ac'), { id: 'call-2ac', allow: true });
+  assert.deepEqual(parsePermissionReply('n call-abc'), { id: 'call-abc', allow: false });
   assert.equal(parsePermissionReply('yes'), null);
 });
 

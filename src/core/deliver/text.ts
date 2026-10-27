@@ -24,7 +24,9 @@ export function permissionLine(id: string, tool: string, preview: string): strin
   return `🔐 ${tool}: ${preview}\nReply "yes ${short}" or "no ${short}".`;
 }
 
-export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([0-9a-f-]{5,40})\s*$/i;
+// Ids are not all hex: Grok Build's are `call-…`, and the chat is shown their first eight characters.
+// A digit or a dash marks an id, so "yes please" stays a message.
+export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+((?=[0-9a-z_-]*[0-9-])[0-9a-z_-]{5,40})\s*$/i;
 
 export function parsePermissionReply(text: string): { id: string; allow: boolean } | null {
   const m = PERMISSION_REPLY_RE.exec(text);
