@@ -34,7 +34,7 @@ function renderBot(bot) {
       el('dt', {}, 'Can be added to groups'), el('dd', {}, bot.can_join_groups ? 'Yes' : 'No (turn it on in @BotFather, /setjoingroups)'),
       el('dt', {}, 'Reads every group message'), el('dd', {}, bot.can_read_all_group_messages
         ? 'Yes (privacy mode is off)'
-        : 'No. Privacy mode is on: in a group it gets only commands sent to it, replies to its messages and service messages, not plain @mentions. Make it a group admin to get every message, as Angelia needs, or turn privacy mode off in @BotFather (/setprivacy) and add it to the group again.')));
+        : 'No (privacy mode is on). In a group it sees commands, replies to it and service messages, not plain @mentions. Angelia needs the mentions: make the bot a group admin, or send /setprivacy to @BotFather and add the bot to the group again.')));
 }
 
 function renderWebhook(webhook) {
@@ -69,8 +69,12 @@ function render({ bot, webhook, chats }) {
   result.querySelector('#result-title').focus();
 }
 
-// No form and no password field: nothing is ever submitted, and no browser offers to save the token.
-// The box is a text field drawn as dots (tools.css, .masked); Enter runs the check like the button.
+// No form and no name on the field: nothing is ever submitted. The box is a text field drawn as dots
+// (tools.css, .masked), since a password field makes browsers offer to save the token. A browser that
+// cannot draw the dots gets a password field instead, so the token is never shown unasked. Enter runs
+// the check like the button.
+const dots = typeof CSS !== 'undefined' && CSS.supports('-webkit-text-security', 'disc');
+if (!dots) token.type = 'password';
 async function run() {
   error.hidden = true;
   error.textContent = '';
@@ -80,7 +84,8 @@ async function run() {
   status.textContent = 'Asking Telegram…';
   try {
     const r = await checkBot(token.value);
-    status.textContent = r.webhook.url ? 'The token works. The bot has a webhook.' : `The token works. ${r.chats.length} chat${r.chats.length === 1 ? '' : 's'} found.`;
+    status.textContent = r.webhook.url ? 'The token works. The bot has a webhook.'
+      : r.chats.length ? `The token works. ${r.chats.length} chat${r.chats.length === 1 ? '' : 's'} found.` : 'The token works. No chats in the last updates.';
     render(r);
   } catch (err) {
     status.textContent = '';
@@ -95,7 +100,10 @@ async function run() {
 
 button.addEventListener('click', run);
 token.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !button.disabled) { e.preventDefault(); run(); } });
-$('show').addEventListener('change', (e) => { token.classList.toggle('masked', !e.target.checked); });
+$('show').addEventListener('change', (e) => {
+  if (dots) token.classList.toggle('masked', !e.target.checked);
+  else token.type = e.target.checked ? 'text' : 'password';
+});
 $('forget').addEventListener('click', () => {
   token.value = '';
   result.replaceChildren();

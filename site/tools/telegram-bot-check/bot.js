@@ -36,7 +36,7 @@ export function explain(method, code, description) {
   if (code === 401) return 'Telegram refused the token (401 Unauthorized). It is wrong, or it was revoked in @BotFather. Copy it again from @BotFather.';
   if (code === 404) return 'Telegram does not know this token (404 Not Found). Check that you copied all of it.';
   if (code === 409 && /webhook/i.test(description)) return `getUpdates is refused while the bot has a webhook (409: ${description}).`;
-  if (code === 409) return `Another program polled this bot after the check started, and Telegram ended the check's request, as it does in practice with the older of two (409: ${description}). Only one reader can poll at a time. If Angelia runs with this token, that is Angelia: stop it, then check again.`;
+  if (code === 409) return `Another program polled this bot while the check ran, so Telegram ended the check's request (409: ${description}). Only one reader can poll at a time. If Angelia runs with this token, that is Angelia: stop it, then check again.`;
   if (code === 429) return `Telegram asks to slow down (429: ${description}). Wait a minute and check again.`;
   return `${method} failed (${code}: ${description}).`;
 }

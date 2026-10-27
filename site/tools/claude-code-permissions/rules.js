@@ -78,10 +78,13 @@ export function commandRule(line) {
   return m ? `${PATH_TWIN[m[1]]}(${m[2]})` : t;
 }
 
-/** The host of a typed domain or URL: `https://docs.python.org/3/` is `docs.python.org`. */
+/** The host of a typed domain or URL: `https://docs.python.org/3/` is `docs.python.org`. A host needs a
+ *  dot, or is localhost: a lone word (`docs`) is a typo, not a domain. */
 export function domainOf(text) {
   const t = text.trim().replace(/^domain:/, '');
-  try { return new URL(/^[a-z]+:\/\//i.test(t) ? t : `https://${t}`).hostname.replace(/\.$/, '') || undefined; } catch { return undefined; }
+  let host;
+  try { host = new URL(/^[a-z]+:\/\//i.test(t) ? t : `https://${t}`).hostname.replace(/\.$/, ''); } catch { return undefined; }
+  return host && (host.includes('.') || host === 'localhost') ? host : undefined;
 }
 
 /** An MCP server's name as it appears in its tool names: `.` and spaces become `_` (the docs). */
@@ -105,6 +108,9 @@ export function buildSettings(choices = DEFAULTS) {
       const rule = commandRule(line);
       add(list, rule);
       if (NEVER_MATCHES.test(line.trim()) && /^(Edit|Read)\(/.test(rule)) warnings.push(`${line.trim()} would never match: Claude Code checks file paths against Edit and Read rules only. It is written as ${rule}.`);
+      // An allow rule for MCP tools matches only when it names the server: mcp__* or mcp__git* never do (the docs).
+      const server = /^mcp__(.*?)(?:__|$)/s.exec(rule)?.[1];
+      if (list === 'allow' && server !== undefined && (!server || server.includes('*'))) warnings.push(`${rule} never matches: an allow rule must name the MCP server, as in mcp__github or mcp__github__*.`);
       const inner = /^Bash\((.*)\)$/s.exec(rule)?.[1];
       if (list !== 'allow' || inner === undefined) continue;
       if (/^\S+ \*$/.test(inner) || inner === '*') warnings.push(`${rule} allows every ${inner === '*' ? '' : inner.split(' ')[0] + ' '}command. Put the * after the subcommand, as in Bash(git log *).`);
@@ -127,7 +133,7 @@ export function buildSettings(choices = DEFAULTS) {
   }
   for (const line of lines(c.denyPaths)) {
     const p = line.replace(/^(Read|Edit|Write|MultiEdit|NotebookEdit|Glob)\((.*)\)$/s, '$2');
-    if (/^!(\/|~\/)/.test(p)) warnings.push(`${p}: Claude Code reads a ! pattern from the current folder, so it cannot reopen a path under a ~/, / or // rule.`);
+    if (/^!(\/|~\/)/.test(p)) warnings.push(`${p}: a ! pattern is read from the project folder, so it cannot reopen a path under a ~/, / or // rule. Drop that line.`);
     if (/^\/[^/]/.test(p)) warnings.push(`${p} starts with one slash, so it means that path inside the project folder. For a path from the disk root, write //${p.slice(1)}.`);
     for (const r of both(p)) add('deny', r);
   }
@@ -146,7 +152,7 @@ export function buildSettings(choices = DEFAULTS) {
   }
   if (lists.deny.includes('mcp__*') && lists.allow.some((r) => r.startsWith('mcp__'))) warnings.push('mcp__* in deny blocks every MCP server, the ones you allowed too.');
   if (lists.deny.includes('WebFetch') && lists.allow.some((r) => r.startsWith('WebFetch'))) warnings.push('WebFetch in deny removes the tool, so the allowed domains do nothing.');
-  if (c.blockOutside && lines(c.dirs).length) warnings.push('Folders listed here in a project file do not count as working folders for blockReadsOutsideWorkingDirectories, so the file tools refuse reads in them. Add those folders in ~/.claude/settings.json or with --add-dir instead.');
+  if (c.blockOutside && lines(c.dirs).length) warnings.push('blockReadsOutsideWorkingDirectories does not count folders listed in a project file, so the file tools refuse to read them. Add them in ~/.claude/settings.json or with --add-dir instead.');
   if (c.mode === 'dontAsk' && !lists.allow.length) warnings.push('dontAsk with no allow rules: Claude Code refuses every tool call that would ask, so it can only read.');
 
   const permissions = {};

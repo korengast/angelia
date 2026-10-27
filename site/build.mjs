@@ -146,7 +146,7 @@ if (tools.length) {
   writeFileSync(join(out, 'tools', 'index.html'), guidePage({
     title: 'Free tools', description: 'Small free tools for Claude Code and Telegram bots. Each runs in your browser and sends nothing to us.',
     url: `${SITE}/tools/`, date: tools.map((t) => t.updated ?? t.date).sort().at(-1), byline: 'Angelia', ogType: 'website',
-    body: '<ul>' + tools.map((t) => `<li><a href="/tools/${t.slug}/">${esc(t.title)}</a><br><span class="meta">${esc(t.description)}</span></li>`).join('') + '</ul>',
+    body: '<p class="lede">Small free tools for Claude Code and Telegram bots. Each runs in your browser and sends nothing to us.</p>\n<ul>' + tools.map((t) => `<li><a href="/tools/${t.slug}/">${esc(t.title)}</a><br><span class="meta">${esc(t.description)}</span></li>`).join('') + '</ul>',
     jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: 'Angelia tools', url: `${SITE}/tools/` },
   }));
 }

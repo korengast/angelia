@@ -72,7 +72,7 @@ test('site tools: several choices give exactly the file they should', () => {
     },
   });
   assert.deepEqual(warnings, ['The MCP server "my.server" appears in tool names as my_server, so the rule uses that.',
-    'Folders listed here in a project file do not count as working folders for blockReadsOutsideWorkingDirectories, so the file tools refuse reads in them. Add those folders in ~/.claude/settings.json or with --add-dir instead.']);
+    'blockReadsOutsideWorkingDirectories does not count folders listed in a project file, so the file tools refuse to read them. Add them in ~/.claude/settings.json or with --add-dir instead.']);
   assert.deepEqual(JSON.parse(settingsText(settings)), settings);
 });
 
@@ -83,7 +83,7 @@ test('site tools: rules that match more, or less, than they look get a warning',
   assert.match(warn({ presets: [], commands: { allow: 'npx eslint *' } }), /npx runs the command that follows/);
   assert.doesNotMatch(warn({ presets: [], commands: { allow: 'watch -n 5 make *' } }), /runs the command that follows/, 'watch is an exec wrapper a prefix rule never approves');
   assert.match(warn({ presets: [], commands: { deny: 'Write(docs/**)' } }), /Write\(docs\/\*\*\) would never match.*written as Edit\(docs\/\*\*\)/);
-  assert.match(warn({ presets: [], dirs: '../lib', blockOutside: true }), /do not count as working folders for blockReadsOutsideWorkingDirectories/);
+  assert.match(warn({ presets: [], dirs: '../lib', blockOutside: true }), /blockReadsOutsideWorkingDirectories does not count folders listed in a project file/);
   assert.equal(warn({ presets: [], dirs: '../lib' }), '');
   assert.match(warn({ presets: [], denyPaths: '!~/notes/public/**' }), /cannot reopen a path under a ~\/, \/ or \/\/ rule/);
   // A ! carve-out cannot reopen a file inside a folder blocked as a whole; outside one, it can.
@@ -102,6 +102,15 @@ test('site tools: rules that match more, or less, than they look get a warning',
   assert.match(warn({ presets: [], denyPaths: '/etc/passwd' }), /starts with one slash.*write \/\/etc\/passwd/);
   assert.match(warn({ presets: [], mode: 'dontAsk' }), /dontAsk with no allow rules/);
   assert.match(warn({ presets: [], domains: 'not a domain' }), /"not a domain" is not a domain/);
+  // A host needs a dot, or is localhost.
+  assert.match(warn({ presets: [], domains: 'docs' }), /"docs" is not a domain/);
+  assert.deepEqual(buildSettings({ ...DEFAULTS, presets: [], domains: 'localhost\n127.0.0.1' }).settings.permissions.allow, ['WebFetch(domain:localhost)', 'WebFetch(domain:127.0.0.1)']);
+  // An MCP allow rule that names no server never matches; one that names it, or a deny rule, is fine.
+  for (const rule of ['mcp__*', 'mcp__git*', 'mcp__*__read'])
+    assert.match(warn({ presets: [], commands: { allow: rule } }), /never matches: an allow rule must name the MCP server/, rule);
+  for (const rule of ['mcp__github', 'mcp__github__*', 'mcp__github__get_issue'])
+    assert.doesNotMatch(warn({ presets: [], commands: { allow: rule } }), /must name the MCP server/, rule);
+  assert.doesNotMatch(warn({ presets: [], commands: { deny: 'mcp__*' } }), /must name the MCP server/);
   assert.throws(() => buildSettings({ mode: 'bypassPermissions' }), /unknown permission mode/);
 });
 
@@ -226,7 +235,7 @@ test('site tools: each failure names its step and what to do, and never carries 
   assert.match(refused.message, /refused the token \(401 Unauthorized\)/);
   const busy = await fails({ getMe: ME, getWebhookInfo: NO_HOOK, getUpdates: { ok: false, error_code: 409, description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running' } });
   assert.deepEqual([busy.step, busy.code], ['getUpdates', 409]);
-  assert.match(busy.message, /Another program polled this bot after the check started.*terminated by other getUpdates request.*Angelia: stop it/);
+  assert.match(busy.message, /Another program polled this bot while the check ran.*terminated by other getUpdates request.*Angelia: stop it/);
   const hooked = await fails({ getMe: ME, getWebhookInfo: NO_HOOK, getUpdates: { ok: false, error_code: 409, description: "Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first" } });
   assert.match(hooked.message, /refused while the bot has a webhook/);
   const offline = await fails({ getMe: new TypeError('Failed to fetch') });
