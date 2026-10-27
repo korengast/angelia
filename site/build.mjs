@@ -93,6 +93,9 @@ const guides = headed('guides');
 const PAGE_ORDER = ['claude-code', 'whatsapp', 'telegram', 'alternatives'];
 const rank = (slug) => (PAGE_ORDER.includes(slug) ? PAGE_ORDER.indexOf(slug) : PAGE_ORDER.length);
 const pages = headed('pages').sort((a, b) => rank(a.slug) - rank(b.slug));
+// Tools: site/tools/<slug>.html is a free tool's page, headed like a guide, and site/tools/<slug>/ holds
+// its scripts, served beside it (the page loads them as modules; tests/site-tools.test.ts imports them).
+const tools = headed('tools').sort((a, b) => a.title.localeCompare(b.title));
 // The tab and search title: the brand after it only while the whole stays within what results show.
 const pageTitle = (title) => (title.length + 10 <= 60 ? `${title} · Angelia` : title);
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -141,9 +144,9 @@ for (const g of guides) {
     jsonld: { '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: guideOg(g.slug), publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
   }));
 }
-// Every page ends with links to the other pages, the docs and the guides.
+// Every page ends with links to the other pages, the docs, the tools and the guides.
 const morePages = (slug) => `<nav class="more" aria-label="More about Angelia"><h2 id="more-about-angelia">More about Angelia</h2><ul>${
-  [...pages.filter((o) => o.slug !== slug).map((o) => [`/${o.slug}/`, o.title]), ['/docs/', 'Docs'], ...(guides.length ? [['/guides/', 'Guides']] : [])]
+  [...pages.filter((o) => o.slug !== slug).map((o) => [`/${o.slug}/`, o.title]), ['/docs/', 'Docs'], ...(tools.length ? [['/tools/', 'Tools']] : []), ...(guides.length ? [['/guides/', 'Guides']] : [])]
     .map(([href, t]) => `<li><a href="${href}">${esc(t)}</a></li>`).join('')}</ul></nav>\n`;
 for (const p of pages) {
   const url = `${SITE}/${p.slug}/`;
@@ -248,6 +251,28 @@ docIndex('/docs/', 'Angelia docs: reference, security, runbook, API, decisions',
 docIndex('/docs/decisions/', 'Decisions', 'Angelia decisions', 'Why Angelia is built this way: the architecture decision records, with the CLI versions each finding was measured on.',
   `<p class="lede">Each record says what was decided, what else was tried, and what it costs. A later record can amend an earlier one; the status line at the top of each says so.</p>
 <ul>${adrs.map((d) => `<li><a href="${d.path}">${esc(d.heading)}</a>${d.status ? `<br><span class="meta">${inline(d.status, docLink(d.file))}</span>` : ''}</li>`).join('\n')}</ul>${adrs.some((d) => d.adr === '0010') ? '' : '\n<p>There is no 0010. It recorded a design that was removed before the code was published, and the record was left out with it.</p>'}`);
+// Tools: each tool's page at /tools/<slug>/, with its scripts beside it, and the index at /tools/.
+const moreTools = (slug) => `<nav class="more" aria-label="More tools"><h2 id="more-tools">More tools</h2><ul>${tools.filter((o) => o.slug !== slug).map((o) => `<li><a href="/tools/${o.slug}/">${esc(o.title)}</a></li>`).join('')}<li><a href="/docs/">Docs</a></li>${guides.length ? '<li><a href="/guides/">Guides</a></li>' : ''}</ul></nav>\n`;
+for (const t of tools) {
+  const url = `${SITE}/tools/${t.slug}/`;
+  mkdirSync(join(out, 'tools', t.slug), { recursive: true });
+  if (existsSync(join(here, 'tools', t.slug))) cpSync(join(here, 'tools', t.slug), join(out, 'tools', t.slug), { recursive: true });
+  writeFileSync(join(out, 'tools', t.slug, 'index.html'), guidePage({
+    title: t.title, description: t.description, url, date: t.date, modified: t.updated ?? t.date, ogType: 'website', ogAlt: t.title,
+    body: t.body.replace('<div class="try"', `${moreTools(t.slug)}<div class="try"`),
+    byline: `A free tool from Angelia · Updated <time datetime="${t.updated ?? t.date}">${longDate(t.updated ?? t.date)}</time>`,
+    jsonld: { '@context': 'https://schema.org', '@type': 'WebApplication', name: t.title, description: t.description, url, applicationCategory: 'DeveloperApplication', operatingSystem: 'Any', isAccessibleForFree: true, offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' }, dateModified: t.updated ?? t.date, author: AUTHOR, publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
+  }));
+}
+if (tools.length) {
+  copyFileSync(join(here, 'tools', 'tools.css'), join(out, 'tools', 'tools.css'));
+  writeFileSync(join(out, 'tools', 'index.html'), guidePage({
+    title: 'Free tools', description: 'Small free tools for Claude Code and Telegram bots. Each runs in your browser and sends nothing to us.',
+    url: `${SITE}/tools/`, date: tools.map((t) => t.updated ?? t.date).sort().at(-1), byline: 'Angelia', ogType: 'website',
+    body: '<p class="lede">Small free tools for Claude Code and Telegram bots. Each runs in your browser and sends nothing to us.</p>\n<ul>' + tools.map((t) => `<li><a href="/tools/${t.slug}/">${esc(t.title)}</a><br><span class="meta">${esc(t.description)}</span></li>`).join('') + '</ul>',
+    jsonld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: 'Angelia tools', url: `${SITE}/tools/` },
+  }));
+}
 // The comparison guide, linked from the home page once it is published.
 const COMPARE = 'claude-code-whatsapp-telegram';
 const html = page('index.html')
@@ -269,9 +294,10 @@ for (const dir of ['', ...(guides.length ? ['guides'] : []), ...guides.map((g) =
   const path = dir ? `/${dir}/` : '/';
   writeFileSync(join(out, dir, 'index.md'), htmlToMarkdown(readFileSync(join(out, dir, 'index.html'), 'utf8'), SITE + path));
 }
+for (const dir of tools.length ? ['tools', ...tools.map((t) => `tools/${t.slug}`)] : []) writeFileSync(join(out, dir, 'index.md'), htmlToMarkdown(readFileSync(join(out, dir, 'index.html'), 'utf8'), `${SITE}/${dir}/`));
 writeFileSync(join(out, '404.md'), `# Not found\n\nNothing is at this address on ${SITE}. The page may have moved, or the link has a typo.\n\n` +
   `- [Home page](${SITE}/) ([Markdown](${SITE}/index.md))\n- [llms.txt](${SITE}/llms.txt): the documentation, listed for agents\n` +
-  `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [Docs](${SITE}/docs/)\n` +
+  `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [Docs](${SITE}/docs/)\n` + (tools.length ? `- [Tools](${SITE}/tools/)\n` : '') +
   pages.map((p) => `- [${p.title}](${SITE}/${p.slug}/)\n`).join('') + `- [GitHub](https://github.com/${REPO})\n`);
 // For agents (llmstxt.org): /llms.txt lists the docs, /llms-full.txt holds them in one file, and the API
 // page and its OpenAPI document are served as they are. Links point at this release's tag, so an agent
@@ -301,7 +327,8 @@ writeFileSync(join(out, 'sitemap.xml'),
   guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') +
   pages.map((p) => `<url><loc>${SITE}/${p.slug}/</loc><lastmod>${p.updated ?? p.date}</lastmod></url>`).join('') +
   [['/docs/', newest(DOCS.map((d) => d.modified))], ...DOCS.filter((d) => !d.adr).map((d) => [d.path, d.modified]), ['/docs/decisions/', newest(adrs.map((d) => d.modified))], ...adrs.map((d) => [d.path, d.modified])]
-    .map(([p, date]) => `<url><loc>${SITE}${p}</loc>${date ? `<lastmod>${date}</lastmod>` : ''}</url>`).join('') + '</urlset>\n');
+    .map(([p, date]) => `<url><loc>${SITE}${p}</loc>${date ? `<lastmod>${date}</lastmod>` : ''}</url>`).join('') +
+  (tools.length ? `<url><loc>${SITE}/tools/</loc></url>` : '') + tools.map((t) => `<url><loc>${SITE}/tools/${t.slug}/</loc><lastmod>${t.updated ?? t.date}</lastmod></url>`).join('') + '</urlset>\n');
 copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
@@ -337,7 +364,8 @@ writeFileSync(join(out, '_redirects'),
   // redirects are 307, which Search Console reports as "Page with redirect" for months.
   ['/index.html /', ...(guides.length ? ['/guides /guides/', '/guides/index.html /guides/'] : []),
     ...guides.flatMap((g) => [`/guides/${g.slug} /guides/${g.slug}/`, `/guides/${g.slug}/index.html /guides/${g.slug}/`]),
-    ...['/docs/', '/docs/decisions/', ...DOCS.map((d) => d.path), ...pages.map((p) => `/${p.slug}/`)].flatMap((p) => [`${p.slice(0, -1)} ${p}`, `${p}index.html ${p}`])]
+    ...['/docs/', '/docs/decisions/', ...DOCS.map((d) => d.path), ...pages.map((p) => `/${p.slug}/`)].flatMap((p) => [`${p.slice(0, -1)} ${p}`, `${p}index.html ${p}`]),
+    ...(tools.length ? ['/tools /tools/', '/tools/index.html /tools/'] : []), ...tools.flatMap((t) => [`/tools/${t.slug} /tools/${t.slug}/`, `/tools/${t.slug}/index.html /tools/${t.slug}/`])]
     .map((r) => `${r} 301\n`).join(''));
 writeFileSync(join(out, '_headers'), [
   '/*',
@@ -356,7 +384,8 @@ writeFileSync(join(out, '_headers'), [
   '/angelia-demo*',
   '  Cache-Control: public, max-age=2592000',
   // A page's Markdown copy names the page as the one to index: search engines keep the HTML.
-  ...['/', ...(guides.length ? ['/guides/'] : []), ...guides.map((g) => `/guides/${g.slug}/`), ...pages.map((p) => `/${p.slug}/`), '/docs/', '/docs/decisions/', ...DOCS.map((d) => d.path)]
+  ...['/', ...(guides.length ? ['/guides/'] : []), ...guides.map((g) => `/guides/${g.slug}/`), ...pages.map((p) => `/${p.slug}/`), '/docs/', '/docs/decisions/', ...DOCS.map((d) => d.path),
+    ...(tools.length ? ['/tools/', ...tools.map((t) => `/tools/${t.slug}/`)] : [])]
     .flatMap((p) => [`${p}index.md`, `  Link: <${SITE}${p}>; rel="canonical"`]),
   '',
 ].join('\n'));

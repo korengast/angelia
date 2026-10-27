@@ -30,6 +30,8 @@ Install with `curl -fsSL {{SITE}}/install | sh` (it checks the release signature
 - [How to control Claude Code from your phone]({{SITE}}/guides/claude-code-from-phone/)
 - [How to run Claude Code 24/7 on your own machine]({{SITE}}/guides/claude-code-24-7/)
 - [Claude Code notifications and approvals on your phone]({{SITE}}/guides/claude-code-phone-notifications/)
+- [Claude Code permissions builder]({{SITE}}/tools/claude-code-permissions/): tick boxes into a `.claude/settings.json` permissions block (allow, ask, deny, defaultMode)
+- [Telegram bot token and chat id checker]({{SITE}}/tools/telegram-bot-check/): getMe and getUpdates from the browser, to find the chat id a route needs
 - [Runbook]({{RAW}}/docs/runbook.md): day-to-day commands, known failures and fixes, uninstalling
 - [Decisions]({{SITE}}/docs/decisions/): why it is built this way
 - [Everything above in one file]({{SITE}}/llms-full.txt)
