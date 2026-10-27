@@ -89,7 +89,10 @@ To get the answer to a task in a script:
 
 By default the answer also goes to the chat, as if the owner had written there. With
 `"reply": "caller"` (owner's token only), the answer goes only to the event stream and the chat sees
-nothing. For a question rather than a task, `POST /ask` is simpler: the answer is the response.
+nothing from Angelia: no answer, progress line, notice, typing sign or attached file, also when the
+turn fails, hits a usage limit, stalls or waits on a permission request. The agent can still post to
+the chat itself with `angelia send` or `angelia send-media`, as in any turn. For a question rather
+than a task, `POST /ask` is simpler: the answer is the response.
 
 The same in Python, with the standard library only (`examples/api/angelia_api.py` is the full client):
 
