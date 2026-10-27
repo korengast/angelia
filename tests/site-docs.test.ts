@@ -49,6 +49,25 @@ test('site docs: the renderer turns the Markdown docs/ writes into HTML', () => 
   assert.equal(anchor("What is yours and what is Angelia's"), 'what-is-yours-and-what-is-angelias');
 });
 
+test('site docs: a link goes only to the web, to mail, to a heading or to a relative path', () => {
+  const { html } = renderMarkdown('[a](https://x.org) [b](mailto:a@x.org) [c](#part) [d](../x.md) [e](javascript:alert) [f](data:text/html,x) [`g`](y.md) and `[h](z.md)`');
+  assert.equal(html, '<p><a href="https://x.org">a</a> <a href="mailto:a@x.org">b</a> <a href="#part">c</a> <a href="../x.md">d</a> ' +
+    '[e](javascript:alert) [f](data:text/html,x) <a href="y.md"><code>g</code></a> and <code>[h](z.md)</code></p>');
+});
+
+test('site docs: heading ids follow github-slugger, and a # in a heading is kept', () => {
+  const { html } = renderMarkdown('## Foo\n\n## Foo\n\n## Foo-1\n\n## Use C#\n\n## Closed ##');
+  assert.equal(html, ['<h2 id="foo">Foo</h2>', '<h2 id="foo-1">Foo</h2>', '<h2 id="foo-1-1">Foo-1</h2>', '<h2 id="use-c">Use C#</h2>', '<h2 id="closed">Closed</h2>'].join('\n'));
+});
+
+test('site docs: Markdown the renderer does not handle fails the build, with where it is', () => {
+  for (const [md, what] of [['> quoted', 'a blockquote'], ['Title\n===', 'a setext heading'], ['a\n\n---', 'a rule'], ['- a\n  - nested', 'an indented (nested) list item'],
+    ['+ item', 'a list marker'], ['~~~\ncode\n~~~', 'a ~~~ fence'], ['![logo](x.png)', 'an image'], ['a \\* b', 'a backslash escape'], ['a <br> b', 'raw HTML']])
+    assert.throws(() => renderMarkdown(md), (e: Error) => e.message.includes(what), md);
+  // Inside code, in a table's escaped pipe, and in a fenced block, the same characters are fine.
+  assert.doesNotThrow(() => renderMarkdown('`<br> \\* ![x](y)`\n\n| a | b |\n|---|---|\n| `x \\| y` | c |\n\n```\n> quoted\n---\n```'));
+});
+
 test('site docs: every doc the site publishes renders with no Markdown left in its text', () => {
   const files = ['docs/reference.md', 'docs/security.md', 'docs/runbook.md', ...readdirSync(join(repo, 'docs', 'decisions')).filter((f) => f.endsWith('.md')).map((f) => `docs/decisions/${f}`)];
   for (const file of files) {
