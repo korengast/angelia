@@ -56,7 +56,8 @@ const page = (name) => readFileSync(join(here, 'src', name), 'utf8')
 const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 // Guides (site/guides/<slug>.html) and pages (site/pages/<slug>.html) are an HTML body headed by a JSON
-// comment: title, description, date, optional updated (and for a page, card), draft. A draft is left out of the site and the
+// comment: title, description, date, optional updated (and for a page, card and nav: its share card's
+// second line and its name in the home page's footer), draft. A draft is left out of the site and the
 // sitemap unless --drafts.
 const headed = (dir) => readdirSync(join(here, dir)).filter((f) => f.endsWith('.html')).map((f) => {
   const src = readFileSync(join(here, dir, f), 'utf8');
@@ -86,8 +87,11 @@ if (process.argv.includes('--og')) {
 
 const AUTHOR = { '@type': 'Person', name: 'Koren Gast', url: 'https://github.com/korengast' };
 const guides = headed('guides');
-// Pages: what Angelia does for one CLI or chat app, and how it compares. Each lives at /<slug>/.
-const pages = headed('pages');
+// Pages: what Angelia does for one CLI or chat app, and how it compares. Each lives at /<slug>/, listed
+// in this order (a page not named here comes last).
+const PAGE_ORDER = ['claude-code', 'whatsapp', 'telegram', 'alternatives'];
+const rank = (slug) => (PAGE_ORDER.includes(slug) ? PAGE_ORDER.indexOf(slug) : PAGE_ORDER.length);
+const pages = headed('pages').sort((a, b) => rank(a.slug) - rank(b.slug));
 // The tab and search title: the brand after it only while the whole stays within what results show.
 const pageTitle = (title) => (title.length + 10 <= 60 ? `${title} · Angelia` : title);
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -239,7 +243,9 @@ const html = page('index.html')
   // The other guides by name, so each one is a link from the home page.
   .replace('<!--GUIDE-LINKS-->', guides.some((g) => g.slug !== COMPARE)
     ? `<p class="more-guides">Guides: ${guides.filter((g) => g.slug !== COMPARE).map((g) => `<a href="/guides/${g.slug}/">${esc(g.title)}</a>`).join(' · ')}</p>` : '')
-  .replace('<!--COMPARE-HERO-->', guides.some((g) => g.slug === COMPARE) ? ` <a href="/guides/${COMPARE}/">How it compares</a>.` : '');
+  .replace('<!--COMPARE-HERO-->', guides.some((g) => g.slug === COMPARE) ? ` <a href="/guides/${COMPARE}/">How it compares</a>.` : '')
+  // The docs and every page, in the footer: short names, since the footer is one line on a laptop.
+  .replace('<!--PAGE-LINKS-->', `<span>${[['/docs/', 'Docs'], ...pages.map((p) => [`/${p.slug}/`, p.nav ?? p.title])].map(([href, t]) => `<a href="${href}">${esc(t)}</a>`).join(' · ')}</span>`);
 writeFileSync(join(out, 'index.html'), html);
 writeFileSync(join(out, '404.html'), page('404.html'));
 // Every page as Markdown beside its index.html, for an agent that sends Accept: text/markdown (the Worker
@@ -251,7 +257,8 @@ for (const dir of ['', ...(guides.length ? ['guides'] : []), ...guides.map((g) =
 }
 writeFileSync(join(out, '404.md'), `# Not found\n\nNothing is at this address on ${SITE}. The page may have moved, or the link has a typo.\n\n` +
   `- [Home page](${SITE}/) ([Markdown](${SITE}/index.md))\n- [llms.txt](${SITE}/llms.txt): the documentation, listed for agents\n` +
-  `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [Docs](${SITE}/docs/)\n- [GitHub](https://github.com/${REPO})\n`);
+  `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [Docs](${SITE}/docs/)\n` +
+  pages.map((p) => `- [${p.title}](${SITE}/${p.slug}/)\n`).join('') + `- [GitHub](https://github.com/${REPO})\n`);
 // For agents (llmstxt.org): /llms.txt lists the docs, /llms-full.txt holds them in one file, and the API
 // page and its OpenAPI document are served as they are. Links point at this release's tag, so an agent
 // reads the docs of the version the install line gives.
