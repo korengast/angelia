@@ -13,7 +13,7 @@
   <li><strong>One session per chat.</strong> Each chat is routed to a profile: a folder with its own instructions and memory. Angelia keeps one <code>pi --mode rpc</code> process per chat, and the session comes back after a restart. <code>/new</code> in one chat never touches another.</li>
   <li><strong>Approvals pi does not have.</strong> Angelia loads a gate extension into pi. A command or a file write that the profile's mode does not allow on its own comes to the chat and waits for an owner's yes.</li>
   <li><strong>A sandbox pi does not have.</strong> Every shell command runs inside macOS's sandbox (<code>sandbox-exec</code>), made from the profile's deny rules. The kernel refuses a denied path however the command spells it, for every program the command starts.</li>
-  <li><strong>Your instructions and skills.</strong> pi reads the profile's <code>CLAUDE.md</code> and <code>AGENTS.md</code>. The skills the profile was given are passed to pi one by one; pi does not read Claude's skills folder.</li>
+  <li><strong>Your instructions and skills.</strong> pi reads the profile's <code>CLAUDE.md</code> (or an <code>AGENTS.md</code>, when the folder has one). The skills the profile was given are passed to pi one by one; pi does not read Claude's skills folder.</li>
 </ul>
 
 <h2 id="what-you-need">What you need</h2>
@@ -60,7 +60,7 @@ angelia service install</code></pre>
 <p><code>/new</code>, <code>/stop</code>, <code>/status</code>, <code>/resume</code>, <code>/model</code>, <code>/effort</code>, <code>/backend</code>, <code>/restart</code> and the others <code>/help</code> lists are answered by Angelia, without spending a token. <code>/compact</code> goes to pi's own compact command. When a provider hits a usage limit, the chat says to pick another model with <code>/model</code>. Long answers are split as for <a href="/claude-code/#long-answers">every CLI</a>.</p>
 
 <h2 id="tested">Tested</h2>
-<p>On 2026-10-27, with Angelia 0.3.22 and pi 0.86.1 on macOS, in a WhatsApp group routed to one profile in <code>permission_mode: default</code>, model <code>xai/grok-4.7</code> picked with <code>/model</code> in the chat:</p>
+<p>On 2026-10-27, with Angelia 0.3.22 and pi 0.86.1 on macOS, in a WhatsApp group routed to one profile in <code>permission_mode: default</code>. The model was <code>xai/grok-4.7</code>, picked with <code>/model</code> in the chat.</p>
 <ul>
   <li>The first answer came in about 16 seconds. About 14 seconds of that was pi starting.</li>
   <li>A long answer arrived in 2 messages, in order.</li>
