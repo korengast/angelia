@@ -14,6 +14,9 @@ Install with `curl -fsSL {{SITE}}/install | sh` (it checks the release signature
 ## Pages
 
 - [Angelia for Claude Code: setup, approvals and limits]({{SITE}}/claude-code/): what Angelia does for Claude Code, setup, approvals, voice notes, files, limits
+- [Angelia for Codex: setup, sandbox, approvals and limits]({{SITE}}/codex/): Codex's own OS sandbox with the profile's rules, approvals for more access, setup, test results, limits
+- [Angelia for Grok Build: setup, approvals and limits]({{SITE}}/grok/): trusting the folder, Grok Build's permission modes, approvals from the chat from 0.3.23, no sandbox, test results, limits
+- [Angelia for pi: setup, sandbox, approvals and limits]({{SITE}}/pi/): picking a model with /model, the approval gate, the macOS sandbox for every command, test results, limits
 - [Your coding agent CLI on WhatsApp]({{SITE}}/whatsapp/): the second number, linking by QR, groups, what works, privacy, limits
 - [Your coding agent CLI on Telegram]({{SITE}}/telegram/): the bot, groups and topics, what works, privacy, limits
 - [Angelia vs OpenClaw and Hermes Agent]({{SITE}}/alternatives/): whose agent runs, chat apps, sessions, and when another tool fits better

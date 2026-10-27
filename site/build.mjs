@@ -90,7 +90,7 @@ const AUTHOR = { '@type': 'Person', name: 'Koren Gast', url: 'https://github.com
 const guides = headed('guides');
 // Pages: what Angelia does for one CLI or chat app, and how it compares. Each lives at /<slug>/, listed
 // in this order (a page not named here comes last).
-const PAGE_ORDER = ['claude-code', 'whatsapp', 'telegram', 'alternatives'];
+const PAGE_ORDER = ['claude-code', 'codex', 'grok', 'pi', 'whatsapp', 'telegram', 'alternatives'];
 const rank = (slug) => (PAGE_ORDER.includes(slug) ? PAGE_ORDER.indexOf(slug) : PAGE_ORDER.length);
 const pages = headed('pages').sort((a, b) => rank(a.slug) - rank(b.slug));
 // Tools: site/tools/<slug>.html is a free tool's page, headed like a guide, and site/tools/<slug>/ holds
