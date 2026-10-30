@@ -2,6 +2,7 @@
   "title": "Claude Code permissions: settings.json allow, ask, deny",
   "description": "Tick what Claude Code may do, what it must ask about and what it must never touch. Get a .claude/settings.json permissions block to copy.",
   "date": "2026-10-27",
+  "updated": "2026-10-30",
   "draft": false
 }-->
 <link rel="stylesheet" href="/tools/tools.css">
@@ -157,23 +158,23 @@
 <p>The <code>permissions</code> block in <code>.claude/settings.json</code> holds three lists of rules and a start mode. A rule is a tool name, or a tool name with a pattern in brackets: <code>Bash(npm run test *)</code>, <code>Read(./.env)</code>, <code>WebFetch(domain:docs.python.org)</code>. Deny wins over ask, and ask wins over allow.</p>
 
 <h3 id="allow">allow</h3>
-<p>Claude Code uses these without asking. <code>Bash(npm run test *)</code> runs <code>npm run test</code> with any arguments. The older form <code>Bash(npm run test:*)</code> means the same. In a project file, allow rules take effect only after you accept the trust dialog for the folder.</p>
+<p>Claude Code uses these without asking. <code>Bash(npm run test *)</code> runs <code>npm run test</code> with any arguments. <code>Bash(npm run test:*)</code> means the same. In a project file, allow rules take effect only after you accept the trust dialog for the folder.</p>
 
 <h3 id="ask">ask</h3>
 <p>Claude Code asks you each time, even when an allow rule matches too. Use it for commands that are fine sometimes but leave your machine, such as <code>Bash(git push *)</code> or <code>Bash(npm publish *)</code>.</p>
 
 <h3 id="deny">deny</h3>
-<p>Claude Code never does these, and no allow or ask rule opens them again. <code>Read(./.env)</code> blocks the <code>.env</code> file in the project folder; <code>Read(.env)</code> blocks every <code>.env</code>, at any depth. A bare tool name such as <code>WebFetch</code> removes the tool.</p>
+<p>Claude Code never does these, and no allow or ask rule opens them again. <code>Read(./.env)</code> blocks the <code>.env</code> file in the project folder; <code>Read(.env)</code> blocks every <code>.env</code> at or under the project folder. A bare tool name such as <code>WebFetch</code> removes the tool.</p>
 
 <h3 id="default-mode">defaultMode</h3>
 <p>The permission mode a new session starts in. A project's settings can set:</p>
 <ul>
   <li><code>default</code>: ask before edits and commands.</li>
-  <li><code>acceptEdits</code>: edit files in the project without asking; still ask before other commands.</li>
+  <li><code>acceptEdits</code>: edit files and run <code>mkdir</code>, <code>mv</code> and the like in the project without asking; still ask before other commands.</li>
   <li><code>plan</code>: read and plan, no edits.</li>
   <li><code>dontAsk</code>: never ask; refuse anything that would need your yes.</li>
 </ul>
-<p><code>bypassPermissions</code> never asks. It does not take effect from a project's settings: set it in <code>~/.claude/settings.json</code>, or start Claude Code in it. <code>"disableBypassPermissionsMode": "disable"</code> stops anyone from starting the project in it.</p>
+<p><code>bypassPermissions</code> skips every prompt, except the few actions no mode auto-approves. <code>auto</code> and <code>bypassPermissions</code> do not take effect from a project's settings or <code>settings.local.json</code>: set them in <code>~/.claude/settings.json</code>, or start Claude Code with <code>--permission-mode</code>. <code>"disableBypassPermissionsMode": "disable"</code> stops anyone from starting the project in bypass mode.</p>
 
 <h2 id="example">A full settings.json example</h2>
 <p>A project where Claude Code edits files and runs the tests on its own, asks before it pushes or publishes, and never touches secrets:</p>
@@ -208,11 +209,8 @@
 
 <h2 id="how-the-rules-work">How the rules work</h2>
 <ul>
-  <li><strong>Deny, then ask, then allow.</strong> The first match in that order decides. A narrow allow rule cannot open a hole in a broad deny rule.</li>
-  <li><strong>A bare tool name</strong> such as <code>WebFetch</code> matches every use of the tool. In <code>deny</code>, it removes the tool from Claude Code.</li>
   <li><strong>Commands</strong> match the command text Claude Code is about to run. Claude Code splits <code>&amp;&amp;</code>, <code>;</code> and pipes, and every part must match on its own. A trailing <code> *</code> also matches the bare command: <code>Bash(npm test *)</code> covers <code>npm test</code>.</li>
   <li><strong>Paths</strong> follow <code>.gitignore</code> patterns. A bare file name like <code>.env</code> matches at any depth. <code>~/.ssh/**</code> is in your home folder. <code>/src/**</code> is <code>src</code> in the project, not on the disk root; write <code>//</code> for that.</li>
-  <li><strong>Allow rules in a project file</strong> take effect only after you accept the trust dialog for the folder. Deny and ask rules apply at once.</li>
 </ul>
 
 <h2 id="limits">What these rules do not stop</h2>
@@ -234,7 +232,7 @@
   <li><a href="https://code.claude.com/docs/en/settings">Claude Code settings</a>: where the files live and how they combine.</li>
   <li><a href="https://code.claude.com/docs/en/settings-reference#permission-settings">Settings reference, permission settings</a>: every key under <code>permissions</code>.</li>
 </ul>
-<p class="fine">Checked against the docs on 27 October 2026. Claude Code changes often. If a rule behaves differently, the docs win.</p>
+<p class="fine">Checked against the docs on 30 October 2026. Claude Code changes often. If a rule behaves differently, the docs win.</p>
 
 <div class="try" id="try">
 <h2 id="try-angelia">Try Angelia</h2>
