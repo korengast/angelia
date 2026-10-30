@@ -84,7 +84,9 @@ const visible = (path: string) => unescape((/<article>([\s\S]*?)<\/article>/.exe
 test('site build: every JSON-LD block parses, and FAQ and HowTo text is the text on the page', () => {
   const types = (path: string) => jsonld(path).map((j) => j['@type']);
   assert.deepEqual(types(''), ['SoftwareApplication']);
-  assert.deepEqual(jsonld('')[0].sameAs, ['https://github.com/korengast/angelia', 'https://www.npmjs.com/package/angelia-gateway']);
+  // The repository and the npm package, as package.json names them.
+  const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+  assert.deepEqual(jsonld('')[0].sameAs, [pkg.repository.url.replace(/^git\+/, '').replace(/\.git$/, ''), `https://www.npmjs.com/package/${pkg.name}`]);
   assert.deepEqual(types('guides/claude-code-whatsapp-telegram'), ['Article', 'FAQPage']);
   assert.deepEqual(types('alternatives'), ['WebPage', 'FAQPage']);
   assert.deepEqual(types('guides/claude-code-from-phone'), ['Article', 'HowTo']);
