@@ -9,6 +9,9 @@
     "pi",
     "whatsapp",
     "telegram",
+    "telegram-bot",
+    "whatsapp-bot",
+    "claude",
     "coding-agent",
     "self-hosted",
     "macos"
