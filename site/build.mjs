@@ -3,6 +3,7 @@
 // node site/build.mjs --drafts ->  the same, with the guides still marked draft (to read them locally, never to deploy)
 // node site/build.mjs --og   ->  the share card and the README banner as pages in the temp folder; render them
 //                                into static/og.png (1200x630) and static/banner.png (1280x400 at 2x)
+// node site/build.mjs --out DIR --no-media -> the pages into DIR, without the demo videos (the tests, offline)
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -58,7 +59,8 @@ const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, 
 
 // Guides (site/guides/<slug>.html) and pages (site/pages/<slug>.html) are an HTML body headed by a JSON
 // comment: title, description, date, optional updated (and for a page, card and nav: its share card's
-// second line and its name in the home page's footer), draft. A draft is left out of the site and the
+// second line and its name in the home page's footer; heading: its H1, when the title had to be cut to fit
+// search results), draft. A draft is left out of the site and the
 // sitemap unless --drafts.
 const headed = (dir) => readdirSync(join(here, dir)).filter((f) => f.endsWith('.html')).map((f) => {
   const src = readFileSync(join(here, dir, f), 'utf8');
@@ -110,8 +112,9 @@ const fits = (title, description) => {
   if (pageTitle(title).length > 60) throw new Error(`title over 60 characters: ${title}`);
   if (description.length > 155) throw new Error(`description over 155 characters (${description.length}): ${title}`);
 };
-const guidePage = ({ title, heading = title, description, url, date, modified = date, byline, body, jsonld, ogType = 'article', ogImage = `${SITE}/og.png`, ogAlt = 'Angelia. Your coding agent. Your personal assistant.' }) => {
+const guidePage = ({ title, heading, description, url, date, modified = date, byline, body, jsonld, ogType = 'article', ogImage = `${SITE}/og.png`, ogAlt = 'Angelia. Your coding agent. Your personal assistant.' }) => {
   fits(title, description);
+  heading ??= title;
   return page('guide.html')
   .replace('{{OGTYPE}}', ogType).replace('{{OGIMAGE}}', ogImage).replace('{{OGALT}}', esc(ogAlt))
   .replace('<!--ARTICLE-->', ogType === 'article' ? `<meta property="article:published_time" content="${date}">\n<meta property="article:modified_time" content="${modified}">` : '')
@@ -124,7 +127,7 @@ const guidePage = ({ title, heading = title, description, url, date, modified = 
 // A page's own share card, when one has been rendered: site/static/<page>/og.png (see --og).
 const card = (dir) => existsSync(join(here, 'static', dir, 'og.png')) ? `${SITE}/${dir}/og.png` : `${SITE}/og.png`;
 const guideOg = (slug) => card(`guides/${slug}`);
-const out = join(here, 'dist');
+const out = process.argv.includes('--out') ? process.argv[process.argv.indexOf('--out') + 1] : join(here, 'dist');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 // Every guide ends with links to the others, above its Try box: the pages link each other, not only the index.
@@ -153,7 +156,7 @@ for (const p of pages) {
   const modified = p.updated ?? p.date;
   mkdirSync(join(out, p.slug), { recursive: true });
   writeFileSync(join(out, p.slug, 'index.html'), guidePage({
-    title: p.title, description: p.description, url, date: p.date, modified, body: aboveTry(p.body, morePages(p.slug)),
+    title: p.title, heading: p.heading, description: p.description, url, date: p.date, modified, body: aboveTry(p.body, morePages(p.slug)),
     ogType: 'website', ogImage: card(p.slug), ogAlt: p.title,
     byline: `Angelia · Updated <time datetime="${modified}">${longDate(modified)}</time>`,
     jsonld: { '@context': 'https://schema.org', '@type': 'WebPage', name: p.title, description: p.description, dateModified: modified, url, image: card(p.slug), isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } },
@@ -345,7 +348,7 @@ const MEDIA = {
 };
 const cache = join(here, '.media');
 mkdirSync(cache, { recursive: true });
-for (const [name, sha] of Object.entries(MEDIA)) {
+for (const [name, sha] of process.argv.includes('--no-media') ? [] : Object.entries(MEDIA)) {
   const file = join(cache, name);
   const ok = () => existsSync(file) && createHash('sha256').update(readFileSync(file)).digest('hex') === sha;
   if (!ok()) {
