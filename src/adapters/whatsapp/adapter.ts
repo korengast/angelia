@@ -29,6 +29,8 @@ export interface WhatsAppAdapterOptions {
 }
 
 const MAX_MEDIA = MAX_INBOUND;
+/** How a note to the agent names a kind of file: "a photo", "a voice note", never "a image". */
+const KIND_NAME: Record<string, string> = { image: 'photo', audio: 'voice note', video: 'video', document: 'document', sticker: 'sticker' };
 const EXT: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'video/mp4': '.mp4', 'audio/ogg; codecs=opus': '.ogg', 'audio/ogg': '.ogg', 'audio/mpeg': '.mp3', 'application/pdf': '.pdf' };
 
 /**
@@ -199,7 +201,7 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     // capped too, since the declaration is the sender's word. A file not fetched is said to the agent,
     // so it can tell the sender instead of answering as if nothing came.
     if (inbox && p.media && p.media.kind !== 'sticker') {
-      if ((p.media.size ?? 0) > MAX_MEDIA) { this.log(`whatsapp: media over ${MAX_MEDIA >> 20} MB not downloaded chat=${p.chat.slice(0, 8)}…`); note(`a ${p.media.kind} over ${MAX_MEDIA >> 20} MB was sent and not downloaded`); }
+      if ((p.media.size ?? 0) > MAX_MEDIA) { this.log(`whatsapp: media over ${MAX_MEDIA >> 20} MB not downloaded chat=${p.chat.slice(0, 8)}…`); note(`a ${KIND_NAME[p.media.kind] ?? p.media.kind} over ${MAX_MEDIA >> 20} MB was sent and not downloaded`); }
       else if (!this.quota.take(senderId)) { this.log(`whatsapp: media not downloaded chat=${p.chat.slice(0, 8)}… reason=sender-hourly-limit`); note(`a ${p.media.kind} was sent and not downloaded: too many files from this sender this hour`); }
       else fetchIt = true;
     }
@@ -212,8 +214,12 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
           const ext = p.media.fileName?.match(/\.[A-Za-z0-9]{1,5}$/)?.[0] ?? EXT[p.media.mime ?? ''] ?? '';
           const dest = await saveInbound(inbox, ext, stream, MAX_MEDIA);
           if (dest) media.push(dest);
-          else { this.log(`whatsapp: media passed ${MAX_MEDIA >> 20} MB while downloading, dropped chat=${p.chat.slice(0, 8)}…`); note(`a ${p.media.kind} over ${MAX_MEDIA >> 20} MB was sent and not downloaded`); }
-        } catch (e) { this.log(`whatsapp: media download failed chat=${p.chat.slice(0, 8)}…: ${String((e as Error).message ?? e).slice(0, 160)}`); }
+          else { this.log(`whatsapp: media passed ${MAX_MEDIA >> 20} MB while downloading, dropped chat=${p.chat.slice(0, 8)}…`); note(`a ${KIND_NAME[p.media.kind] ?? p.media.kind} over ${MAX_MEDIA >> 20} MB was sent and not downloaded`); }
+        } catch (e) {
+          // Said to the agent too (#35): a file with no caption would otherwise be no turn at all.
+          this.log(`whatsapp: media download failed chat=${p.chat.slice(0, 8)}…: ${String((e as Error).message ?? e).slice(0, 160)}`);
+          note(`the ${KIND_NAME[p.media.kind] ?? p.media.kind} sent could not be downloaded`);
+        }
       }
       if (!head.text && !media.length) return;
       // Not awaited: the chat's turn queue keeps the order from here, and a turn can run for hours.

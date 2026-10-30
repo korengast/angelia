@@ -46,10 +46,21 @@ export class SeenIds {
   }
 }
 
-/** Unwrap ephemeral / view-once / caption wrappers to the message body Baileys nests them in. */
+/**
+ * Unwrap ephemeral / view-once / caption wrappers to the message body Baileys nests them in. WhatsApp
+ * stacks them (a document with a caption in a disappearing chat is ephemeral > documentWithCaption >
+ * document), so this peels up to five layers, as Baileys' own normalizeMessageContent does (#34).
+ * Baileys also peels editedMessage and the group status wrappers; those are left out on purpose, an edit
+ * holds a protocol message and a group status post must not become a turn.
+ */
 export function messageContent(m: WaMessageLike): Record<string, any> {
-  const c = m.message ?? {};
-  return c.ephemeralMessage?.message ?? c.viewOnceMessage?.message ?? c.viewOnceMessageV2?.message ?? c.documentWithCaptionMessage?.message ?? c;
+  let c = m.message ?? {};
+  for (let i = 0; i < 5; i++) {
+    const inner = c.ephemeralMessage ?? c.viewOnceMessage ?? c.viewOnceMessageV2 ?? c.viewOnceMessageV2Extension ?? c.documentWithCaptionMessage;
+    if (!inner?.message) break;
+    c = inner.message;
+  }
+  return c;
 }
 
 /**

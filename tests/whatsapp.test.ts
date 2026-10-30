@@ -77,3 +77,17 @@ test('a message id is handed on once, however often it is delivered; old ids fal
   assert.equal(s.first('c/1'), true);
 });
 
+
+test('#34: stacked wrappers are all peeled: a captioned document in a disappearing chat, a view-once voice note', () => {
+  const nested = group({ ephemeralMessage: { message: { documentWithCaptionMessage: { message: { documentMessage: { caption: 'the plan', fileName: 'plan.pdf', mimetype: 'application/pdf', fileLength: 12 } } } } } });
+  const p = parseMessage(nested, US)!;
+  assert.ok(p, 'two wrappers: still a turn');
+  assert.equal(p.text, 'the plan');
+  assert.equal(p.media?.kind, 'document');
+  assert.equal(p.media?.fileName, 'plan.pdf');
+  const voice = parseMessage(group({ ephemeralMessage: { message: { viewOnceMessageV2Extension: { message: { audioMessage: { mimetype: 'audio/ogg; codecs=opus', fileLength: 3 } } } } } }), US)!;
+  assert.equal(voice.media?.kind, 'audio');
+  assert.deepEqual(messageContent({ key: {}, message: { viewOnceMessageV2: { message: { ephemeralMessage: { message: { imageMessage: {} } } } } } }), { imageMessage: {} });
+  // A wrapper with nothing inside stays as it is, and the parser treats it as not a turn.
+  assert.deepEqual(messageContent({ key: {}, message: { ephemeralMessage: {} } }), { ephemeralMessage: {} });
+});
