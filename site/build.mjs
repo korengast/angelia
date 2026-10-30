@@ -3,6 +3,7 @@
 // node site/build.mjs --drafts ->  the same, with the guides still marked draft (to read them locally, never to deploy)
 // node site/build.mjs --og   ->  the share card and the README banner as pages in the temp folder; render them
 //                                into static/og.png (1200x630) and static/banner.png (1280x400 at 2x)
+// node site/build.mjs --out DIR --no-media -> the pages into DIR, without the demo videos (the tests, offline)
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, cpSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -58,7 +59,8 @@ const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, 
 
 // Guides (site/guides/<slug>.html) and pages (site/pages/<slug>.html) are an HTML body headed by a JSON
 // comment: title, description, date, optional updated (and for a page, card and nav: its share card's
-// second line and its name in the home page's footer), draft. A draft is left out of the site and the
+// second line and its name in the home page's footer; heading: its H1, when the title had to be cut to fit
+// search results), draft. A draft is left out of the site and the
 // sitemap unless --drafts.
 const headed = (dir) => readdirSync(join(here, dir)).filter((f) => f.endsWith('.html')).map((f) => {
   const src = readFileSync(join(here, dir, f), 'utf8');
@@ -103,6 +105,7 @@ const longDate = (d) => { const [y, m, day] = d.split('-').map(Number); return `
 // Every h2 gets an id (from its text when it has none), so a section can be linked to.
 const slugify = (t) => t.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const withIds = (body) => body.replace(/<h2>([\s\S]*?)<\/h2>/g, (_, inner) => `<h2 id="${slugify(inner)}">${inner}</h2>`);
+const expand = (body) => withIds(body).replaceAll('{{SITE}}', SITE).replaceAll('{{REPO}}', REPO).replaceAll('{{VERSION}}', version);
 // Search results cut a title past 60 characters and a description past 155: the build refuses longer ones.
 // A description made from a file (an ADR's heading) is cut to fit instead, at a word, with an ellipsis.
 const clip = (text, max = 155) => (text.length <= max ? text : `${text.slice(0, max).replace(/\s+\S*$/, '').replace(/[\s,;:—-]+$/, '')}…`);
@@ -110,21 +113,54 @@ const fits = (title, description) => {
   if (pageTitle(title).length > 60) throw new Error(`title over 60 characters: ${title}`);
   if (description.length > 155) throw new Error(`description over 155 characters (${description.length}): ${title}`);
 };
-const guidePage = ({ title, heading = title, description, url, date, modified = date, byline, body, jsonld, ogType = 'article', ogImage = `${SITE}/og.png`, ogAlt = 'Angelia. Your coding agent. Your personal assistant.' }) => {
+const guidePage = ({ title, heading, description, url, date, modified = date, byline, body, jsonld, robots, ogType = 'article', ogImage = `${SITE}/og.png`, ogAlt = 'Angelia. Your coding agent. Your personal assistant.' }) => {
   fits(title, description);
+  heading ??= title;
   return page('guide.html')
+  .replace('<!--ROBOTS-->\n', robots ? `<meta name="robots" content="${robots}">\n` : '')
   .replace('{{OGTYPE}}', ogType).replace('{{OGIMAGE}}', ogImage).replace('{{OGALT}}', esc(ogAlt))
   .replace('<!--ARTICLE-->', ogType === 'article' ? `<meta property="article:published_time" content="${date}">\n<meta property="article:modified_time" content="${modified}">` : '')
   .replaceAll('{{PAGETITLE}}', esc(pageTitle(title))).replaceAll('{{MODIFIED}}', modified)
   .replace('{{HEADING}}', esc(heading)).replaceAll('{{TITLE}}', esc(title)).replaceAll('{{DESCRIPTION}}', esc(description)).replaceAll('{{URL}}', url)
-  .replaceAll('{{DATE}}', date).replace('{{BYLINE}}', byline).replace('{{JSONLD}}', JSON.stringify(jsonld).replace(/</g, '\\u003c'))
-  .replace('<!--BODY-->', withIds(body).replaceAll('{{SITE}}', SITE).replaceAll('{{REPO}}', REPO).replaceAll('{{VERSION}}', version));
+  .replaceAll('{{DATE}}', date).replace('{{BYLINE}}', byline).replace('<!--JSONLD-->', [jsonld].flat().map((j) => `<script type="application/ld+json">${JSON.stringify(j).replace(/</g, '\\u003c')}</script>`).join('\n'))
+  .replace('<!--BODY-->', expand(body));
+};
+
+// Structured data made from a page's own text, so it never says what the page does not. A guide or page
+// header may name sections for an FAQPage ("faq": the h2 ids; each heading is a question, the section's
+// text its answer), and "howto": { totalTime } makes a HowTo of its "Step n: ..." sections.
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ', rarr: '→', larr: '←', middot: '·', mdash: '—', ndash: '–', hellip: '…' };
+/** HTML as the text a reader sees: a block's edge is a space, an inline tag is nothing. */
+const plain = (h) => h.replace(/<\/?(p|li|ul|ol|pre|br|div|h\d|table|tr|td|th)\b[^>]*>/g, ' ').replace(/<[^>]+>/g, '')
+  .replace(/&(#?\w+);/g, (m, e) => ENTITIES[e] ?? m).replace(/\s+/g, ' ').trim();
+/** The h2 with this id, and what follows it up to the next h2 or the Try box. */
+const section = (body, id) => {
+  const m = new RegExp(`<h2 id="${id}">([\\s\\S]*?)</h2>([\\s\\S]*?)(?=<h2|<div class="try"|<nav class="more"|$)`).exec(body);
+  if (!m) throw new Error(`no section #${id}`);
+  return { heading: plain(m[1]), text: plain(m[2]) };
+};
+const structured = (p, url) => {
+  const body = expand(p.body);
+  const blocks = [];
+  if (p.faq) blocks.push({ '@context': 'https://schema.org', '@type': 'FAQPage', url, mainEntity: p.faq.map((id) => {
+    const { heading, text } = section(body, id);
+    return { '@type': 'Question', name: heading, acceptedAnswer: { '@type': 'Answer', text } };
+  }) });
+  if (p.howto) {
+    const steps = [...body.matchAll(/<h2 id="([^"]+)">Step \d+: /g)].map((m) => {
+      const { heading, text } = section(body, m[1]);
+      return { '@type': 'HowToStep', name: heading.replace(/^Step \d+: (.)/, (_, c) => c.toUpperCase()), text, url: `${url}#${m[1]}` };
+    });
+    if (!steps.length) throw new Error(`${p.slug}: howto, but no "Step n:" sections`);
+    blocks.push({ '@context': 'https://schema.org', '@type': 'HowTo', name: p.title, description: p.description, url, totalTime: p.howto.totalTime, step: steps });
+  }
+  return blocks;
 };
 
 // A page's own share card, when one has been rendered: site/static/<page>/og.png (see --og).
 const card = (dir) => existsSync(join(here, 'static', dir, 'og.png')) ? `${SITE}/${dir}/og.png` : `${SITE}/og.png`;
 const guideOg = (slug) => card(`guides/${slug}`);
-const out = join(here, 'dist');
+const out = process.argv.includes('--out') ? process.argv[process.argv.indexOf('--out') + 1] : join(here, 'dist');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 // Every guide ends with links to the others, above its Try box: the pages link each other, not only the index.
@@ -141,7 +177,7 @@ for (const g of guides) {
     title: g.title, description: g.description, url, date: g.date, modified: g.updated ?? g.date, body: withMore(g),
     ogImage: guideOg(g.slug), ogAlt: g.title,
     byline: `Koren Gast · Updated <time datetime="${g.updated ?? g.date}">${longDate(g.updated ?? g.date)}</time>`,
-    jsonld: { '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: guideOg(g.slug), publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
+    jsonld: [{ '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: guideOg(g.slug), publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } }, ...structured(g, url)],
   }));
 }
 // Every page ends with links to the other pages, the docs, the tools and the guides.
@@ -153,10 +189,10 @@ for (const p of pages) {
   const modified = p.updated ?? p.date;
   mkdirSync(join(out, p.slug), { recursive: true });
   writeFileSync(join(out, p.slug, 'index.html'), guidePage({
-    title: p.title, description: p.description, url, date: p.date, modified, body: aboveTry(p.body, morePages(p.slug)),
+    title: p.title, heading: p.heading, description: p.description, url, date: p.date, modified, body: aboveTry(p.body, morePages(p.slug)),
     ogType: 'website', ogImage: card(p.slug), ogAlt: p.title,
     byline: `Angelia · Updated <time datetime="${modified}">${longDate(modified)}</time>`,
-    jsonld: { '@context': 'https://schema.org', '@type': 'WebPage', name: p.title, description: p.description, dateModified: modified, url, image: card(p.slug), isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } },
+    jsonld: [{ '@context': 'https://schema.org', '@type': 'WebPage', name: p.title, description: p.description, dateModified: modified, url, image: card(p.slug), isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } }, ...structured(p, url)],
   }));
 }
 if (guides.length) writeFileSync(join(out, 'guides', 'index.html'), guidePage({
@@ -221,6 +257,9 @@ for (const d of DOCS) {
   mkdirSync(join(out, d.path), { recursive: true });
   writeFileSync(join(out, d.path, 'index.html'), guidePage({
     title: d.title, heading: d.heading, description: d.description, url: SITE + d.path, byline: docByline(d), ogType: 'website',
+    // An ADR is for reading from the decisions page, not a search result of its own: it stays out of the
+    // index and out of the sitemap, and search engines still follow its links.
+    robots: d.adr ? 'noindex,follow' : undefined,
     ogImage: d.ogImage, ogAlt: d.title, body: `<div class="doc">\n${body}\n${moreDocs(d.path)}\n</div>`,
     jsonld: { '@context': 'https://schema.org', '@type': 'TechArticle', headline: d.title, description: d.description, url: SITE + d.path, isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } },
   }));
@@ -299,9 +338,10 @@ writeFileSync(join(out, '404.md'), `# Not found\n\nNothing is at this address on
   `- [Home page](${SITE}/) ([Markdown](${SITE}/index.md))\n- [llms.txt](${SITE}/llms.txt): the documentation, listed for agents\n` +
   `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [Docs](${SITE}/docs/)\n` + (tools.length ? `- [Tools](${SITE}/tools/)\n` : '') +
   pages.map((p) => `- [${p.title}](${SITE}/${p.slug}/)\n`).join('') + `- [GitHub](https://github.com/${REPO})\n`);
-// For agents (llmstxt.org): /llms.txt lists the docs, /llms-full.txt holds them in one file, and the API
-// page and its OpenAPI document are served as they are. Links point at this release's tag, so an agent
-// reads the docs of the version the install line gives.
+// For agents (llmstxt.org): /llms.txt answers the common questions and lists the docs, /llms-full.txt holds
+// them in one file, and the API page and its OpenAPI document are served as they are. llms.txt links the
+// docs' pages on this site; the README and llms-full.txt point at this release's tag, so an agent reads
+// the docs of the version the install line gives.
 const TAG = `https://github.com/${REPO}/blob/v${version}`;
 const llmsVars = (t) => t.replaceAll('{{SITE}}', SITE).replaceAll('{{VERSION}}', version)
   .replaceAll('{{RAW}}', `https://raw.githubusercontent.com/${REPO}/v${version}`).replaceAll('{{TREE}}', `https://github.com/${REPO}/tree/v${version}`);
@@ -321,14 +361,19 @@ mkdirSync(join(out, 'docs', 'api'), { recursive: true });
 writeFileSync(join(out, 'docs', 'api.md'), readFileSync(join(here, '..', 'docs', 'api.md'), 'utf8'));
 for (const to of ['openapi.json', 'docs/api/openapi.json']) copyFileSync(join(here, '..', 'docs', 'api', 'openapi.json'), join(out, to));
 writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SITE}/sitemap.xml\n`);
+// A hub's date is the newest of what it lists; the home page's, the newest of its own file's last commit
+// and everything it links to by name.
+const guidesModified = newest(guides.map((g) => g.updated ?? g.date));
+const toolsModified = newest(tools.map((t) => t.updated ?? t.date));
+const homeModified = newest([lastCommit('site/src/index.html'), guidesModified, toolsModified, ...pages.map((p) => p.updated ?? p.date)]);
 writeFileSync(join(out, 'sitemap.xml'),
-  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc></url>` +
-  (guides.length ? `<url><loc>${SITE}/guides/</loc></url>` : '') +
+  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc><lastmod>${homeModified}</lastmod></url>` +
+  (guides.length ? `<url><loc>${SITE}/guides/</loc><lastmod>${guidesModified}</lastmod></url>` : '') +
   guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') +
   pages.map((p) => `<url><loc>${SITE}/${p.slug}/</loc><lastmod>${p.updated ?? p.date}</lastmod></url>`).join('') +
-  [['/docs/', newest(DOCS.map((d) => d.modified))], ...DOCS.filter((d) => !d.adr).map((d) => [d.path, d.modified]), ['/docs/decisions/', newest(adrs.map((d) => d.modified))], ...adrs.map((d) => [d.path, d.modified])]
+  [['/docs/', newest(DOCS.map((d) => d.modified))], ...DOCS.filter((d) => !d.adr).map((d) => [d.path, d.modified]), ['/docs/decisions/', newest(adrs.map((d) => d.modified))]]
     .map(([p, date]) => `<url><loc>${SITE}${p}</loc>${date ? `<lastmod>${date}</lastmod>` : ''}</url>`).join('') +
-  (tools.length ? `<url><loc>${SITE}/tools/</loc></url>` : '') + tools.map((t) => `<url><loc>${SITE}/tools/${t.slug}/</loc><lastmod>${t.updated ?? t.date}</lastmod></url>`).join('') + '</urlset>\n');
+  (tools.length ? `<url><loc>${SITE}/tools/</loc><lastmod>${toolsModified}</lastmod></url>` : '') + tools.map((t) => `<url><loc>${SITE}/tools/${t.slug}/</loc><lastmod>${t.updated ?? t.date}</lastmod></url>`).join('') + '</urlset>\n');
 copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
@@ -345,7 +390,7 @@ const MEDIA = {
 };
 const cache = join(here, '.media');
 mkdirSync(cache, { recursive: true });
-for (const [name, sha] of Object.entries(MEDIA)) {
+for (const [name, sha] of process.argv.includes('--no-media') ? [] : Object.entries(MEDIA)) {
   const file = join(cache, name);
   const ok = () => existsSync(file) && createHash('sha256').update(readFileSync(file)).digest('hex') === sha;
   if (!ok()) {

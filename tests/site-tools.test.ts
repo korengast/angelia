@@ -4,7 +4,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error -- the site's tools are plain JavaScript, without types
-import { buildSettings, settingsText, commandRule, domainOf, mcpName, PRESETS, DEFAULTS, SCHEMA } from '../site/tools/claude-code-permissions/rules.js';
+import { buildSettings, settingsText, commandRule, domainOf, mcpName, PRESETS, DEFAULTS, SCHEMA, MODES } from '../site/tools/claude-code-permissions/rules.js';
 // @ts-expect-error -- the site's tools are plain JavaScript, without types
 import { checkBot, cleanToken, chatsFrom, routeLine, CheckError, TOKEN } from '../site/tools/telegram-bot-check/bot.js';
 // @ts-expect-error -- the site's Worker is plain JavaScript, without types
@@ -158,6 +158,26 @@ test('site tools: the builder page has one tick box per preset, ticked as the de
   assert.match(html, new RegExp(`<p id="count"[^>]*>${p.allow.length} allow, ${p.ask.length} ask and ${p.deny.length} deny rules\\.</p>`));
 });
 
+test('site tools: the permissions page explains allow, ask, deny and defaultMode in its HTML, with an example that is a valid file', () => {
+  const html = page('claude-code-permissions');
+  for (const id of ['allow-ask-deny', 'allow', 'ask', 'deny', 'default-mode', 'example']) assert.match(html, new RegExp(`<h[23] id="${id}">`), id);
+  // Every mode the page names is one the builder offers, or bypassPermissions, which it says to set elsewhere.
+  const section = /<h3 id="default-mode">([\s\S]*?)<h2/.exec(html)![1];
+  const named = [...section.matchAll(/<li><code>(\w+)<\/code>/g)].map((m) => m[1]);
+  assert.deepEqual(named, MODES);
+  assert.match(section, /<code>bypassPermissions<\/code>[^<]*not take effect from a project's settings/);
+  // The full example: JSON, rules in the documented shape, a mode the builder knows.
+  const example = /<h2 id="example">[\s\S]*?<pre><code>([\s\S]*?)<\/code><\/pre>/.exec(html)![1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const { $schema, permissions } = JSON.parse(example);
+  assert.equal($schema, SCHEMA);
+  assert.ok(MODES.includes(permissions.defaultMode));
+  for (const list of ['allow', 'ask', 'deny']) {
+    assert.ok(permissions[list].length > 0, list);
+    for (const r of permissions[list]) assert.match(r, RULE, `${list}: ${r}`);
+  }
+  assert.equal(permissions.disableBypassPermissionsMode, 'disable');
+});
+
 // --- The Telegram bot check ----------------------------------------------------------------------
 
 /** A token of the right shape that is nobody's. */
@@ -289,7 +309,8 @@ test('site tools: each tool page has a short title and description, and loads sc
   for (const f of readdirSync(join(site, 'tools')).filter((x) => x.endsWith('.html'))) {
     const src = readFileSync(join(site, 'tools', f), 'utf8');
     const head = JSON.parse(/^<!--(\{[\s\S]*?\})-->\n/.exec(src)![1]);
-    assert.ok(head.title.length + 10 <= 60, `${f}: the title fits with the brand`);
+    // The build adds the brand only while it fits, and refuses a title that does not fit alone.
+    assert.ok(head.title.length <= 60, `${f}: the title fits in search results`);
     assert.ok(head.description.length <= 155, `${f}: description is ${head.description.length} characters`);
     for (const m of src.matchAll(/<script type="module" src="\/tools\/([^"]+)"/g)) assert.ok(existsSync(join(site, 'tools', m[1])), `${f}: ${m[1]} exists`);
   }
