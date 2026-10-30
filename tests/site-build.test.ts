@@ -115,3 +115,24 @@ test('site build: every JSON-LD block parses, and FAQ and HowTo text is the text
     assert.ok(html('guides/claude-code-from-phone').includes(`<h2 id="${s.url.split('#')[1]}">`), `step "${s.name}" links to its heading`);
   }
 });
+
+test('site build: llms.txt answers the common questions with links on the site, and links the docs pages, not raw files', () => {
+  const txt = readFileSync(join(out, 'llms.txt'), 'utf8');
+  const docsAt = txt.indexOf('\n## ');
+  for (const q of ['How do I run Claude Code from WhatsApp?', 'How does Angelia compare to OpenClaw?', 'Is it safe?']) {
+    const at = txt.indexOf(`**${q}**`);
+    // Free text before the first section, as llmstxt.org puts it, with at least one link on the site.
+    assert.ok(at > 0 && at < docsAt, `${q} is answered before the lists`);
+    const answer = txt.slice(at, txt.indexOf('\n', at));
+    assert.match(answer, /\]\(https:\/\/useangelia\.com\/[^)]*\)/, `${q} links the site`);
+    assert.ok(answer.split(/(?<=[.?!)])\s+(?=[A-Z[])/).length <= 4, `${q}: a short answer`);
+  }
+  for (const doc of ['reference', 'security', 'runbook']) {
+    assert.ok(txt.includes(`(https://useangelia.com/docs/${doc}/)`), `${doc} on the site`);
+    assert.ok(!txt.includes(`/docs/${doc}.md)`), `${doc}: no raw file`);
+  }
+  for (const m of txt.matchAll(/\]\(https:\/\/useangelia\.com(\/[^)#]*)\)/g)) {
+    const p = m[1].endsWith('/') ? join(out, m[1], 'index.html') : join(out, m[1]);
+    assert.doesNotThrow(() => readFileSync(p), `${m[1]} exists`);
+  }
+});

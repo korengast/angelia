@@ -4,11 +4,17 @@
 
 Install with `curl -fsSL {{SITE}}/install | sh` (it checks the release signature and starts `angelia init`), or with npm: `npm install -g --ignore-scripts angelia-gateway`, then `angelia init`. One file, `~/.angelia/workspace/routing.yaml`, maps chats to profiles. Scripts and programs on the same machine talk to a running daemon through a local HTTP API on a Unix socket, `~/.angelia/api.sock` (or `$ANGELIA_STATE_DIR/api.sock`), with the owner's token from `~/.angelia/api.token`. It never opens a network port. An agent that runs inside Angelia uses the `angelia` command; `angelia guide` is its manual, and `angelia guide api` covers the API.
 
+**How do I run Claude Code from WhatsApp?** On your Mac, run `curl -fsSL {{SITE}}/install | sh`; the wizard links a second WhatsApp number by QR code, like WhatsApp Web, and pairs your chat. Each chat you route then gets its own Claude Code session in its own folder, and you write to that number like to a person. Steps: [How to control Claude Code from your phone]({{SITE}}/guides/claude-code-from-phone/) and [Claude Code on WhatsApp]({{SITE}}/whatsapp/).
+
+**How does Angelia compare to OpenClaw?** OpenClaw brings its own agent and Gateway, on any model provider, with many more chat apps, Linux, Windows and phone apps. Angelia runs the CLI you already use (Claude Code, Codex, Grok Build or pi) on macOS, on WhatsApp and Telegram, with one session and one folder per chat. [The comparison]({{SITE}}/alternatives/) also covers Hermes Agent and Claude Code Remote Control.
+
+**Is it safe?** Only paired chats reach the agent, and a command the profile may not run on its own waits for an owner's yes in the chat. Every profile is denied your credentials, Angelia's secrets and the other profiles' folders, but a deny binds the file tools, not every program: where other people can write, keep the shell asking or turn on the sandbox. Releases are signed, and there is no Angelia server ([Security model]({{SITE}}/docs/security/)).
+
 ## Docs
 
 - [README]({{RAW}}/README.md): what Angelia is, install, quick start, chat commands, security in one minute, backends, FAQ
-- [Reference]({{RAW}}/docs/reference.md): features in detail, capabilities per profile, setting things up by hand, the instance folder, every file Angelia keeps
-- [Security model]({{RAW}}/docs/security.md): who can reach and command the agent, tokens, secrets, the sandbox, what leaves the machine
+- [Reference]({{SITE}}/docs/reference/): features in detail, capabilities per profile, setting things up by hand, the instance folder, every file Angelia keeps
+- [Security model]({{SITE}}/docs/security/): who can reach and command the agent, tokens, secrets, the sandbox, what leaves the machine
 - [Docs on the site]({{SITE}}/docs/): the reference, security model, runbook and decisions as web pages, built from the repository's main branch; each page's Markdown is at its URL plus `index.md`
 
 ## Pages
@@ -35,6 +41,6 @@ Install with `curl -fsSL {{SITE}}/install | sh` (it checks the release signature
 - [Claude Code notifications and approvals on your phone]({{SITE}}/guides/claude-code-phone-notifications/)
 - [Claude Code permissions: settings.json allow, ask, deny]({{SITE}}/tools/claude-code-permissions/): tick boxes into a `.claude/settings.json` permissions block (allow, ask, deny, defaultMode)
 - [Telegram bot token and chat id checker]({{SITE}}/tools/telegram-bot-check/): getMe and getUpdates from the browser, to find the chat id a route needs
-- [Runbook]({{RAW}}/docs/runbook.md): day-to-day commands, known failures and fixes, uninstalling
+- [Runbook]({{SITE}}/docs/runbook/): day-to-day commands, known failures and fixes, uninstalling
 - [Decisions]({{SITE}}/docs/decisions/): why it is built this way
 - [Everything above in one file]({{SITE}}/llms-full.txt)

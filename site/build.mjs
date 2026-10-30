@@ -338,9 +338,10 @@ writeFileSync(join(out, '404.md'), `# Not found\n\nNothing is at this address on
   `- [Home page](${SITE}/) ([Markdown](${SITE}/index.md))\n- [llms.txt](${SITE}/llms.txt): the documentation, listed for agents\n` +
   `- [Sitemap](${SITE}/sitemap.xml)\n` + (guides.length ? `- [Guides](${SITE}/guides/)\n` : '') + `- [Docs](${SITE}/docs/)\n` + (tools.length ? `- [Tools](${SITE}/tools/)\n` : '') +
   pages.map((p) => `- [${p.title}](${SITE}/${p.slug}/)\n`).join('') + `- [GitHub](https://github.com/${REPO})\n`);
-// For agents (llmstxt.org): /llms.txt lists the docs, /llms-full.txt holds them in one file, and the API
-// page and its OpenAPI document are served as they are. Links point at this release's tag, so an agent
-// reads the docs of the version the install line gives.
+// For agents (llmstxt.org): /llms.txt answers the common questions and lists the docs, /llms-full.txt holds
+// them in one file, and the API page and its OpenAPI document are served as they are. llms.txt links the
+// docs' pages on this site; the README and llms-full.txt point at this release's tag, so an agent reads
+// the docs of the version the install line gives.
 const TAG = `https://github.com/${REPO}/blob/v${version}`;
 const llmsVars = (t) => t.replaceAll('{{SITE}}', SITE).replaceAll('{{VERSION}}', version)
   .replaceAll('{{RAW}}', `https://raw.githubusercontent.com/${REPO}/v${version}`).replaceAll('{{TREE}}', `https://github.com/${REPO}/tree/v${version}`);
