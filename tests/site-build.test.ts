@@ -35,6 +35,7 @@ test('site build: the pages carry the titles and headings people search for', ()
     telegram: ['Claude Code Telegram bot · Angelia', 'Claude Code Telegram bot'],
     'claude-code': ['Claude Code on WhatsApp and Telegram: sessions, approvals', 'Claude Code on WhatsApp and Telegram: sessions and approvals from your phone'],
     alternatives: ['Angelia vs OpenClaw, Hermes Agent and Remote Control', 'Angelia vs OpenClaw, Hermes Agent and Claude Code Remote Control'],
+    'tools/claude-code-permissions': ['Claude Code permissions: settings.json allow, ask, deny', 'Claude Code permissions: settings.json allow, ask, deny'],
   };
   for (const [path, [title, h1]] of Object.entries(want)) {
     const h = head(path);
