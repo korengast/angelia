@@ -4,6 +4,13 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// The developer's own ~/.gitconfig (diff.mnemonicPrefix, diff.external) must not shape these runs:
+// git reads this empty file instead. A test that needs a setting writes it here.
+const GIT_GLOBAL = join(mkdtempSync(join(tmpdir(), 'angelia-gitconfig-')), 'gitconfig');
+writeFileSync(GIT_GLOBAL, '');
+process.env.GIT_CONFIG_GLOBAL = GIT_GLOBAL;
+process.env.GIT_CONFIG_NOSYSTEM = '1';
 import { commitWorkspace, secretFindings } from '../src/instance/workspace-commit.js';
 import { checkArgs } from '../src/cli/cli-args.js';
 
@@ -129,4 +136,29 @@ test('the gates check the profiles a commit touches; the table or a shared file 
   assert.deepEqual(touched(cfg, '/w/routing.yaml', ws, ['profiles/gone/z']), []);
   assert.deepEqual(touched(cfg, '/w/routing.yaml', ws, ['routing.yaml']), ['a', 'ab', 'out']);
   assert.deepEqual(touched(cfg, '/w/routing.yaml', ws, ['_capabilities/tools/t.py']), ['a', 'ab', 'out']);
+});
+
+test('an added line that starts with "++ " is content, not a file header: the secret on it is still caught', () => {
+  const dir = ws();
+  writeFileSync(join(dir, 'profiles', 'a', 'notes.md'), `++ ${fakeToken()}\n`);
+  assert.throws(() => commitWorkspace({ workspace: dir, message: 'sneaky' }), /secret scan: profiles\/a\/notes\.md: a GitHub token/);
+  assert.equal(git(dir, 'diff', '--cached', '--name-only'), '');
+  // The same, read straight from a diff: a "+++ " line after the first @@ of a file is an added line.
+  const diff = ['diff --git a/x.md b/x.md', '--- a/x.md', '+++ b/x.md', '@@ -0,0 +1 @@', `+++ ${fakeToken()}`, 'diff --git a/y.md b/y.md', '--- /dev/null', '+++ b/y.md', '@@ -0,0 +1 @@', '+plain'].join('\n');
+  assert.deepEqual(secretFindings(diff), ['x.md: a GitHub token']);
+  // A header with a space in the path ends with a tab; the path keeps no tab.
+  assert.deepEqual(secretFindings(['diff --git a/my notes.md b/my notes.md', '--- a/my notes.md\t', '+++ b/my notes.md\t', '@@ -0,0 +1 @@', `+${fakeToken()}`].join('\n')), ['my notes.md: a GitHub token']);
+});
+
+test('the owner\'s git config cannot blind the scan: mnemonic prefixes, an external diff tool, a -diff attribute', () => {
+  const dir = ws();
+  writeFileSync(GIT_GLOBAL, '[diff]\n\tmnemonicPrefix = true\n\texternal = /usr/bin/true\n');
+  try {
+    writeFileSync(join(dir, '.gitattributes'), '*.md -diff\n');
+    writeFileSync(join(dir, 'profiles', 'a', 'notes.md'), `token: ${fakeToken()}\n`);
+    const head = git(dir, 'rev-parse', 'HEAD');
+    assert.throws(() => commitWorkspace({ workspace: dir, message: 'oops' }), /secret scan: profiles\/a\/notes\.md: a GitHub token/);
+    assert.equal(git(dir, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(dir, 'diff', '--cached', '--name-only'), '');
+  } finally { writeFileSync(GIT_GLOBAL, ''); }
 });
