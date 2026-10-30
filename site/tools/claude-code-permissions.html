@@ -210,7 +210,7 @@
 <h2 id="how-the-rules-work">How the rules work</h2>
 <ul>
   <li><strong>Commands</strong> match the command text Claude Code is about to run. Claude Code splits <code>&amp;&amp;</code>, <code>;</code> and pipes, and every part must match on its own. A trailing <code> *</code> also matches the bare command: <code>Bash(npm test *)</code> covers <code>npm test</code>.</li>
-  <li><strong>Paths</strong> follow <code>.gitignore</code> patterns. A bare file name like <code>.env</code> matches at any depth. <code>~/.ssh/**</code> is in your home folder. <code>/src/**</code> is <code>src</code> in the project, not on the disk root; write <code>//</code> for that.</li>
+  <li><strong>Paths</strong> follow <code>.gitignore</code> patterns. A bare file name like <code>.env</code> matches at any depth under the project folder. <code>~/.ssh/**</code> is in your home folder. <code>/src/**</code> is <code>src</code> in the project, not on the disk root; write <code>//</code> for that.</li>
 </ul>
 
 <h2 id="limits">What these rules do not stop</h2>
