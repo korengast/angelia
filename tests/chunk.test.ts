@@ -147,3 +147,24 @@ test('chunk: random text with fences, long lines and emoji always ends within th
     for (const c of out) assert.ok(!/[\uD800-\uDBFF]$/.test(c) && !/^[\uDC00-\uDFFF]/.test(c), `run ${run}: split emoji`);
   }
 });
+
+test('#36: inline code at the start of a line opens no fence, so a long reply gets no fence lines added', () => {
+  const text = '```x``` is the flag\n\n' + Array.from({ length: 30 }, (_, i) => `paragraph ${i} about the flag and what it does`).join('\n\n');
+  const out = chunk(text, 200);
+  assert.ok(out.length > 3);
+  const fenceLines = out.flatMap((c) => c.split('\n')).filter((l) => /^`{3,}/.test(l));
+  assert.deepEqual(fenceLines, ['```x``` is the flag'], 'only the original line starts with backticks');
+});
+
+test('#36: a ``` pair inside a ```` block is content: every piece keeps the four-backtick opener and closer', () => {
+  const body = Array.from({ length: 12 }, (_, i) => (i % 4 === 1 ? '```' : i % 4 === 2 ? '```js' : `line ${i} of the quoted markdown file`)).join('\n');
+  const out = chunk('````\n' + body + '\n````', 90);
+  assert.ok(out.length >= 3);
+  for (const c of out) {
+    const lines = c.split('\n');
+    assert.equal(lines[0], '````', `opener in: ${c}`);
+    assert.equal(lines.at(-1), '````', `closer in: ${c}`);
+  }
+  // A closer shorter than its opener, or one with a tag, closes nothing; the right one does.
+  assert.deepEqual(chunk('````\na\n```\nb\n````\nafter', 1000), ['````\na\n```\nb\n````\nafter']);
+});

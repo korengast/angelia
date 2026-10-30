@@ -53,12 +53,20 @@ function prefix(fence: Fence | null): string {
   return fence ? fence.opener + '\n' : '';
 }
 
-/** Returns the fence still open at the end of `piece` (given the state at its start). */
+/**
+ * Returns the fence still open at the end of `piece` (given the state at its start). CommonMark's
+ * rules (#36): a backtick opener's info string holds no backtick, so a line of inline code such as
+ * "```x``` is the flag" opens nothing; a closer is at least as long as its opener and carries no info
+ * string, so a ``` line inside a ```` block, or a tagged one, is content.
+ */
 function fenceState(piece: string, open: Fence | null): Fence | null {
   let state = open;
   for (const line of piece.split('\n')) {
-    const m = /^\s*(`{3,10})(?!`)([\w+#.-]{0,20})/.exec(line);
-    if (m) state = state ? null : { opener: m[1] + m[2], closer: m[1] };
+    const m = /^\s*(`{3,10})(?!`)(.*)$/.exec(line);
+    if (!m) continue;
+    const info = m[2].trim();
+    if (state) { if (m[1].length >= state.closer.length && !info) state = null; }
+    else if (!info.includes('`')) state = { opener: m[1] + (/^[\w+#.-]{0,20}/.exec(info)?.[0] ?? ''), closer: m[1] };
   }
   return state;
 }
