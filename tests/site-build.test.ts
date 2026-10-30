@@ -45,3 +45,31 @@ test('site build: the pages carry the titles and headings people search for', ()
     assert.equal(h.og, title.replace(/ · Angelia$/, ''), `${path}: og:title`);
   }
 });
+
+test('site build: the sitemap lists the decisions page but no ADR, and each hub has a date', () => {
+  const xml = readFileSync(join(out, 'sitemap.xml'), 'utf8');
+  const urls = [...xml.matchAll(/<url><loc>([^<]+)<\/loc>(?:<lastmod>([^<]+)<\/lastmod>)?<\/url>/g)].map((m) => ({ loc: m[1], lastmod: m[2] }));
+  const locs = urls.map((u) => u.loc);
+  assert.ok(locs.includes('https://useangelia.com/docs/decisions/'));
+  assert.deepEqual(locs.filter((l) => /\/docs\/decisions\/\d/.test(l)), []);
+  assert.equal(new Set(locs).size, locs.length, 'each URL once');
+  for (const hub of ['/', '/guides/', '/tools/', '/docs/', '/docs/decisions/']) {
+    const u = urls.find((x) => x.loc === `https://useangelia.com${hub}`);
+    assert.ok(u, `${hub} is in the sitemap`);
+    // Without git history (a shallow clone) a docs date is unknown; the others come from the pages' headers.
+    if (!hub.startsWith('/docs/')) assert.match(u.lastmod ?? '', /^\d{4}-\d{2}-\d{2}$/, `${hub} has a lastmod`);
+  }
+  // A hub is as new as the newest page it lists.
+  const dated = (prefix: RegExp) => urls.filter((u) => prefix.test(u.loc) && u.lastmod).map((u) => u.lastmod!).sort().at(-1);
+  assert.equal(urls.find((u) => u.loc.endsWith('/guides/'))!.lastmod, dated(/\/guides\/[^/]+\/$/));
+  assert.equal(urls.find((u) => u.loc.endsWith('/tools/'))!.lastmod, dated(/\/tools\/[^/]+\/$/));
+  assert.ok(urls[0].lastmod! >= dated(/\/(guides|tools)\/[^/]+\/$|\.com\/(?!docs\/)[a-z-]+\/$/)!, 'the home page is as new as what it links to');
+});
+
+test('site build: ADR pages say noindex,follow; every other page may be indexed', () => {
+  const robots = (path: string) => one(html(path), /<meta name="robots" content="([^"]*)">/);
+  const adrs = readFileSync(join(out, 'docs', 'decisions', 'index.html'), 'utf8').match(/href="\/docs\/decisions\/\d{4}-[^"]+\/"/g) ?? [];
+  assert.ok(adrs.length >= 10, 'the decisions page lists the ADRs');
+  for (const a of adrs) assert.equal(robots(a.slice(7, -1)), 'noindex,follow', a);
+  for (const path of ['', 'docs', 'docs/decisions', 'docs/reference', 'guides', 'claude-code', 'tools/claude-code-permissions']) assert.equal(robots(path), undefined, path);
+});

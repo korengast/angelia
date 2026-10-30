@@ -112,10 +112,11 @@ const fits = (title, description) => {
   if (pageTitle(title).length > 60) throw new Error(`title over 60 characters: ${title}`);
   if (description.length > 155) throw new Error(`description over 155 characters (${description.length}): ${title}`);
 };
-const guidePage = ({ title, heading, description, url, date, modified = date, byline, body, jsonld, ogType = 'article', ogImage = `${SITE}/og.png`, ogAlt = 'Angelia. Your coding agent. Your personal assistant.' }) => {
+const guidePage = ({ title, heading, description, url, date, modified = date, byline, body, jsonld, robots, ogType = 'article', ogImage = `${SITE}/og.png`, ogAlt = 'Angelia. Your coding agent. Your personal assistant.' }) => {
   fits(title, description);
   heading ??= title;
   return page('guide.html')
+  .replace('<!--ROBOTS-->\n', robots ? `<meta name="robots" content="${robots}">\n` : '')
   .replace('{{OGTYPE}}', ogType).replace('{{OGIMAGE}}', ogImage).replace('{{OGALT}}', esc(ogAlt))
   .replace('<!--ARTICLE-->', ogType === 'article' ? `<meta property="article:published_time" content="${date}">\n<meta property="article:modified_time" content="${modified}">` : '')
   .replaceAll('{{PAGETITLE}}', esc(pageTitle(title))).replaceAll('{{MODIFIED}}', modified)
@@ -224,6 +225,9 @@ for (const d of DOCS) {
   mkdirSync(join(out, d.path), { recursive: true });
   writeFileSync(join(out, d.path, 'index.html'), guidePage({
     title: d.title, heading: d.heading, description: d.description, url: SITE + d.path, byline: docByline(d), ogType: 'website',
+    // An ADR is for reading from the decisions page, not a search result of its own: it stays out of the
+    // index and out of the sitemap, and search engines still follow its links.
+    robots: d.adr ? 'noindex,follow' : undefined,
     ogImage: d.ogImage, ogAlt: d.title, body: `<div class="doc">\n${body}\n${moreDocs(d.path)}\n</div>`,
     jsonld: { '@context': 'https://schema.org', '@type': 'TechArticle', headline: d.title, description: d.description, url: SITE + d.path, isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } },
   }));
@@ -324,14 +328,19 @@ mkdirSync(join(out, 'docs', 'api'), { recursive: true });
 writeFileSync(join(out, 'docs', 'api.md'), readFileSync(join(here, '..', 'docs', 'api.md'), 'utf8'));
 for (const to of ['openapi.json', 'docs/api/openapi.json']) copyFileSync(join(here, '..', 'docs', 'api', 'openapi.json'), join(out, to));
 writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${SITE}/sitemap.xml\n`);
+// A hub's date is the newest of what it lists; the home page's, the newest of its own file's last commit
+// and everything it links to by name.
+const guidesModified = newest(guides.map((g) => g.updated ?? g.date));
+const toolsModified = newest(tools.map((t) => t.updated ?? t.date));
+const homeModified = newest([lastCommit('site/src/index.html'), guidesModified, toolsModified, ...pages.map((p) => p.updated ?? p.date)]);
 writeFileSync(join(out, 'sitemap.xml'),
-  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc></url>` +
-  (guides.length ? `<url><loc>${SITE}/guides/</loc></url>` : '') +
+  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE}/</loc><lastmod>${homeModified}</lastmod></url>` +
+  (guides.length ? `<url><loc>${SITE}/guides/</loc><lastmod>${guidesModified}</lastmod></url>` : '') +
   guides.map((g) => `<url><loc>${SITE}/guides/${g.slug}/</loc><lastmod>${g.updated ?? g.date}</lastmod></url>`).join('') +
   pages.map((p) => `<url><loc>${SITE}/${p.slug}/</loc><lastmod>${p.updated ?? p.date}</lastmod></url>`).join('') +
-  [['/docs/', newest(DOCS.map((d) => d.modified))], ...DOCS.filter((d) => !d.adr).map((d) => [d.path, d.modified]), ['/docs/decisions/', newest(adrs.map((d) => d.modified))], ...adrs.map((d) => [d.path, d.modified])]
+  [['/docs/', newest(DOCS.map((d) => d.modified))], ...DOCS.filter((d) => !d.adr).map((d) => [d.path, d.modified]), ['/docs/decisions/', newest(adrs.map((d) => d.modified))]]
     .map(([p, date]) => `<url><loc>${SITE}${p}</loc>${date ? `<lastmod>${date}</lastmod>` : ''}</url>`).join('') +
-  (tools.length ? `<url><loc>${SITE}/tools/</loc></url>` : '') + tools.map((t) => `<url><loc>${SITE}/tools/${t.slug}/</loc><lastmod>${t.updated ?? t.date}</lastmod></url>`).join('') + '</urlset>\n');
+  (tools.length ? `<url><loc>${SITE}/tools/</loc><lastmod>${toolsModified}</lastmod></url>` : '') + tools.map((t) => `<url><loc>${SITE}/tools/${t.slug}/</loc><lastmod>${t.updated ?? t.date}</lastmod></url>`).join('') + '</urlset>\n');
 copyFileSync(join(here, 'mark.svg'), join(out, 'mark.svg'));
 copyFileSync(join(here, 'favicon.svg'), join(out, 'favicon.svg'));
 cpSync(join(here, 'fonts'), join(out, 'fonts'), { recursive: true });
