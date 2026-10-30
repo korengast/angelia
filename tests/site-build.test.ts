@@ -73,3 +73,44 @@ test('site build: ADR pages say noindex,follow; every other page may be indexed'
   for (const a of adrs) assert.equal(robots(a.slice(7, -1)), 'noindex,follow', a);
   for (const path of ['', 'docs', 'docs/decisions', 'docs/reference', 'guides', 'claude-code', 'tools/claude-code-permissions']) assert.equal(robots(path), undefined, path);
 });
+
+/** Every JSON-LD block on a page, parsed: a block that is not JSON fails here. */
+const jsonld = (path: string) => [...html(path).matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)].map((m) => JSON.parse(m[1]));
+/** The page's article as a reader sees it: tags gone, entities read, spaces collapsed. */
+const visible = (path: string) => unescape((/<article>([\s\S]*?)<\/article>/.exec(html(path)) ?? /<main[^>]*>([\s\S]*?)<\/main>/.exec(html(path))!)[1]
+  .replace(/<(script|style)[\s\S]*?<\/\1>/g, '').replace(/<\/?(p|li|ul|ol|pre|br|div|h\d|table|tr|td|th)\b[^>]*>/g, ' ').replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ');
+
+test('site build: every JSON-LD block parses, and FAQ and HowTo text is the text on the page', () => {
+  const types = (path: string) => jsonld(path).map((j) => j['@type']);
+  assert.deepEqual(types(''), ['SoftwareApplication']);
+  assert.deepEqual(jsonld('')[0].sameAs, ['https://github.com/korengast/angelia', 'https://www.npmjs.com/package/angelia-gateway']);
+  assert.deepEqual(types('guides/claude-code-whatsapp-telegram'), ['Article', 'FAQPage']);
+  assert.deepEqual(types('alternatives'), ['WebPage', 'FAQPage']);
+  assert.deepEqual(types('guides/claude-code-from-phone'), ['Article', 'HowTo']);
+  for (const dir of ['guides', 'docs', 'docs/decisions', 'claude-code', 'whatsapp', 'tools', 'tools/claude-code-permissions']) assert.equal(jsonld(dir).length, 1, dir);
+
+  for (const path of ['guides/claude-code-whatsapp-telegram', 'alternatives']) {
+    const [faq] = jsonld(path).filter((j) => j['@type'] === 'FAQPage');
+    const text = visible(path);
+    assert.ok(faq.mainEntity.length >= 1);
+    for (const q of faq.mainEntity) {
+      assert.equal(q['@type'], 'Question');
+      assert.match(q.name, /\?$/, 'a question');
+      assert.ok(text.includes(q.name), `${path}: "${q.name}" is a heading on the page`);
+      assert.ok(q.acceptedAnswer.text.length > 80, `${path}: an answer, not a stub`);
+      assert.ok(text.includes(q.acceptedAnswer.text), `${path}: the answer is the page's text`);
+    }
+  }
+  assert.equal(jsonld('alternatives')[1].mainEntity[0].name, 'Which one would you recommend?');
+  assert.match(jsonld('alternatives')[1].mainEntity[0].acceptedAnswer.text, /: Angelia\./);
+
+  const howto = jsonld('guides/claude-code-from-phone')[1];
+  const text = visible('guides/claude-code-from-phone');
+  assert.equal(howto.totalTime, 'PT10M');
+  assert.deepEqual(howto.step.map((s: { name: string }) => s.name), ['Install and pair a chat', 'Keep it running', 'Point it at your code', 'Approve commands from the phone']);
+  for (const s of howto.step) {
+    assert.equal(s['@type'], 'HowToStep');
+    assert.ok(text.includes(s.text), `step "${s.name}" is the page's text`);
+    assert.ok(html('guides/claude-code-from-phone').includes(`<h2 id="${s.url.split('#')[1]}">`), `step "${s.name}" links to its heading`);
+  }
+});

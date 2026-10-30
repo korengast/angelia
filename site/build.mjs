@@ -105,6 +105,7 @@ const longDate = (d) => { const [y, m, day] = d.split('-').map(Number); return `
 // Every h2 gets an id (from its text when it has none), so a section can be linked to.
 const slugify = (t) => t.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const withIds = (body) => body.replace(/<h2>([\s\S]*?)<\/h2>/g, (_, inner) => `<h2 id="${slugify(inner)}">${inner}</h2>`);
+const expand = (body) => withIds(body).replaceAll('{{SITE}}', SITE).replaceAll('{{REPO}}', REPO).replaceAll('{{VERSION}}', version);
 // Search results cut a title past 60 characters and a description past 155: the build refuses longer ones.
 // A description made from a file (an ADR's heading) is cut to fit instead, at a word, with an ellipsis.
 const clip = (text, max = 155) => (text.length <= max ? text : `${text.slice(0, max).replace(/\s+\S*$/, '').replace(/[\s,;:—-]+$/, '')}…`);
@@ -121,8 +122,39 @@ const guidePage = ({ title, heading, description, url, date, modified = date, by
   .replace('<!--ARTICLE-->', ogType === 'article' ? `<meta property="article:published_time" content="${date}">\n<meta property="article:modified_time" content="${modified}">` : '')
   .replaceAll('{{PAGETITLE}}', esc(pageTitle(title))).replaceAll('{{MODIFIED}}', modified)
   .replace('{{HEADING}}', esc(heading)).replaceAll('{{TITLE}}', esc(title)).replaceAll('{{DESCRIPTION}}', esc(description)).replaceAll('{{URL}}', url)
-  .replaceAll('{{DATE}}', date).replace('{{BYLINE}}', byline).replace('{{JSONLD}}', JSON.stringify(jsonld).replace(/</g, '\\u003c'))
-  .replace('<!--BODY-->', withIds(body).replaceAll('{{SITE}}', SITE).replaceAll('{{REPO}}', REPO).replaceAll('{{VERSION}}', version));
+  .replaceAll('{{DATE}}', date).replace('{{BYLINE}}', byline).replace('<!--JSONLD-->', [jsonld].flat().map((j) => `<script type="application/ld+json">${JSON.stringify(j).replace(/</g, '\\u003c')}</script>`).join('\n'))
+  .replace('<!--BODY-->', expand(body));
+};
+
+// Structured data made from a page's own text, so it never says what the page does not. A guide or page
+// header may name sections for an FAQPage ("faq": the h2 ids; each heading is a question, the section's
+// text its answer), and "howto": { totalTime } makes a HowTo of its "Step n: ..." sections.
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ', rarr: '→', larr: '←', middot: '·', mdash: '—', ndash: '–', hellip: '…' };
+/** HTML as the text a reader sees: a block's edge is a space, an inline tag is nothing. */
+const plain = (h) => h.replace(/<\/?(p|li|ul|ol|pre|br|div|h\d|table|tr|td|th)\b[^>]*>/g, ' ').replace(/<[^>]+>/g, '')
+  .replace(/&(#?\w+);/g, (m, e) => ENTITIES[e] ?? m).replace(/\s+/g, ' ').trim();
+/** The h2 with this id, and what follows it up to the next h2 or the Try box. */
+const section = (body, id) => {
+  const m = new RegExp(`<h2 id="${id}">([\\s\\S]*?)</h2>([\\s\\S]*?)(?=<h2|<div class="try"|<nav class="more"|$)`).exec(body);
+  if (!m) throw new Error(`no section #${id}`);
+  return { heading: plain(m[1]), text: plain(m[2]) };
+};
+const structured = (p, url) => {
+  const body = expand(p.body);
+  const blocks = [];
+  if (p.faq) blocks.push({ '@context': 'https://schema.org', '@type': 'FAQPage', url, mainEntity: p.faq.map((id) => {
+    const { heading, text } = section(body, id);
+    return { '@type': 'Question', name: heading, acceptedAnswer: { '@type': 'Answer', text } };
+  }) });
+  if (p.howto) {
+    const steps = [...body.matchAll(/<h2 id="([^"]+)">Step \d+: /g)].map((m) => {
+      const { heading, text } = section(body, m[1]);
+      return { '@type': 'HowToStep', name: heading.replace(/^Step \d+: (.)/, (_, c) => c.toUpperCase()), text, url: `${url}#${m[1]}` };
+    });
+    if (!steps.length) throw new Error(`${p.slug}: howto, but no "Step n:" sections`);
+    blocks.push({ '@context': 'https://schema.org', '@type': 'HowTo', name: p.title, description: p.description, url, totalTime: p.howto.totalTime, step: steps });
+  }
+  return blocks;
 };
 
 // A page's own share card, when one has been rendered: site/static/<page>/og.png (see --og).
@@ -145,7 +177,7 @@ for (const g of guides) {
     title: g.title, description: g.description, url, date: g.date, modified: g.updated ?? g.date, body: withMore(g),
     ogImage: guideOg(g.slug), ogAlt: g.title,
     byline: `Koren Gast · Updated <time datetime="${g.updated ?? g.date}">${longDate(g.updated ?? g.date)}</time>`,
-    jsonld: { '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: guideOg(g.slug), publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } },
+    jsonld: [{ '@context': 'https://schema.org', '@type': 'Article', headline: g.title, description: g.description, datePublished: g.date, dateModified: g.updated ?? g.date, author: AUTHOR, mainEntityOfPage: url, image: guideOg(g.slug), publisher: { '@type': 'Organization', name: 'Angelia', url: `${SITE}/` } }, ...structured(g, url)],
   }));
 }
 // Every page ends with links to the other pages, the docs, the tools and the guides.
@@ -160,7 +192,7 @@ for (const p of pages) {
     title: p.title, heading: p.heading, description: p.description, url, date: p.date, modified, body: aboveTry(p.body, morePages(p.slug)),
     ogType: 'website', ogImage: card(p.slug), ogAlt: p.title,
     byline: `Angelia · Updated <time datetime="${modified}">${longDate(modified)}</time>`,
-    jsonld: { '@context': 'https://schema.org', '@type': 'WebPage', name: p.title, description: p.description, dateModified: modified, url, image: card(p.slug), isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } },
+    jsonld: [{ '@context': 'https://schema.org', '@type': 'WebPage', name: p.title, description: p.description, dateModified: modified, url, image: card(p.slug), isPartOf: { '@type': 'WebSite', name: 'Angelia', url: `${SITE}/` } }, ...structured(p, url)],
   }));
 }
 if (guides.length) writeFileSync(join(out, 'guides', 'index.html'), guidePage({
