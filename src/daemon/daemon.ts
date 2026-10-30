@@ -26,6 +26,7 @@ import { apiDeps } from './api/deps.js';
 import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
 import { nodeAdvice, nodeFixProblem } from './node-fix.js';
 import { LABEL } from './service.js';
+import { redactLog } from './redact.js';
 import type { Inbound } from '../core/types.js';
 
 export const STATE_DIR = process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia');
@@ -41,6 +42,8 @@ let logSize = -1;
 
 export function logLine(line: string): void {
   const stamp = new Date().toISOString();
+  // Masked before either copy: a library's error line can quote the request it made, token and all.
+  line = redactLog(line);
   const file = join(STATE_DIR, 'daemon.log'), text = `${stamp} ${line}\n`;
   try {
     if (logSize < 0) logSize = existsSync(file) ? statSync(file).size : 0;

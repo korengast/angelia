@@ -1,8 +1,9 @@
 /**
  * Values shaped like a credential, never keywords: a line that says "token" is documentation, one
  * that holds `ghp_…` is a leak. Only added lines are read, so removing a secret is never blocked.
+ * The daemon's log redaction (daemon/redact.ts) masks the same shapes.
  */
-const SECRET_SHAPES: [string, RegExp][] = [
+export const SECRET_SHAPES: [string, RegExp][] = [
   ['a private key', /-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY/],
   ['an Anthropic or OpenAI key', /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}/],
   ['a GitHub token', /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/],
