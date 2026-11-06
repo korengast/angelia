@@ -134,6 +134,11 @@ test('codex: leaving the sandbox is asked in the chat, both ways, with the add_d
   // A command that asks for a folder on top names it; a request for a folder is the owner's to answer.
   const more = await collect(b, 'PERM MORE', true);
   assert.match((more[0] as any).preview, /^touch \/elsewhere\/x \(asks write access to \/elsewhere; write outside the workspace\)\./);
+  // What Codex says before it asks reaches the chat before the ask, as progress, and is not the answer.
+  const first = await collect(b, 'ESCALATE SAYFIRST', true);
+  assert.deepEqual(first.map((e) => e.kind), ['progress', 'permission', 'result']);
+  assert.equal((first[0] as any).text, 'Asking for access first.');
+  assert.match((first[2] as any).text, /^granted: /);
   const grant = await collect(b, 'ESCALATE', true);
   assert.equal((grant[0] as any).tool, 'more access, this turn');
   assert.equal((grant[0] as any).preview, 'write access to /Users/example/Downloads (copy notes.md there). Or add the folder to add_dirs instead.');

@@ -265,6 +265,9 @@ export class CodexBrain extends EventEmitter implements Brain {
           continue;
         }
         if (m.__approval) {
+          // What Codex said before it asks ("I'll request write access…") goes out first: it arrived in the
+          // chat after the permission line otherwise, as the turn's final text.
+          if (pendingText && pendingText !== lastProgress) { lastProgress = pendingText; yield { kind: 'progress', text: pendingText }; pendingText = ''; }
           const a: Msg = m.__approval;
           const p: Msg = a.params ?? {};
           const id = randomUUID();
