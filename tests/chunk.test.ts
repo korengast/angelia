@@ -220,3 +220,27 @@ test('a cut between the header row and the separator row moves the header to the
   for (const c of out.slice(1)) assert.deepEqual(c.split('\n').slice(0, 2), [HEADER, SEP], c);
   assert.deepEqual(out.flatMap((c) => c.split('\n')).filter((l) => l.startsWith('| row')), rows(4));
 });
+
+test('a row longer than the room is cut in the middle, and the pieces after it still carry the header', () => {
+  const long = `| long | ${'v'.repeat(190)} |`;
+  const text = [HEADER, SEP, long, ...rows(3)].join('\n');
+  const out = chunk(text, 100);
+  assert.ok(out.length >= 3, `${out.length} pieces`);
+  for (const c of out) assert.ok(c.length <= 100, `piece of ${c.length}`);
+  assert.deepEqual(out.at(-1)!.split('\n').slice(0, 2), [HEADER, SEP], `last piece: ${out.at(-1)!.slice(0, 60)}`);
+  // The rest of the cut row gets no rows on top: they would sit in the middle of it.
+  for (const c of out.slice(1)) if (!c.startsWith('|')) assert.ok(!c.includes(HEADER), c.slice(0, 60));
+  assert.ok(keepsText(text, out));
+  assert.deepEqual(out.flatMap((c) => c.split('\n')).filter((l) => l.startsWith('| row')), rows(3));
+});
+
+test('a header row at the top of a piece whose separator does not fit the room takes it when the limit holds it', () => {
+  // The header (70) fits the room (95), header plus separator (97) only the limit (100).
+  const header = `| ${'h'.repeat(66)} |`, sep = `|${'-'.repeat(24)}|`;
+  const text = 'x'.repeat(70) + '\n' + [header, sep, ...rows(4)].join('\n');
+  const out = chunk(text, 100);
+  assert.equal(out[0], 'x'.repeat(70));
+  assert.equal(out[1], `${header}\n${sep}`);
+  for (const c of out) { assert.ok(c.length <= 100, `piece of ${c.length}`); assert.ok(!/^\|-+\|$/.test(c.split('\n')[0]), `a lone separator on top: ${c.slice(0, 40)}`); }
+  assert.deepEqual(out.flatMap((c) => c.split('\n')).filter((l) => l.startsWith('| row')), rows(4));
+});

@@ -10,15 +10,18 @@ export function chunk(text: string, limit: number): string[] {
   let rest = t;
   let open: Fence | null = null;
   let table: Table | null = null;
+  /** `rest` starts in the middle of a line: the last cut was a hard one, or at a space. */
+  let midLine = false;
   while (rest.length) {
     // A reopened fence costs its opener on top and its closer at the end. When that would eat more
     // than half the room (a tiny limit), the piece goes out without it: a long code block then loses
     // its formatting, never its text, and the loop always moves forward.
     const reopen = open && fenceCost(open) <= limit / 2 ? open : null;
     if (!reopen) open = null;
-    // The same for a table's two rows: without them the next piece's rows read as a run of bars.
-    const again = table && tableCost(table) <= limit / 2 ? table : null;
-    if (!again) table = null;
+    // The same for a table's two rows: without them the next piece's rows read as a run of bars. Not on
+    // top of the rest of a row cut in the middle (the table is still open: the rows after it get them).
+    if (table && tableCost(table) > limit / 2) table = null;
+    const again = table && rest.startsWith('|') ? table : null;
     const head = prefix(reopen) + (again ? again.header + '\n' + again.sep + '\n' : '');
     if (head.length + rest.length <= limit) { out.push(head + rest); break; }
     // Room for the closer at the end: "\n```" plus one spare, more when the open fence is longer.
@@ -42,15 +45,21 @@ export function chunk(text: string, limit: number): string[] {
     let after = rest.slice(cut).replace(/^\s+/, '');
     // A cut between a table's header row and its separator row would leave the next piece starting
     // with a lone separator: the header row moves over with it, and the repeat below then sees the table.
+    // When the header row is the first line of this piece there is nothing to move it after: the
+    // separator comes up instead when the limit (not the room, which kept space for a closer) holds it.
     const nl = rest.lastIndexOf('\n', cut - 1);
-    if (!next && nl > 0 && /^\s*\|/.test(rest.slice(nl + 1, cut)) && SEPARATOR.test(after.slice(0, after.indexOf('\n') < 0 ? after.length : after.indexOf('\n')))) {
-      cut = nl;
+    const sepEnd = after.indexOf('\n') < 0 ? after.length : after.indexOf('\n');
+    if (!next && !(nl < 0 && midLine) && /^\s*\|/.test(rest.slice(nl + 1, cut)) && SEPARATOR.test(after.slice(0, sepEnd))) {
+      const end = rest.length - after.length + sepEnd;
+      if (nl > 0) cut = nl;
+      else if ((head + rest.slice(0, end)).trim().length <= limit) cut = end;
       piece = head + rest.slice(0, cut);
       after = rest.slice(cut).replace(/^\s+/, '');
     }
-    // Only when the cut landed inside the table: a next piece that starts with anything but a row is
-    // the text after it, or the rest of a row cut in the middle, which two rows on top would not help.
-    table = after.startsWith('|') ? tableAt(rest.slice(0, cut), open, table) : null;
+    // The table this piece ends inside of, if any: a row cut in the middle keeps it open, and the rows
+    // after the rest of that row get the two rows on top again.
+    table = tableAt(rest.slice(0, cut), open, table, midLine);
+    midLine = rest[cut - 1] !== '\n' && !rest.slice(cut, rest.length - after.length).includes('\n');
     rest = after;
     open = next;
     out.push(piece.trim());
@@ -111,9 +120,10 @@ const SEPARATOR = /^\s*\|\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
  * table without leading bars (`a | b`) is not tracked: the CLIs rarely write one, and its rows after a
  * cut still read as text.
  */
-function tableAt(piece: string, open: Fence | null, table: Table | null): Table | null {
+function tableAt(piece: string, open: Fence | null, table: Table | null, midLine = false): Table | null {
   let fence = open, state = table, header: string | null = null;
-  for (const line of piece.split('\n')) {
+  // The first line is the rest of one cut in the middle: the line it belongs to was counted already.
+  for (const line of piece.split('\n').slice(midLine ? 1 : 0)) {
     const was = fence;
     fence = fenceStep(line, fence);
     if (was || fence || !/^\s*\|/.test(line)) { state = null; header = null; continue; }
