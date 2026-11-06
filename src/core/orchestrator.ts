@@ -22,7 +22,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, isLimitText, limitHint, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
+import { failureLine, isLimitText, limitHint, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -175,6 +175,9 @@ export class Orchestrator {
   private asking = new Map<string, number>();
   /** Every question being answered, to stop at shutdown. */
   private questions = new Set<AbortController>();
+  /** Chats whose running turn had a permission request denied (from the chat, the app, the pane, or by
+   *  the timeout): a turn that then ends with nothing to say is told so, not left silent. */
+  private denied = new Set<string>();
   /** Each chat's open permission requests by full id, so an answer by prefix (the chat's `y abcde`)
    *  is evented under the id the client was given, and a client that connects later can list them. */
   private asks = new Map<string, Map<string, WaitingPermission>>();
@@ -551,6 +554,7 @@ export class Orchestrator {
    *  session sent to the background), delivered as any turn's are. */
   private async turn(i: Inbound, key: string, name: string, o: TurnOptions = {}): Promise<void> {
     this.running.set(key, i);
+    this.denied.delete(key);
     const turn = i.turnId ?? randomUUID();
     this.emit(key, { type: 'turn', turn, text: i.text, sender: i.senderName ?? i.sender, surface: i.surface ?? 'chat', queued: this.queue.queued(key) });
     let failed: string | undefined = 'exception';
@@ -703,6 +707,8 @@ export class Orchestrator {
       } else if (result.text && fresh) await this.replyFromAgent(i, [...tail, result.text].join('\n\n'), profile);
       else if (tail.length) await this.replyFromAgent(i, tail.join('\n\n'), profile);
       else if (!result.text && !progress.lastSent && bare) await this.reply(i, `${i.text.trim().split(/\s/)[0]} done.`);
+      // Nothing new for the chat at all.
+      else if (!result.text && !bare) await this.reply(i, this.denied.has(key) ? DENIED_LINE : NO_ANSWER_LINE);
     } catch (err) {
       // Kept, and sent with the next thing this chat is told: the answer exists, the platform was down.
       this.log(`deliver failed key=${key} ${(err as Error).message}`);
@@ -821,6 +827,7 @@ export class Orchestrator {
 
   private answered(key: string, id: string, allow: boolean, by: 'chat' | 'app' | 'timeout' | 'terminal'): void {
     this.asks.get(key)?.delete(id);
+    if (!allow) this.denied.add(key);
     this.emit(key, { type: 'permission-answered', id, allow, by });
   }
 
