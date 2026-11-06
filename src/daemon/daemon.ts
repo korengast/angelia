@@ -21,6 +21,7 @@ import { API_SOCKET, ApiServer, claimSocket, loadOrMintToken, sessionToken } fro
 import { selfPrompt, selfOverrideWarning, upsertSelfBlock, FILE_BACKENDS } from './self.js';
 import { blockText, floorWarnings, launchCheck, nestingWarnings, readRecord, seedGuards } from '../capabilities/compile.js';
 import { launchChatRestart, takeRestartNote } from './restart.js';
+import { CUT_LINE, takeCutTurns } from '../core/cut-turns.js';
 import { onboardChat } from '../instance/onboard.js';
 import { apiDeps } from './api/deps.js';
 import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
@@ -259,12 +260,18 @@ export async function runDaemon(configPath: string): Promise<void> {
   // Before the first sweep below, so their panes count as ours.
   await orch.restoreBackground().catch((e) => logLine(`background restore failed: ${(e as Error).message}`));
   const reapTimer = setInterval(() => void reap().catch((e) => logLine(`idle reap failed: ${(e as Error).message}`)), 60_000);
-  // A /restart asked for this: tell that chat we are back, once its platform can deliver.
+  // Said once the chat's platform can deliver: WhatsApp may still be opening here.
+  const whenUp = (key: string, say: () => void) => {
+    if (key.startsWith('whatsapp:') && waAdapter && !waAdapter.connected) waAdapter.once('open', say);
+    else say();
+  };
+  // A /restart asked for this: tell that chat we are back.
   const note = takeRestartNote(STATE_DIR);
-  if (note) {
-    const back = () => void orch.notify(note.key, `Angelia is back up (pid ${process.pid}).`).catch((e) => logLine(`restart note: ${(e as Error).message}`));
-    if (note.key.startsWith('whatsapp:') && waAdapter && !waAdapter.connected) waAdapter.once('open', back);
-    else back();
+  if (note) whenUp(note.key, () => void orch.notify(note.key, `Angelia is back up (pid ${process.pid}).`).catch((e) => logLine(`restart note: ${(e as Error).message}`)));
+  // Chats whose turn the last shutdown cut (core/cut-turns.ts): one line each, so nobody waits on an answer that is not coming.
+  for (const key of takeCutTurns(STATE_DIR)) {
+    if (key === note?.key) continue; // that chat asked for the restart and is told it is done
+    whenUp(key, () => void orch.notify(key, CUT_LINE).catch((e) => logLine(`cut turn note: ${(e as Error).message}`)));
   }
   logLine(`daemon up pid=${process.pid} profiles=${Object.keys(cfg.profiles).length} routes=${cfg.routes.length} tg=${tgState()} wa=${waState} api=${API_SOCKET}${missing.length ? ` cli_missing=${missing.length}` : ''}`);
 

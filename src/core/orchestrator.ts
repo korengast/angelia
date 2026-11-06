@@ -33,6 +33,7 @@ import { agentDenyRules, profilePermissions } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
 import { MAX_INBOUND, saveInbound } from '../adapters/inbox.js';
 import type { ChatEventBody, ChatListener } from './events.js';
+import { writeCutTurns } from './cut-turns.js';
 
 export interface Sender {
   send(chat: string, text: string, thread?: string): Promise<void>;
@@ -1357,6 +1358,10 @@ export class Orchestrator {
   }
 
   async shutdown(): Promise<void> {
+    // Each chat with a turn running or waiting hears one line from the next daemon (cut-turns.ts): the
+    // adapters are already stopped when this runs, so it cannot be said now.
+    const cut = new Set([...this.running.keys(), ...this.queue.waitingKeys()]);
+    try { writeCutTurns(this.opts.stateDir ?? join(homedir(), '.angelia'), [...cut]); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
     for (const a of this.questions) a.abort();
     await Promise.all([...this.brains.keys()].map((k) => this.dropBrain(k, false)));
   }

@@ -8,6 +8,7 @@ import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
 import { parseCommand } from '../src/core/commands.js';
 import { takeRestartNote, watchChatRestart, RESTART_NOTE, RESTART_ERROR } from '../src/daemon/restart.js';
+import { CUT_LINE, CUT_TURNS, takeCutTurns, writeCutTurns } from '../src/core/cut-turns.js';
 import { EventEmitter } from 'node:events';
 import type { Inbound } from '../src/core/types.js';
 
@@ -21,8 +22,9 @@ function rig(restart?: { check(): string | undefined; launch(key: string): void 
   });
   const sent: string[] = [];
   const sender = { send: async (_c: string, text: string) => { sent.push(text); } };
-  const o = new Orchestrator(cfg, { telegram: sender, whatsapp: sender }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-rst-')), bins: { 'claude-code': join(here, 'fake-claude.mjs') }, restart });
-  return { o, sent };
+  const stateDir = mkdtempSync(join(tmpdir(), 'angelia-rst-'));
+  const o = new Orchestrator(cfg, { telegram: sender, whatsapp: sender }, { stateDir, bins: { 'claude-code': join(here, 'fake-claude.mjs') }, restart });
+  return { o, sent, stateDir };
 }
 const msg = (sender: string): Inbound => ({ platform: 'whatsapp', chat: 'g@g.us', sender, senderName: sender, text: '/restart', isGroup: true, mentioned: true, media: [], allow_from: ['*'] });
 
@@ -172,4 +174,38 @@ test('/restart: nothing new to accept restarts at once; confirm alone accepts no
   assert.equal(accepted, 0);
   assert.match(sent.at(-1)!, /^Routing table ok\. Restarting now/);
   assert.equal(launched.length, 1);
+});
+
+test('a shutdown mid-turn writes the chat\'s key for the next daemon, which says the restart line there once', async (t) => {
+  const { o, sent, stateDir } = rig();
+  t.after(() => o.shutdown());
+  const turn = o.handle({ ...msg('boss'), text: 'SLOW question' });
+  await new Promise((r) => setTimeout(r, 300));
+  const waiting = o.handle({ ...msg('boss'), text: 'and this one waits' });
+  await new Promise((r) => setTimeout(r, 50));
+  await o.shutdown();
+  await Promise.all([turn, waiting]);
+  assert.ok(existsSync(join(stateDir, CUT_TURNS)));
+  assert.ok(!sent.includes(CUT_LINE), 'nothing is said at shutdown: the adapters are already down then');
+  // The next daemon takes the file (once), and says the line in that chat.
+  assert.deepEqual(takeCutTurns(stateDir), ['whatsapp:g@g.us']);
+  assert.ok(!existsSync(join(stateDir, CUT_TURNS)));
+  assert.deepEqual(takeCutTurns(stateDir), []);
+  await o.notify('whatsapp:g@g.us', CUT_LINE);
+  assert.equal(sent.at(-1), CUT_LINE);
+});
+
+test('cut turns: no file when nothing ran; a stale or broken file is ignored and removed', async (t) => {
+  const { o, stateDir } = rig();
+  await o.handle({ ...msg('boss'), text: 'hello' });
+  await o.shutdown();
+  assert.ok(!existsSync(join(stateDir, CUT_TURNS)), 'the turn had ended');
+  writeCutTurns(stateDir, []);
+  assert.ok(!existsSync(join(stateDir, CUT_TURNS)));
+  writeFileSync(join(stateDir, CUT_TURNS), JSON.stringify({ keys: ['telegram:1'], at: new Date(Date.now() - 11 * 60_000).toISOString() }));
+  assert.deepEqual(takeCutTurns(stateDir), []);
+  assert.ok(!existsSync(join(stateDir, CUT_TURNS)));
+  writeFileSync(join(stateDir, CUT_TURNS), 'not json');
+  assert.deepEqual(takeCutTurns(stateDir), []);
+  t.after(() => o.shutdown());
 });
