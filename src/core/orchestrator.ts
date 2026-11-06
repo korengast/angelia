@@ -46,8 +46,8 @@ export interface Sender {
 
 /** A profile made for a new chat: its name, the first turn's prompt, and the workspace commit, which settles later. */
 export interface Onboarded { name: string; prompt: string; git?: Promise<string> }
-/** A backend switch: what was removed from the profile's folder, and notes for the owner. */
-export interface Switched { removed: string[]; notes: string[] }
+/** A backend switch: what was taken off the profile, what was put back for the new CLI, and notes for the owner. */
+export interface Switched { removed: string[]; restored: string[]; notes: string[] }
 
 export interface OrchestratorOptions {
   /** Tests: how often a running turn is checked for a stall (default a minute). */
@@ -482,6 +482,7 @@ export class Orchestrator {
     return this.reply(i, [
       `Profile ${profileName} now runs on ${LABELS[b]}. New session ${row.id.slice(0, 8)} started.`,
       ...(done.removed.length ? [`Taken off the profile, they belonged to ${LABELS[from]}: ${done.removed.join(', ')}.`] : []),
+      ...(done.restored.length ? [`Put back on the profile, as it was on ${LABELS[b]} before: ${done.restored.join(', ')}.`] : []),
       ...(others > 0 ? [`${others} other chat${others > 1 ? 's on this profile switch' : ' on this profile switches'} at their next message.`] : []),
       // The switch takes the model off, and pi's own default provider may have no login here.
       ...(b === 'pi' ? ['Pick a model with /model: pi\'s own default may be a provider with no login here.'] : []),
