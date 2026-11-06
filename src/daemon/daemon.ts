@@ -228,6 +228,10 @@ export async function runDaemon(configPath: string): Promise<void> {
     senders.whatsapp = wa;
     waAdapter = wa;
     wa.on('open', () => { waState = 'connected'; });
+    // Cleared on a close, so `angelia status` does not say connected through a reconnect, or while the
+    // watchdog (adapter.ts, check()) is giving up; 'logged-out' and 'dead' come after their close.
+    wa.on('close', () => { waState = 'reconnecting'; });
+    wa.on('dead', () => { waState = 'not connected: restart the daemon'; });
     wa.on('logged-out', () => { waState = 'logged out: run angelia pair'; });
     adapters.push(wa);
     await startPlatform('whatsapp', () => wa.start());

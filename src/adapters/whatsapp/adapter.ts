@@ -86,7 +86,8 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
   async start(): Promise<void> {
     mkdirSync(this.opts.authDir, { recursive: true, mode: 0o700 });
     // Before open(), and counting from the first start only: a first open that throws is started again
-    // by the daemon (30 s, then doubling), and a start that keeps throwing reaches the dead path after
+    // by the daemon (30 s, then doubling), and a start that keeps throwing after open() read the
+    // credentials (`registered` set: the check is silent before that) reaches the dead path after
     // DEAD_MS twice, like any other failure; a count reset at each retry would race the check's tick.
     // One timer however often start() is called; unref'd, so it never holds a process open.
     if (this.since < 0) this.since = this.now();
@@ -219,6 +220,7 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     if (u.connection === 'close') {
       this.state = 'disconnected';
       this.since = this.now();
+      this.emit('close');
       const code: number | undefined = u.lastDisconnect?.error?.output?.statusCode;
       this.conflict = code === DisconnectReason.connectionReplaced;
       const why: string = u.lastDisconnect?.error?.message ?? '';
