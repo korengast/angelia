@@ -34,6 +34,7 @@ import { API_SOCKET } from '../instance/instance.js';
 import { MAX_INBOUND, saveInbound } from '../adapters/inbox.js';
 import type { ChatEventBody, ChatListener } from './events.js';
 import { writeCutTurns } from './cut-turns.js';
+import type { Switched } from '../instance/switch-backend.js';
 
 export interface Sender {
   send(chat: string, text: string, thread?: string): Promise<void>;
@@ -46,8 +47,7 @@ export interface Sender {
 
 /** A profile made for a new chat: its name, the first turn's prompt, and the workspace commit, which settles later. */
 export interface Onboarded { name: string; prompt: string; git?: Promise<string> }
-/** A backend switch: what was taken off the profile, what was put back for the new CLI, and notes for the owner. */
-export interface Switched { removed: string[]; restored: string[]; notes: string[] }
+export type { Switched } from '../instance/switch-backend.js';
 
 export interface OrchestratorOptions {
   /** Tests: how often a running turn is checked for a stall (default a minute). */
@@ -709,8 +709,11 @@ export class Orchestrator {
       } else if (result.text && fresh) await this.replyFromAgent(i, [...tail, result.text].join('\n\n'), profile);
       else if (tail.length) await this.replyFromAgent(i, tail.join('\n\n'), profile);
       else if (!result.text && !progress.lastSent && bare) await this.reply(i, `${i.text.trim().split(/\s/)[0]} done.`);
-      // Nothing new for the chat at all.
-      else if (!result.text && !bare) await this.reply(i, this.denied.has(key) ? DENIED_LINE : NO_ANSWER_LINE);
+      // Nothing new for the chat at all. After a denial the chat is told whatever was said before it; with
+      // no denial, only when nothing at all reached the chat this turn (a progress line is an answer of
+      // sorts).
+      else if (!result.text && !bare && this.denied.has(key)) await this.reply(i, DENIED_LINE);
+      else if (!result.text && !bare && !progress.lastSent) await this.reply(i, NO_ANSWER_LINE);
     } catch (err) {
       // Kept, and sent with the next thing this chat is told: the answer exists, the platform was down.
       this.log(`deliver failed key=${key} ${(err as Error).message}`);
@@ -1358,11 +1361,19 @@ export class Orchestrator {
     return [...this.asks.values()].flatMap((m) => [...m.values()]).sort((a, b) => a.at.localeCompare(b.at));
   }
 
+  /** The chats whose turn is running now, for the next daemon to tell (cut-turns.ts). The daemon calls
+   *  it before the adapters stop, so a stop that hangs into the exit timer cannot skip it; shutdown()
+   *  calls it again for a caller that did not. Only turns the chat itself sent: an app-surface turn on a
+   *  routed chat (the Desk writing as the owner) would otherwise put the line into a group where nobody
+   *  wrote. A waiting turn sits behind a running one on the same key, so its chat is covered by that
+   *  entry; the queue keeps no surface, so a waiting turn behind an app turn is not told. */
+  cutTurns(): void {
+    const cut = [...this.running].filter(([, i]) => i.surface !== 'app').map(([k]) => k);
+    try { writeCutTurns(this.opts.stateDir ?? join(homedir(), '.angelia'), cut); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
+  }
+
   async shutdown(): Promise<void> {
-    // Each chat with a turn running or waiting hears one line from the next daemon (cut-turns.ts): the
-    // adapters are already stopped when this runs, so it cannot be said now.
-    const cut = new Set([...this.running.keys(), ...this.queue.waitingKeys()]);
-    try { writeCutTurns(this.opts.stateDir ?? join(homedir(), '.angelia'), [...cut]); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
+    this.cutTurns();
     for (const a of this.questions) a.abort();
     await Promise.all([...this.brains.keys()].map((k) => this.dropBrain(k, false)));
   }

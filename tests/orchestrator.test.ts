@@ -95,6 +95,10 @@ test('a turn that ends empty after a denied request says so; after an allowed on
   // A CLI command that says nothing keeps its own "done" line.
   await o.handle(dm('1', '/compact EMPTY'));
   assert.equal(sent.at(-1)!.text, '/compact done.');
+  // A progress line reached the chat, then an empty result: the chat heard the agent, no line is added.
+  const before = sent.length;
+  await o.handle(dm('1', 'PROGRESS EMPTY'));
+  assert.deepEqual(sent.slice(before).map((s) => s.text), ['working on it']);
 });
 
 test('a resumed session whose transcript is gone from every project folder starts fresh, says so once, and answers', async (t) => {

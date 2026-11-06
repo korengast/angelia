@@ -29,11 +29,6 @@ export class KeyedQueue {
     return run;
   }
 
-  /** The keys with a job not started yet. */
-  waitingKeys(): string[] {
-    return [...this.waiting.keys()];
-  }
-
   /** Running and waiting jobs for `key`. */
   queued(key: string): number {
     return this.depth.get(key) ?? 0;
