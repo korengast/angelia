@@ -26,11 +26,21 @@ export interface WhatsAppAdapterOptions {
   pairOnly?: boolean;
   /** Lines meant for the terminal (pairing code, QR). Defaults to stdout. */
   say?: (line: string) => void;
+  /** Baileys' socket maker, unless given (tests pass a fake: no network, no pairing). */
+  makeSocket?: typeof makeWASocket;
+  /** The clock and the pace of the not-connected check (tests pass a fake clock and a short pace). */
+  now?: () => number;
+  watchEveryMs?: number;
 }
 
 const MAX_MEDIA = MAX_INBOUND;
 /** How a note to the agent names a kind of file: "a photo", "a voice note", never "a image". */
 const KIND_NAME: Record<string, string> = { image: 'photo', audio: 'voice note', video: 'video', document: 'document', sticker: 'sticker' };
+/** Paired and not connected for this long, the adapter says 'dead' (see check()). Baileys' own keepalive turns a
+ *  dead socket into a close within about a minute, and a reconnect takes seconds, so five minutes is never a
+ *  working session. */
+const DEAD_MS = 5 * 60_000;
+const WATCH_EVERY_MS = 30_000;
 const EXT: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'video/mp4': '.mp4', 'audio/ogg; codecs=opus': '.ogg', 'audio/ogg': '.ogg', 'audio/mpeg': '.mp3', 'application/pdf': '.pdf' };
 
 /**
@@ -49,14 +59,25 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
   private log: (line: string) => void;
   private say: (line: string) => void;
   private backoffMs = 3000;
+  private reconnect?: NodeJS.Timeout;
   private lastBackoffNotice = 0;
   /** A field, not made in open(): what we sent must outlive a reconnect, when a retry needs it most. */
   private sent = new SentMessages();
+  private now: () => number;
+  private watch?: NodeJS.Timeout;
+  /** When the connection last opened or closed, or the check last acted: it counts from here. */
+  private since = -1;
+  /** The check has opened again once already: the next window says 'dead'. Cleared by an open. */
+  private reopened = false;
+  /** Set by a 440 close, cleared by the next attempt: another client holds the session, and a fresh process
+   *  would only trade 440s with it faster. */
+  private conflict = false;
 
   constructor(private readonly opts: WhatsAppAdapterOptions) {
     super();
     this.log = opts.log ?? (() => {});
     this.say = opts.say ?? ((l) => console.log(l));
+    this.now = opts.now ?? Date.now;
     this.lids = new LidMap(opts.authDir);
   }
 
@@ -64,13 +85,52 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
 
   async start(): Promise<void> {
     mkdirSync(this.opts.authDir, { recursive: true, mode: 0o700 });
+    // Before open(), and counting from the first start only: a first open that throws is started again
+    // by the daemon (30 s, then doubling), and a start that keeps throwing reaches the dead path after
+    // DEAD_MS twice, like any other failure; a count reset at each retry would race the check's tick.
+    // One timer however often start() is called; unref'd, so it never holds a process open.
+    if (this.since < 0) this.since = this.now();
+    clearInterval(this.watch);
+    this.watch = setInterval(() => this.check(), this.opts.watchEveryMs ?? WATCH_EVERY_MS);
+    this.watch.unref();
     await this.open();
+  }
+
+  /**
+   * Every close reconnects, and Baileys' keepalive turns a dead socket into a close, so a session that
+   * once worked comes back by itself; during a WhatsApp outage Baileys closes every 20-40 s, each close
+   * resets the count, and this check never fires there, by design. What it catches is a socket that
+   * neither opens nor closes: open() throwing or hanging in the auth state or the socket maker, a socket
+   * that never says open, a reopen that fails. The adapter would sit as 'connecting' in status for good,
+   * with nothing in the log. Paired and not connected for DEAD_MS, it first does in this process what a
+   * fresh one would: ends the socket and opens again. A second DEAD_MS with no open and no close, and it
+   * says 'dead': under launchd the daemon exits non-zero for a fresh process; started by hand it logs
+   * that a restart is needed, and the reopen here goes on every DEAD_MS. Not while pairing (the owner is
+   * typing a code), after a logout (pairing again is the fix), while stopping, or during a 440 backoff.
+   */
+  private check(): void {
+    // The clock first, every tick: a test counts its calls to see the timer end with stop().
+    const idle = this.now() - this.since;
+    if (this.connected || this.stopping || this.conflict || !this.registered || this.opts.pairOnly || idle < DEAD_MS) return;
+    this.since = this.now();
+    if (this.reopened) { this.log('whatsapp: still not connected after opening again; a fresh process is needed'); this.emit('dead'); }
+    else this.log(`whatsapp: not connected for ${DEAD_MS / 60_000} min; ending the socket and opening again`);
+    this.reopened = true;
+    const sock = this.sock;
+    this.sock = undefined;
+    this.retire(sock);
+    this.reopenIn(0);
   }
 
   private async open(): Promise<void> {
     if (this.stopping) return;
     this.state = 'connecting';
+    // The attempt a 440 backoff waited for gets its own DEAD_MS: the backoff itself may have been 30 min.
+    if (this.conflict) { this.conflict = false; this.since = this.now(); }
     const { state, saveCreds } = await useMultiFileAuthState(this.opts.authDir);
+    // A QR link sets `me` and never `registered`; a code link sets both. Known before the socket is made,
+    // so a socket maker that throws leaves the not-connected check armed.
+    this.registered = !!(state.creds.registered || state.creds.me);
     // Checked before any socket exists: a setup that cannot pair would otherwise leave a socket and
     // its reconnects behind at every retry of the start.
     if (!(state.creds.registered || state.creds.me) && this.opts.pairing === 'code' && !(this.opts.phone ?? '').replace(/\D/g, '')) throw new Error('whatsapp: pairing by code needs whatsapp.phone in routing.yaml (E.164, e.g. +15551234567)');
@@ -78,7 +138,7 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     // ANGELIA_WA_DEBUG=<file>: full Baileys debug log to that file (pairing diagnostics). Never on by default: it contains message payloads.
     const debugFile = process.env.ANGELIA_WA_DEBUG;
     const logger = debugFile ? pino({ level: 'trace' }, pino.destination({ dest: debugFile, sync: true })) : pino({ level: 'silent' });
-    const sock = makeWASocket({
+    const sock = (this.opts.makeSocket ?? makeWASocket)({
       ...(version ? { version } : {}),
       auth: state,
       logger,
@@ -91,15 +151,17 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
       // ends. Unknown ids get undefined: Baileys then resends nothing, which is the honest outcome.
       getMessage: async (key) => this.sent.get(key.id),
     });
+    // The socket this one replaces (the check() path ends one that never opened) is done with: a late
+    // close from it would start a second socket beside this one, and a late save would write its credentials.
+    const old = this.sock;
     this.sock = sock;
-    sock.ev.on('creds.update', () => { void saveCreds(); this.lids.reload(); });
-    sock.ev.on('connection.update', (u) => void this.onConnection(u as Record<string, any>, sock));
+    this.retire(old);
+    sock.ev.on('creds.update', () => { if (sock !== this.sock) return; void saveCreds(); this.lids.reload(); });
+    sock.ev.on('connection.update', (u) => { if (sock === this.sock) void this.onConnection(u as Record<string, any>, sock); });
     sock.ev.on('messages.upsert', ({ messages, type }) => {
       if (type !== 'notify' && type !== 'append') return;
       for (const m of messages) void this.onMessage(m as unknown as WaMessageLike).catch((e) => this.log(`whatsapp: message error ${(e as Error).message}`));
     });
-    // A QR link sets `me` and never `registered`; a code link sets both.
-    this.registered = !!(state.creds.registered || state.creds.me);
     if (!this.registered && this.opts.pairing === 'qr') this.say('Scan the QR below with WhatsApp > Linked devices > Link a device.');
   }
 
@@ -145,6 +207,9 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
       this.state = 'connected';
       this.registered = true;
       this.backoffMs = 3000;
+      this.since = this.now();
+      this.conflict = false;
+      this.reopened = false;
       const me = normalizeJid(sock.user?.id);
       this.log(`whatsapp: connected as ${me ? me.slice(0, 4) + '…' : '?'}`);
       this.emit('open');
@@ -153,7 +218,9 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     }
     if (u.connection === 'close') {
       this.state = 'disconnected';
+      this.since = this.now();
       const code: number | undefined = u.lastDisconnect?.error?.output?.statusCode;
+      this.conflict = code === DisconnectReason.connectionReplaced;
       const why: string = u.lastDisconnect?.error?.message ?? '';
       this.codeRequested = false; // a reconnect opens a new pairing window; a new code is requested if still unpaired
       if (this.stopping) return;
@@ -165,17 +232,29 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
         rmSync(this.opts.authDir, { recursive: true, force: true });
         mkdirSync(this.opts.authDir, { recursive: true, mode: 0o700 });
         this.emit('restart');
-        setTimeout(() => void this.open().catch((e) => this.log(`whatsapp: reopen failed ${(e as Error).message}`)), 1000);
+        this.reopenIn(1000);
         return;
       }
-      if (code === DisconnectReason.loggedOut) { this.log('whatsapp: logged out; delete the auth dir and pair again'); this.emit('logged-out'); return; }
+      // Logged out, nothing reconnects, and a fresh process would not be paired either: the check ends too.
+      if (code === DisconnectReason.loggedOut) { clearInterval(this.watch); this.log('whatsapp: logged out; delete the auth dir and pair again'); this.emit('logged-out'); return; }
       let delay = this.backoffMs;
       if (code === DisconnectReason.restartRequired) delay = 1000;
       else if (code === DisconnectReason.connectionReplaced) { delay = Math.min(this.backoffMs * 2, 30 * 60_000); this.backoffMs = delay; if (Date.now() - this.lastBackoffNotice > 6 * 3600_000) { this.lastBackoffNotice = Date.now(); this.log('whatsapp: conflict (440): another client holds this session; backing off'); } }
       else { this.backoffMs = Math.min(this.backoffMs * 2, 30_000); delay = this.backoffMs; }
       this.log(`whatsapp: closed code=${code ?? '?'} reconnect_in=${delay}ms`);
-      setTimeout(() => void this.open().catch((e) => this.log(`whatsapp: reopen failed ${(e as Error).message}`)), delay);
+      this.reopenIn(delay);
     }
+  }
+
+  /** One pending reopen at a time: the check() path and a close must not each start a socket. */
+  private reopenIn(ms: number): void {
+    clearTimeout(this.reconnect);
+    this.reconnect = setTimeout(() => void this.open().catch((e) => this.log(`whatsapp: reopen failed ${(e as Error).message}`)), ms);
+  }
+
+  /** End a socket we are done with. end() is async: a rejection would escape the try and become an unhandled one. */
+  private retire(sock: WASocket | undefined): void {
+    try { sock?.end(undefined)?.catch(() => {}); } catch { /* already closed */ }
   }
 
   private ourIds(): string[] {
@@ -281,8 +360,9 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     this.stopping = true;
     for (const t of this.typingTimers.values()) clearInterval(t);
     this.typingTimers.clear();
-    // end() is async: a rejection would escape the try and become an unhandled one.
-    try { this.sock?.end(undefined)?.catch(() => {}); } catch { /* already closed */ }
+    clearTimeout(this.reconnect);
+    clearInterval(this.watch);
+    this.retire(this.sock);
     this.state = 'disconnected';
   }
 }

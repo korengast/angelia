@@ -265,20 +265,34 @@ export async function runDaemon(configPath: string): Promise<void> {
   }
   logLine(`daemon up pid=${process.pid} profiles=${Object.keys(cfg.profiles).length} routes=${cfg.routes.length} tg=${tgState()} wa=${waState} api=${API_SOCKET}${missing.length ? ` cli_missing=${missing.length}` : ''}`);
 
-  const shutdown = async (sig: string) => {
+  const shutdown = async (sig: string, code = 0) => {
     // Once: a restart under launchd sends SIGTERM twice (the service stop and the restart itself), and
     // the second would run the whole shutdown again beside the first.
     if (stopping) return;
     stopping = true;
     logLine(`shutdown on ${sig}`);
+    // A stop that hangs (a tmux that does not answer, a socket that never ends) must still end in an
+    // exit, or nothing restarts us; 20 s is more than a stop ever took.
+    setTimeout(() => process.exit(code), 20_000).unref();
     clearInterval(statusTimer); clearInterval(reapTimer);
-    await Promise.allSettled(adapters.map((a) => a.stop()));
-    await orch.shutdown();
-    try { unlinkSync(pidFile); } catch {}
-    process.exit(0);
+    try {
+      await Promise.allSettled(adapters.map((a) => a.stop()));
+      await orch.shutdown();
+      try { unlinkSync(pidFile); } catch {}
+    } finally { process.exit(code); }
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
+  // WhatsApp paired and not connected for two windows, its own reopen included (adapter.ts, check()).
+  // Under launchd: the same stop a restart does (orch.shutdown ends every running print turn, on every
+  // platform, as SIGTERM does), then a non-zero exit, which the service's KeepAlive answers with a fresh
+  // process (service.ts). Started by hand, or on Linux, nothing would start a fresh one: the line says
+  // so, and the adapter goes on opening again by itself.
+  waAdapter?.on('dead', () => {
+    const service = process.ppid === 1 && process.env.XPC_SERVICE_NAME === LABEL;
+    if (service) { logLine('whatsapp: still not connected; exiting so the service starts a fresh process'); void shutdown('whatsapp dead', 1); }
+    else logLine('whatsapp: still not connected; restart the daemon');
+  });
   // One process carries every chat on every platform. A transient error in one of them - a socket
   // that closed mid-write, a promise nobody awaited - must not be the end of all of them. Node's
   // default for both of these is to print and exit.
