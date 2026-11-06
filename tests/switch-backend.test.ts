@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Config } from '../src/instance/config/schema.js';
 import { loadConfig } from '../src/instance/config/load.js';
 import { tableChanges, tablePath, writeAccepted } from '../src/instance/accepted.js';
 import { switchBackend } from '../src/instance/switch-backend.js';
@@ -82,4 +84,13 @@ test('/backend with nothing to keep writes no backends: key, and a profile with 
   const r = switchBackend({ table: s.path, cfg, profile: 'plain', backend: 'codex', instance: s.instance });
   assert.deepEqual(r, { removed: [], restored: [], notes: r.notes });
   assert.doesNotMatch(readFileSync(s.path, 'utf8'), /backends:/);
+});
+
+test('/backend looks for a CLI through the bin kept under backends:, so a CLI reachable only that way counts as installed', async () => {
+  const { backendBin } = await import('../src/core/orchestrator.js');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const p = Config.parse({ profiles: { a: { cwd: here, bin: '/opt/claude-x', backends: { codex: { bin: '/opt/codex-x', model: 'gpt-5.5' } } } }, routes: [] }).profiles.a;
+  assert.equal(backendBin(p, 'claude-code'), '/opt/claude-x', 'its own CLI: the profile bin');
+  assert.equal(backendBin(p, 'codex'), '/opt/codex-x', 'the kept bin of the CLI it is going back to');
+  assert.equal(backendBin(p, 'pi'), 'pi', 'nothing kept: the default name, never the current bin');
 });

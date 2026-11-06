@@ -448,7 +448,7 @@ export class Orchestrator {
 
   private async backendCommand(i: Inbound, key: string, profileName: string, value?: string): Promise<void> {
     const p = this.cfg.profiles[profileName];
-    const installed = (b: BackendName) => !!(this.opts.bins?.[b] ?? locateBin(b === p.backend ? profileBin(p) : profileBin({ ...p, backend: b, bin: undefined }), this.opts.env ?? process.env));
+    const installed = (b: BackendName) => !!(this.opts.bins?.[b] ?? locateBin(backendBin(p, b), this.opts.env ?? process.env));
     const others = this.cfg.routes.filter((r) => r.profile === profileName).length - 1;
     if (!value) {
       const rows = SWITCHABLE.map((b) => `• ${b} (${LABELS[b]})${b === p.backend ? ' — now' : installed(b) ? '' : ' — not installed'}`);
@@ -1427,6 +1427,13 @@ export function isAgentCommand(i: Pick<Inbound, 'text' | 'media'>): boolean {
 /** `/compact now` -> `compact`. */
 export function agentCommandName(text: string): string {
   return text.trim().slice(1).split(/\s/)[0].toLowerCase();
+}
+
+/** The executable profile `p` would run on CLI `b`: its own `bin` on its CLI; on another, the one /backend
+ *  kept under `backends.<cli>.bin` when the profile last left that CLI (switch-backend.ts), else the
+ *  default name. A CLI reachable only through that kept path would otherwise count as not installed. */
+export function backendBin(p: Profile, b: BackendName): string {
+  return b === p.backend ? profileBin(p) : profileBin({ ...p, backend: b, bin: p.backends?.[b]?.bin });
 }
 
 /** What the agent is given for a turn: the envelope plus the message, or, when the router allowed it
