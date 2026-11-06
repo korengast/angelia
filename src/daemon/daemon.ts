@@ -286,6 +286,8 @@ export async function runDaemon(configPath: string): Promise<void> {
     setTimeout(() => process.exit(code), 20_000).unref();
     clearInterval(statusTimer); clearInterval(reapTimer);
     try {
+      // The chats with a turn running, for the next daemon to tell: before anything that can hang.
+      orch.cutTurns();
       await Promise.allSettled(adapters.map((a) => a.stop()));
       await orch.shutdown();
       try { unlinkSync(pidFile); } catch {}

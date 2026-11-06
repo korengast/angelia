@@ -195,15 +195,24 @@ test('a shutdown mid-turn writes the chat\'s key for the next daemon, which says
   assert.equal(sent.at(-1), CUT_LINE);
 });
 
-test('cut turns: no file when nothing ran; a stale or broken file is ignored and removed', async (t) => {
+test('cut turns: no file when nothing ran, nor for an app-surface turn on a routed chat; a stale or broken file is ignored and removed', async (t) => {
   const { o, stateDir } = rig();
   await o.handle({ ...msg('boss'), text: 'hello' });
   await o.shutdown();
   assert.ok(!existsSync(join(stateDir, CUT_TURNS)), 'the turn had ended');
+  // The Desk writing as the owner into a routed chat: nobody in the group wrote, so nobody there is told.
+  const app = o.handle({ ...msg('boss'), text: 'SLOW from the desk', surface: 'app' });
+  await new Promise((r) => setTimeout(r, 300));
+  o.cutTurns();
+  assert.ok(!existsSync(join(stateDir, CUT_TURNS)), 'an app-surface turn is not a chat turn');
+  await o.shutdown();
+  await app;
   writeCutTurns(stateDir, []);
   assert.ok(!existsSync(join(stateDir, CUT_TURNS)));
-  writeFileSync(join(stateDir, CUT_TURNS), JSON.stringify({ keys: ['telegram:1'], at: new Date(Date.now() - 11 * 60_000).toISOString() }));
+  writeFileSync(join(stateDir, CUT_TURNS), JSON.stringify({ keys: ['telegram:1'], at: new Date(Date.now() - 25 * 3600_000).toISOString() }));
   assert.deepEqual(takeCutTurns(stateDir), []);
+  writeFileSync(join(stateDir, CUT_TURNS), JSON.stringify({ keys: ['telegram:1'], at: new Date(Date.now() - 2 * 3600_000).toISOString() }));
+  assert.deepEqual(takeCutTurns(stateDir), ['telegram:1'], 'two hours is within a day');
   assert.ok(!existsSync(join(stateDir, CUT_TURNS)));
   writeFileSync(join(stateDir, CUT_TURNS), 'not json');
   assert.deepEqual(takeCutTurns(stateDir), []);
