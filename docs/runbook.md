@@ -80,6 +80,13 @@ credentials), then `angelia pair` and scan the QR again.
 **WhatsApp: `conflict (440)`.** Another client holds this session (a second Angelia, or another
 client linked with the same credentials). Stop the other one; the daemon backs off and reconnects by itself.
 
+**WhatsApp: `not connected for 5 min; ending the socket and opening again`.** Paired, and the link
+neither opened nor closed for five minutes: the daemon ends the socket and opens a new one by itself.
+A second line, `still not connected after opening again; a fresh process is needed`, means that did
+not help either. Under the LaunchAgent the daemon then exits and launchd starts a fresh one; started
+by hand, restart it (`angelia restart`). A chat whose message was being answered at that moment hears
+"Angelia restarted while working on your message. Send it again." from the new daemon.
+
 **Telegram: nothing arrives from a group.** Make the bot a group admin: Telegram's privacy mode hides
 plain @mentions from bots otherwise.
 

@@ -13,6 +13,11 @@ export function failureLine(reason?: string, home?: string, group = false): stri
   return `Something broke on my side (${tidy.slice(0, 300)}). Try again, or /new.`;
 }
 export const PERMISSION_TIMEOUT_LINE = 'No answer to the permission request in time, so it was denied.';
+/** A turn that ended well with nothing new for the chat. Grok Build ends its turn this way after a denial
+ *  (measured 2026-10-27), so the chat saw its own "no" and then nothing; Claude Code in print mode, Codex
+ *  and pi can all end a turn with an empty final too. One line, so the chat knows the turn is over. */
+export const DENIED_LINE = 'Denied; the agent stopped.';
+export const NO_ANSWER_LINE = 'The agent ended its turn without an answer. Send your message again, or /new for a fresh session.';
 export const UNMATCHED_LINE = '[Angelia] This chat is not routed to a profile.';
 export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
 /** A chat answer to a request no hook waits for any more (it stepped aside when the chat stopped

@@ -81,7 +81,7 @@ test('/model and /effort show the value now and the choices of the CLI, and refu
 test('/backend shows the CLIs, switches the profile for every chat on it, and is for owners', async (t) => {
   const calls: string[] = [];
   const { o, cfg, sent, dm } = setup({ backend: 'claude-code', model: 'opus' }, {
-    switchBackend: (p: string, b: string) => { calls.push(`${p}->${b}`); cfg.profiles[p] = { ...cfg.profiles[p], backend: b as any, model: undefined }; return { removed: ['model: opus'], notes: [] }; },
+    switchBackend: (p: string, b: string) => { calls.push(`${p}->${b}`); cfg.profiles[p] = { ...cfg.profiles[p], backend: b as any, model: undefined }; return { removed: ['model: opus'], restored: [], notes: [] }; },
   });
   t.after(() => o.shutdown());
   await o.handle(dm('/backend'));
@@ -134,7 +134,8 @@ test('switchBackend: the table keeps its layout, loses what belonged to the old 
   assert.deepEqual(r.removed, ['model: claude-opus-5-5', 'effort: high', 'tui: true']);
   const now = readFileSync(table, 'utf8');
   assert.match(now, /^# my table\n/); assert.match(now, /# keep me/); assert.match(now, /backend: codex/);
-  assert.doesNotMatch(now, /model:|effort:|tui:/);
+  assert.doesNotMatch(now, /^ {4}(model|effort|tui):/m, 'off the profile itself');
+  assert.match(now, /^ {4}backends:\n {6}claude-code:\n {8}model: claude-opus-5-5\n {8}effort: high\n {8}tui: true\n/m, 'kept for the way back');
   assert.equal(cfg.profiles.a.backend, 'codex');
   assert.ok(readdirSync(dir).some((f) => f.startsWith('routing.yaml.') && f.endsWith('.bak')), 'a backup is made');
   assert.ok(readdirSync(join(dir, 'compiled')).length, 'the profile is compiled for the new CLI');

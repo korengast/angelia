@@ -2,21 +2,16 @@
 // the daemon (mobile plan M1.1, D18), plus the daemon's own: credential places and deny rules.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { linkSync, mkdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { FILE_MAX_BYTES, FILE_MAX_BYTES as INSTRUCTIONS_MAX_BYTES, instructionNames, listProfileFolder, openChecked, readInstructions as readInstr, readProfileFile, secretName, segments, type Hidden } from '../src/instance/profile-files.js';
+import { tmp } from './tmp.js';
 
 const none: Hidden = () => false;
 const listFolder = (d: string, rel: string) => listProfileFolder(d, rel, none);
 const readFileView = (d: string, rel: string, uid?: number) => readProfileFile(d, rel, none, uid);
 const readInstructions = (d: string, backend: string, uid?: number) => readInstr(d, backend, none, uid);
-function tmp(t: { after(fn: () => unknown): void }, prefix = 'pf-t-'): string {
-  const d = mkdtempSync(join(tmpdir(), prefix));
-  t.after(() => rmSync(d, { recursive: true, force: true }));
-  return d;
-}
 
 function folder(t: Parameters<typeof tmp>[0]): string {
   const d = tmp(t);

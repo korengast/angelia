@@ -22,7 +22,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, isLimitText, limitHint, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
+import { failureLine, isLimitText, limitHint, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -33,6 +33,8 @@ import { agentDenyRules, profilePermissions } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
 import { MAX_INBOUND, saveInbound } from '../adapters/inbox.js';
 import type { ChatEventBody, ChatListener } from './events.js';
+import { writeCutTurns } from './cut-turns.js';
+import type { Switched } from '../instance/switch-backend.js';
 
 export interface Sender {
   send(chat: string, text: string, thread?: string): Promise<void>;
@@ -45,8 +47,7 @@ export interface Sender {
 
 /** A profile made for a new chat: its name, the first turn's prompt, and the workspace commit, which settles later. */
 export interface Onboarded { name: string; prompt: string; git?: Promise<string> }
-/** A backend switch: what was removed from the profile's folder, and notes for the owner. */
-export interface Switched { removed: string[]; notes: string[] }
+export type { Switched } from '../instance/switch-backend.js';
 
 export interface OrchestratorOptions {
   /** Tests: how often a running turn is checked for a stall (default a minute). */
@@ -175,6 +176,9 @@ export class Orchestrator {
   private asking = new Map<string, number>();
   /** Every question being answered, to stop at shutdown. */
   private questions = new Set<AbortController>();
+  /** Chats whose running turn had a permission request denied (from the chat, the app, the pane, or by
+   *  the timeout): a turn that then ends with nothing to say is told so, not left silent. */
+  private denied = new Set<string>();
   /** Each chat's open permission requests by full id, so an answer by prefix (the chat's `y abcde`)
    *  is evented under the id the client was given, and a client that connects later can list them. */
   private asks = new Map<string, Map<string, WaitingPermission>>();
@@ -444,7 +448,7 @@ export class Orchestrator {
 
   private async backendCommand(i: Inbound, key: string, profileName: string, value?: string): Promise<void> {
     const p = this.cfg.profiles[profileName];
-    const installed = (b: BackendName) => !!(this.opts.bins?.[b] ?? locateBin(b === p.backend ? profileBin(p) : profileBin({ ...p, backend: b, bin: undefined }), this.opts.env ?? process.env));
+    const installed = (b: BackendName) => !!(this.opts.bins?.[b] ?? locateBin(backendBin(p, b), this.opts.env ?? process.env));
     const others = this.cfg.routes.filter((r) => r.profile === profileName).length - 1;
     if (!value) {
       const rows = SWITCHABLE.map((b) => `• ${b} (${LABELS[b]})${b === p.backend ? ' — now' : installed(b) ? '' : ' — not installed'}`);
@@ -478,6 +482,7 @@ export class Orchestrator {
     return this.reply(i, [
       `Profile ${profileName} now runs on ${LABELS[b]}. New session ${row.id.slice(0, 8)} started.`,
       ...(done.removed.length ? [`Taken off the profile, they belonged to ${LABELS[from]}: ${done.removed.join(', ')}.`] : []),
+      ...(done.restored.length ? [`Put back on the profile, as it was on ${LABELS[b]} before: ${done.restored.join(', ')}.`] : []),
       ...(others > 0 ? [`${others} other chat${others > 1 ? 's on this profile switch' : ' on this profile switches'} at their next message.`] : []),
       // The switch takes the model off, and pi's own default provider may have no login here.
       ...(b === 'pi' ? ['Pick a model with /model: pi\'s own default may be a provider with no login here.'] : []),
@@ -551,6 +556,7 @@ export class Orchestrator {
    *  session sent to the background), delivered as any turn's are. */
   private async turn(i: Inbound, key: string, name: string, o: TurnOptions = {}): Promise<void> {
     this.running.set(key, i);
+    this.denied.delete(key);
     const turn = i.turnId ?? randomUUID();
     this.emit(key, { type: 'turn', turn, text: i.text, sender: i.senderName ?? i.sender, surface: i.surface ?? 'chat', queued: this.queue.queued(key) });
     let failed: string | undefined = 'exception';
@@ -703,6 +709,11 @@ export class Orchestrator {
       } else if (result.text && fresh) await this.replyFromAgent(i, [...tail, result.text].join('\n\n'), profile);
       else if (tail.length) await this.replyFromAgent(i, tail.join('\n\n'), profile);
       else if (!result.text && !progress.lastSent && bare) await this.reply(i, `${i.text.trim().split(/\s/)[0]} done.`);
+      // Nothing new for the chat at all. After a denial the chat is told whatever was said before it; with
+      // no denial, only when nothing at all reached the chat this turn (a progress line is an answer of
+      // sorts).
+      else if (!result.text && !bare && this.denied.has(key)) await this.reply(i, DENIED_LINE);
+      else if (!result.text && !bare && !progress.lastSent) await this.reply(i, NO_ANSWER_LINE);
     } catch (err) {
       // Kept, and sent with the next thing this chat is told: the answer exists, the platform was down.
       this.log(`deliver failed key=${key} ${(err as Error).message}`);
@@ -821,6 +832,7 @@ export class Orchestrator {
 
   private answered(key: string, id: string, allow: boolean, by: 'chat' | 'app' | 'timeout' | 'terminal'): void {
     this.asks.get(key)?.delete(id);
+    if (!allow) this.denied.add(key);
     this.emit(key, { type: 'permission-answered', id, allow, by });
   }
 
@@ -1349,7 +1361,19 @@ export class Orchestrator {
     return [...this.asks.values()].flatMap((m) => [...m.values()]).sort((a, b) => a.at.localeCompare(b.at));
   }
 
+  /** The chats whose turn is running now, for the next daemon to tell (cut-turns.ts). The daemon calls
+   *  it before the adapters stop, so a stop that hangs into the exit timer cannot skip it; shutdown()
+   *  calls it again for a caller that did not. Only turns the chat itself sent: an app-surface turn on a
+   *  routed chat (the Desk writing as the owner) would otherwise put the line into a group where nobody
+   *  wrote. A waiting turn sits behind a running one on the same key, so its chat is covered by that
+   *  entry; the queue keeps no surface, so a waiting turn behind an app turn is not told. */
+  cutTurns(): void {
+    const cut = [...this.running].filter(([, i]) => i.surface !== 'app').map(([k]) => k);
+    try { writeCutTurns(this.opts.stateDir ?? join(homedir(), '.angelia'), cut); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
+  }
+
   async shutdown(): Promise<void> {
+    this.cutTurns();
     for (const a of this.questions) a.abort();
     await Promise.all([...this.brains.keys()].map((k) => this.dropBrain(k, false)));
   }
@@ -1403,6 +1427,13 @@ export function isAgentCommand(i: Pick<Inbound, 'text' | 'media'>): boolean {
 /** `/compact now` -> `compact`. */
 export function agentCommandName(text: string): string {
   return text.trim().slice(1).split(/\s/)[0].toLowerCase();
+}
+
+/** The executable profile `p` would run on CLI `b`: its own `bin` on its CLI; on another, the one /backend
+ *  kept under `backends.<cli>.bin` when the profile last left that CLI (switch-backend.ts), else the
+ *  default name. A CLI reachable only through that kept path would otherwise count as not installed. */
+export function backendBin(p: Profile, b: BackendName): string {
+  return b === p.backend ? profileBin(p) : profileBin({ ...p, backend: b, bin: p.backends?.[b]?.bin });
 }
 
 /** What the agent is given for a turn: the envelope plus the message, or, when the router allowed it

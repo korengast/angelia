@@ -1,18 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { Config } from '../src/instance/config/schema.js';
 import type { Hidden } from '../src/instance/profile-files.js';
 import { capabilitiesView, importsOf, memoryView, readSkill, skillsView } from '../src/instance/profile-views.js';
+import { tmp } from './tmp.js';
 
 const none: Hidden = () => false;
-function tmp(t: { after(fn: () => unknown): void }): string {
-  const d = mkdtempSync(join(tmpdir(), 'pv-t-'));
-  t.after(() => rmSync(d, { recursive: true, force: true }));
-  return d;
-}
 const skill = (dir: string, name: string, description: string) => {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: "${description}"\n---\n\n# ${name}\n`);

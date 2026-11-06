@@ -29,6 +29,10 @@ export const Capability = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('directory'), path: z.string().min(1), when: z.string().optional() }).strict(),
 ]);
 
+export const BACKENDS = ['claude-code', 'grok', 'pi', 'codex'] as const;
+// One word that cannot pass for a flag: it goes on the CLI's command line, and needs no confirm (accepted.ts).
+const Model = z.string().regex(/^[^\s-]\S*$/, 'a model name: one word, not starting with -');
+
 export const Profile = z.object({
   cwd: z.string(),
   /** Capabilities this profile gets on top of defaults.capabilities; they also lift a default deny. */
@@ -38,8 +42,7 @@ export const Profile = z.object({
   /** Denied on top of defaults.deny. A profile's own deny beats everything. */
   deny: z.array(z.string()).default([]),
   permission_mode: PermissionMode.default('acceptEdits'),
-  // One word that cannot pass for a flag: it goes on the CLI's command line, and needs no confirm (accepted.ts).
-  model: z.string().regex(/^[^\s-]\S*$/, 'a model name: one word, not starting with -').optional(),
+  model: Model.optional(),
   effort: Effort.optional(),
   add_dirs: z.array(z.string()).default([]),
   unsafe_ok: z.boolean().default(false),
@@ -48,7 +51,7 @@ export const Profile = z.object({
   /** Launch the agent with Claude in Chrome (--chrome): browser tools inside the user's everyday Chrome. */
   chrome: z.boolean().default(false),
   /** Which local CLI answers this profile. claude-code: Claude Code. grok: Grok Build. pi: pi. codex: Codex. */
-  backend: z.enum(['claude-code', 'grok', 'pi', 'codex']).default('claude-code'),
+  backend: z.enum(BACKENDS).default('claude-code'),
   /** The backend's executable, when it is not `claude` / `grok` / `pi` / `codex` on PATH or in the usual
    *  install folders. A full path; `~` is allowed. */
   bin: z.string().optional(),
@@ -57,6 +60,9 @@ export const Profile = z.object({
    *  stay warm and slash commands behave as they do in a terminal. Print mode stays the default:
    *  it is the one with a clean permission channel. */
   tui: z.boolean().default(false),
+  /** Written by `/backend`: the `model`, `effort`, `bin` (and `tui`) a CLI had before the profile moved
+   *  off it, so a switch back puts them on again (instance/switch-backend.ts). Not read anywhere else. */
+  backends: z.partialRecord(z.enum(BACKENDS), z.object({ model: Model.optional(), effort: Effort.optional(), bin: z.string().optional(), tui: z.boolean().optional() }).strict()).optional(),
   /** Read `MEDIA:<absolute path>` lines in the agent's own replies and attach that file, instead of
    *  letting the line through as text. Off by default: a model that quotes such a line in prose would
    *  otherwise send a file nobody asked for. Turn it on for a chat whose instructions use the convention. */

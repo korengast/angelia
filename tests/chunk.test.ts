@@ -132,10 +132,10 @@ test('a reopened fence carries only its opener and language, not a long info str
   assert.ok(out[1].startsWith('```python\n'), out[1].slice(0, 30));
 });
 
-test('chunk: random text with fences, long lines and emoji always ends within the limit', () => {
+test('chunk: random text with fences, tables, long lines and emoji always ends within the limit', () => {
   let seed = 7;
   const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
-  const bits = ['word ', 'longer words here ', '\n', '\n\n', '```', '````js', '```' + 'i'.repeat(90), '😀', 'z'.repeat(150), '\t'];
+  const bits = ['word ', 'longer words here ', '\n', '\n\n', '```', '````js', '```' + 'i'.repeat(90), '😀', 'z'.repeat(150), '\t', '\n| a | b |\n', '\n|---|---|\n', '\n| ' + 'c'.repeat(120) + ' | d |\n'];
   for (let run = 0; run < 400; run++) {
     const limit = 50 + rnd(400);
     let text = '';
@@ -167,4 +167,80 @@ test('#36: a ``` pair inside a ```` block is content: every piece keeps the four
   }
   // A closer shorter than its opener, or one with a tag, closes nothing; the right one does.
   assert.deepEqual(chunk('````\na\n```\nb\n````\nafter', 1000), ['````\na\n```\nb\n````\nafter']);
+});
+
+const HEADER = '| name | value |', SEP = '|---|---|';
+const rows = (n: number) => Array.from({ length: n }, (_, i) => `| row ${i} | some value ${i} |`);
+const headerCount = (parts: string[]) => parts.flatMap((c) => c.split('\n')).filter((l) => l === HEADER).length;
+
+test('a long table split keeps its header and separator rows at the top of every piece', () => {
+  const text = [HEADER, SEP, ...rows(60)].join('\n');
+  const out = chunk(text, 200);
+  assert.ok(out.length > 3, `${out.length} pieces`);
+  for (const c of out) {
+    assert.ok(c.length <= 200, `piece of ${c.length}`);
+    assert.deepEqual(c.split('\n').slice(0, 2), [HEADER, SEP], `piece: ${c.slice(0, 60)}`);
+  }
+  // Every row once, in order; nothing but the two rows added.
+  const body = out.flatMap((c) => c.split('\n').slice(2));
+  assert.deepEqual(body, rows(60));
+});
+
+test('the header is not repeated when the cut lands before the table, after it ends, or inside a fence', () => {
+  const paras = Array.from({ length: 6 }, (_, i) => `paragraph ${i} `.repeat(8).trim()).join('\n\n');
+  const small = [HEADER, SEP, ...rows(3)].join('\n');
+  const before = chunk(paras + '\n\n' + small, 300);
+  assert.ok(before.length > 1);
+  assert.equal(headerCount(before), 1, 'before');
+  assert.ok(before.at(-1)!.includes(SEP));
+  const after = chunk(small + '\n\n' + paras, 300);
+  assert.ok(after.length > 1);
+  assert.equal(headerCount(after), 1, 'after');
+  // A fenced block of bar lines is code: the pieces reopen the fence and repeat no rows.
+  const fenced = chunk('```\n' + [HEADER, SEP, ...rows(30)].join('\n') + '\n```', 200);
+  assert.ok(fenced.length > 2);
+  assert.equal(headerCount(fenced), 1, 'fenced');
+  for (const c of fenced.slice(1)) assert.ok(c.startsWith('```\n| row'), c.slice(0, 30));
+});
+
+test('a table under a tiny limit loses the repeated rows, never its text', () => {
+  const text = [HEADER, SEP, ...rows(10)].join('\n');
+  const out = chunk(text, 30);
+  for (const c of out) assert.ok(c.length <= 30);
+  assert.ok(keepsText(text, out));
+});
+
+test('a cut between the header row and the separator row moves the header to the next piece', () => {
+  // 70 characters and the header fit the room; the separator does not.
+  const text = 'x'.repeat(70) + '\n' + [HEADER, SEP, ...rows(4)].join('\n');
+  const out = chunk(text, 100);
+  assert.equal(out[0], 'x'.repeat(70));
+  assert.deepEqual(out[1].split('\n').slice(0, 2), [HEADER, SEP]);
+  for (const c of out) assert.ok(c.length <= 100);
+  for (const c of out.slice(1)) assert.deepEqual(c.split('\n').slice(0, 2), [HEADER, SEP], c);
+  assert.deepEqual(out.flatMap((c) => c.split('\n')).filter((l) => l.startsWith('| row')), rows(4));
+});
+
+test('a row longer than the room is cut in the middle, and the pieces after it still carry the header', () => {
+  const long = `| long | ${'v'.repeat(190)} |`;
+  const text = [HEADER, SEP, long, ...rows(3)].join('\n');
+  const out = chunk(text, 100);
+  assert.ok(out.length >= 3, `${out.length} pieces`);
+  for (const c of out) assert.ok(c.length <= 100, `piece of ${c.length}`);
+  assert.deepEqual(out.at(-1)!.split('\n').slice(0, 2), [HEADER, SEP], `last piece: ${out.at(-1)!.slice(0, 60)}`);
+  // The rest of the cut row gets no rows on top: they would sit in the middle of it.
+  for (const c of out.slice(1)) if (!c.startsWith('|')) assert.ok(!c.includes(HEADER), c.slice(0, 60));
+  assert.ok(keepsText(text, out));
+  assert.deepEqual(out.flatMap((c) => c.split('\n')).filter((l) => l.startsWith('| row')), rows(3));
+});
+
+test('a header row at the top of a piece whose separator does not fit the room takes it when the limit holds it', () => {
+  // The header (70) fits the room (95), header plus separator (97) only the limit (100).
+  const header = `| ${'h'.repeat(66)} |`, sep = `|${'-'.repeat(24)}|`;
+  const text = 'x'.repeat(70) + '\n' + [header, sep, ...rows(4)].join('\n');
+  const out = chunk(text, 100);
+  assert.equal(out[0], 'x'.repeat(70));
+  assert.equal(out[1], `${header}\n${sep}`);
+  for (const c of out) { assert.ok(c.length <= 100, `piece of ${c.length}`); assert.ok(!/^\|-+\|$/.test(c.split('\n')[0]), `a lone separator on top: ${c.slice(0, 40)}`); }
+  assert.deepEqual(out.flatMap((c) => c.split('\n')).filter((l) => l.startsWith('| row')), rows(4));
 });
