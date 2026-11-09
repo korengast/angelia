@@ -2,6 +2,8 @@
   "title": "How to control Claude Code from your phone",
   "description": "Run Claude Code on your Mac and use it from WhatsApp or Telegram: install, pair a chat, approve commands and send voice notes. About ten minutes.",
   "date": "2026-10-18",
+  "updated": "2026-10-30",
+  "howto": { "totalTime": "PT10M" },
   "draft": false
 }-->
 <p class="lede">Claude Code runs on your computer, with your files, skills and MCP servers. This page shows how to reach that same setup from your phone, through a chat app, in about ten minutes. I use Angelia for this, which I built, so the steps below use it. If you only want to watch one coding session from the couch, Anthropic's Remote Control is the better tool: see <a href="/guides/claude-code-whatsapp-telegram/">the four ways compared</a>.</p>
@@ -10,7 +12,7 @@
 
 <h2 id="what-you-need">What you need</h2>
 <ul>
-  <li>A Mac with Node 22 or newer and git.</li>
+  <li>A Mac with Node 22.23.4+, 24.22.1+ or 26.12.1+ and git.</li>
   <li>Claude Code 2.1.270 or newer, signed in with a claude.ai plan. Check with <code>claude --version</code>.</li>
   <li>A chat app on your phone. Telegram is the fastest: open <a href="https://t.me/BotFather">@BotFather</a>, send <code>/newbot</code> and keep the token. WhatsApp also works, but it needs a second, established number, not your personal one (<a href="/guides/claude-code-whatsapp-telegram/#angelia">why</a>).</li>
 </ul>
@@ -70,5 +72,5 @@ Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
 <div class="try" id="try">
 <h2 id="try-angelia">Try Angelia</h2>
 <pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
-<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/#security">Security</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/docs/security/">Security model</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
 </div>

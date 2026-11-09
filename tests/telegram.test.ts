@@ -162,3 +162,23 @@ test('the command menu goes to routed chats only: the global one is cleared', as
   assert.ok((calls[1].payload.commands as { command: string }[]).some((c) => c.command === 'sh'));
   assert.deepEqual(logs, []);
 });
+test('#35: a failed download is said to the agent, with or without a caption; so is a getFile answer with no path', async () => {
+  const inbox = mkdtempSync(join(tmpdir(), 'angelia-tg-'));
+  const r = rig(inbox);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('nope', { status: 500 })) as typeof fetch;
+  try {
+    await r.tg.bot.handleUpdate(dm('', { document: { file_id: 'f', file_unique_id: 'u', file_name: 'a.pdf', file_size: 5 }, caption: 'see' }));
+    await r.tg.bot.handleUpdate(dm('', { voice: { file_id: 'v', file_unique_id: 'u2', duration: 3, file_size: 5 } }));
+    await r.tg.drained();
+  } finally { globalThis.fetch = realFetch; }
+  assert.deepEqual(r.got.map((i) => [i.text, i.media]), [['see\n[the file sent could not be downloaded]', []], ['[the file sent could not be downloaded]', []]]);
+  assert.ok(r.logs.some((l) => /media download failed .*HTTP 500/.test(l)), 'the log line stays');
+
+  const got: Inbound[] = [];
+  const noPath = new TelegramAdapter({ token: '000:fake', botInfo: ME, inboxFor: () => inbox, onInbound: async (i) => { got.push(i); }, log: () => {} });
+  noPath.bot.api.config.use(async (_prev, method) => (method === 'getFile' ? { ok: true, result: { file_id: 'f', file_unique_id: 'u1' } } : { ok: true, result: true }) as never);
+  await noPath.bot.handleUpdate(dm('', { voice: { file_id: 'v', file_unique_id: 'u3', duration: 3, file_size: 5 } }));
+  await noPath.drained();
+  assert.deepEqual(got.map((i) => [i.text, i.media]), [['[the file sent could not be downloaded]', []]]);
+});

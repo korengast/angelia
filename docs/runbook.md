@@ -6,7 +6,7 @@ Angelia is; this says what to type. Paths are the defaults (`~/.angelia`, `ANGEL
 ## Install and first run
 
 ```bash
-curl -fsSL <the install.sh in the repository> | sh   # Node 22+, git; the README has the exact line
+curl -fsSL <the install.sh in the repository> | sh   # Node 22.23.4+, 24.22.1+ or 26.12.1+, git; the README has the exact line
 angelia init                    # bot token, which CLI, first directory, pair a chat
 angelia service install         # macOS: a LaunchAgent that starts at login and returns after a crash
 angelia status                  # instance paths, daemon pid, each platform's state, warm sessions
@@ -79,6 +79,13 @@ credentials), then `angelia pair` and scan the QR again.
 
 **WhatsApp: `conflict (440)`.** Another client holds this session (a second Angelia, or another
 client linked with the same credentials). Stop the other one; the daemon backs off and reconnects by itself.
+
+**WhatsApp: `not connected for 5 min; ending the socket and opening again`.** Paired, and the link
+neither opened nor closed for five minutes: the daemon ends the socket and opens a new one by itself.
+A second line, `still not connected after opening again; a fresh process is needed`, means that did
+not help either. Under the LaunchAgent the daemon then exits and launchd starts a fresh one; started
+by hand, restart it (`angelia restart`). A chat whose message was being answered at that moment hears
+"Angelia restarted while working on your message. Send it again." from the new daemon.
 
 **Telegram: nothing arrives from a group.** Make the bot a group admin: Telegram's privacy mode hides
 plain @mentions from bots otherwise.

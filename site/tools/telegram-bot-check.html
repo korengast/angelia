@@ -1,0 +1,72 @@
+<!--{
+  "title": "Telegram bot token and chat id checker",
+  "description": "Paste a Telegram bot token: check that it works and find the chat ids of recent messages. Runs in your browser and talks only to api.telegram.org.",
+  "date": "2026-10-27",
+  "draft": false
+}-->
+<link rel="stylesheet" href="/tools/tools.css">
+<p class="lede">Paste the token @BotFather gave you. The page asks Telegram who the bot is, and lists the chats that wrote to it in the last 24 hours, with their chat ids. Those ids are what a route in Angelia needs.</p>
+
+<div class="note">
+<p><strong>Your token stays in this browser.</strong> The page sends it only to <code>api.telegram.org</code>, which is how every Telegram bot talks to Telegram. There is no server of ours in between, no analytics on this page, and nothing is stored: reload the page and the token is gone. The page's security policy lets it connect to <code>api.telegram.org</code> and nowhere else.</p>
+</div>
+
+<div id="check" class="tool">
+<label for="token">Bot token</label>
+<input id="token" type="text" class="masked" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-describedby="token-help" placeholder="123456789:AA…">
+<p id="token-help" class="fine">From @BotFather: digits, a colon, then about 35 letters, digits, <code>-</code> and <code>_</code>. Paste the token; do not type it.</p>
+<p><label class="inline"><input type="checkbox" id="show"> Show the token</label></p>
+<p id="one-reader" class="fine"><strong>Stop Angelia, or any other program that polls this bot, first.</strong> Telegram gives a bot's updates to one reader at a time. A check interrupts the other program's open request: that program gets <code>409 Conflict</code>. Angelia retries by itself; another program may not.</p>
+<p class="fine">If Angelia already runs with this token, you do not need this page: a chat that is not in <code>routing.yaml</code> gets no answer, and <code>~/.angelia/daemon.log</code> gets one line with its chat id.</p>
+<p><button type="button" id="run" class="btn" aria-describedby="one-reader">Check</button> <button type="button" id="forget" class="btn light">Forget the token</button></p>
+<p id="status" role="status" class="fine"></p>
+<p id="error" role="alert" class="error" hidden></p>
+</div>
+
+<section id="result" class="result" aria-labelledby="result-title" hidden></section>
+
+<h2 id="what-it-does">What the check does</h2>
+<ol>
+  <li><code>getMe</code>: is the token valid, and which bot is it. A wrong or revoked token answers <code>401 Unauthorized</code>.</li>
+  <li><code>getWebhookInfo</code>: does the bot send its updates to a webhook.</li>
+  <li><code>getUpdates</code>: the updates Telegram holds for the bot, up to 100. The page reads each update's chat. It sends no <code>offset</code>, so it marks nothing as read; another program still gets the same updates.</li>
+</ol>
+<p>All three only read; nothing on the bot changes. One side effect: if another program is polling the bot, the check ends that program's open request (see below).</p>
+
+<h2 id="find-a-chat-id">Find a chat id</h2>
+<ul>
+  <li><strong>Your direct chat:</strong> open the bot in Telegram, press Start or send any message, then press Check. A direct chat's id is your own user id, a positive number.</li>
+  <li><strong>A group:</strong> add the bot to the group, then press Check. Being added is an update every bot gets, and it carries the group's id. Or send <code>/start@your_bot</code> in the group. A group's id is negative; most start with <code>-100</code>.</li>
+  <li><strong>Privacy mode</strong> is on for every new bot. In a group, the bot then gets only commands sent to it, replies to its own messages and service messages, such as being added. It does not get plain messages, and not <code>@your_bot</code> mentions either.</li>
+  <li><strong>For Angelia in a group:</strong> Angelia answers mentions, so make the bot an admin of that group. An admin bot gets every message. Or turn privacy mode off in @BotFather (<code>/setprivacy</code>), then add the bot to the group again.</li>
+  <li><strong>Nothing shows:</strong> Telegram keeps updates for at most 24 hours, and only until a program that polls the bot takes them.</li>
+</ul>
+
+<h2 id="when-getupdates-fails">When getUpdates fails</h2>
+<p>Telegram gives a bot's updates to one reader at a time. <code>getUpdates</code> answers <code>409 Conflict</code> in two cases.</p>
+<ul>
+  <li><strong>The bot has a webhook.</strong> Telegram pushes the updates to that address instead, and says: <code>Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first</code>. The page sees the webhook in step 2 and stops there. Angelia polls: when it starts, it removes the webhook first, so a service that gets this bot's updates by webhook stops getting them. Give Angelia a bot of its own.</li>
+  <li><strong>Another program is polling.</strong> Angelia itself is one: while it runs with this token, it keeps a <code>getUpdates</code> request open. In practice, a new request ends the older one, so a check from this page usually wins, and the other program gets <code>Conflict: terminated by other getUpdates request; make sure that only one bot instance is running</code>. Angelia retries by itself: after 5 seconds, then twice as long each time, up to a minute. The pauses start again from 5 seconds once polling has held for 5 minutes. <code>angelia status</code> shows <code>telegram: conflict</code> until it polls again. Another bot program may not retry, so stop it before you check. If this page gets the error, the other program asked last.</li>
+</ul>
+
+<h2 id="with-angelia">Use the ids with Angelia</h2>
+<p><a href="/">Angelia</a> routes each Telegram chat to a coding agent CLI on your Mac. <code>angelia init</code> pairs your first chat for you. To add a chat by hand, put a route in <code>~/.angelia/workspace/routing.yaml</code>:</p>
+<pre><code>routes:
+  - { platform: telegram, chat: 111111111,      profile: coding }
+  - { platform: telegram, chat: -1001234567890, profile: house, owners: [111111111] }
+
+telegram: { token_env: TELEGRAM_BOT_TOKEN }</code></pre>
+<p>The token goes in <code>~/.angelia/env</code> as <code>TELEGRAM_BOT_TOKEN=…</code>, never in the table. In a group, <code>owners</code> lists the user ids that may talk to the agent and approve what it runs. Put only your own there. Your user id is the chat id of your direct chat with the bot. Then run <code>angelia check-config</code> and send <code>/restart</code> in a chat you own.</p>
+
+<h2 id="sources">Sources</h2>
+<ul>
+  <li><a href="https://core.telegram.org/bots/api#getme">Telegram Bot API</a>: <code>getMe</code>, <code>getWebhookInfo</code>, <code>getUpdates</code>.</li>
+  <li><a href="https://core.telegram.org/bots/features#privacy-mode">Privacy mode</a>: what a bot sees in a group.</li>
+</ul>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/docs/security/">Security model</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>
+<script type="module" src="/tools/telegram-bot-check/app.js"></script>

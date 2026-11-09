@@ -44,7 +44,8 @@ By hand:
    may send, e.g. [compact]), sandbox (claude-code: the CLI's own sandbox on, no escape; shell
    network only to sandbox.network.allowedDomains in settings.local.json; codex and pi: on unless false),
    isolated (cut off from the other profiles and from _common/: for a profile other people talk
-   to), and capabilities, except, deny (\`angelia guide capabilities\`).
+   to), backends (written by /backend; keeps model, effort, bin, tui per CLI for a switch back),
+   and capabilities, except, deny (\`angelia guide capabilities\`).
    grok reads CLAUDE.md only in a folder it trusts: run \`grok --trust\` there once (init,
    onboarding and /backend grok do it); \`grok inspect\` then says "Project trusted: yes".
    pi has no permission prompt of its own: Angelia loads a small extension into it that asks the

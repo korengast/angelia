@@ -13,6 +13,11 @@ export function failureLine(reason?: string, home?: string, group = false): stri
   return `Something broke on my side (${tidy.slice(0, 300)}). Try again, or /new.`;
 }
 export const PERMISSION_TIMEOUT_LINE = 'No answer to the permission request in time, so it was denied.';
+/** A turn that ended well with nothing new for the chat. Grok Build ends its turn this way after a denial
+ *  (measured 2026-10-27), so the chat saw its own "no" and then nothing; Claude Code in print mode, Codex
+ *  and pi can all end a turn with an empty final too. One line, so the chat knows the turn is over. */
+export const DENIED_LINE = 'Denied; the agent stopped.';
+export const NO_ANSWER_LINE = 'The agent ended its turn without an answer. Send your message again, or /new for a fresh session.';
 export const UNMATCHED_LINE = '[Angelia] This chat is not routed to a profile.';
 export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
 /** A chat answer to a request no hook waits for any more (it stepped aside when the chat stopped
@@ -24,7 +29,9 @@ export function permissionLine(id: string, tool: string, preview: string): strin
   return `🔐 ${tool}: ${preview}\nReply "yes ${short}" or "no ${short}".`;
 }
 
-export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([0-9a-f-]{5,40})\s*$/i;
+// Ids are not all hex: Grok Build's are `call-…`, and the chat is shown their first eight characters.
+// A digit or a dash marks an id, so "yes please" stays a message.
+export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+((?=[0-9a-z_-]*[0-9-])[0-9a-z_-]{5,40})\s*$/i;
 
 export function parsePermissionReply(text: string): { id: string; allow: boolean } | null {
   const m = PERMISSION_REPLY_RE.exec(text);

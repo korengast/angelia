@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { git, isRepo, pushWorkspace } from './instance.js';
-import { secretFindings } from './secrets.js';
+import { STAGED_DIFF, secretFindings } from './secrets.js';
 
 export { secretFindings } from './secrets.js';
 
@@ -46,7 +46,7 @@ export function commitWorkspace(o: CommitOptions): string {
   if (!files.length) return 'nothing to commit';
 
   const failed: string[] = [];
-  const leaks = secretFindings(run(['diff', '--cached', '-U0', '--no-color'], ws));
+  const leaks = secretFindings(run(STAGED_DIFF, ws));
   if (leaks.length) failed.push(`secret scan: ${leaks.join('; ')}`);
   for (const g of o.gates ?? []) {
     let why: string | undefined;

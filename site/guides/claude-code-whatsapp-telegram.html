@@ -2,7 +2,8 @@
   "title": "Claude Code on WhatsApp and Telegram: four ways compared",
   "description": "Claude Code has no official WhatsApp channel. Remote Control, the Telegram channel, a WhatsApp plugin and Angelia compared: setup, limits, which to pick.",
   "date": "2026-10-02",
-  "updated": "2026-10-18",
+  "updated": "2026-10-30",
+  "faq": ["when-not-angelia"],
   "draft": false
 }-->
 <p class="lede">You have Claude Code set up the way you like it: your files, your skills, your MCP servers. Now you want it in your pocket. Four ways keep that setup and let you reach it from your phone, and they solve different problems. I built one of them, Angelia, and this page is on its site, so I'll say up front where the others are the better choice.</p>
@@ -77,7 +78,7 @@ angelia service install</code></pre>
 <p>The first line checks the release's signature, installs Angelia and starts the setup; you can <a href="https://github.com/{{REPO}}/blob/v{{VERSION}}/install.sh">read the script</a> first. The second makes it start at login and come back after a crash. The full setup, step by step: <a href="/guides/claude-code-from-phone/">how to control Claude Code from your phone</a>.</p>
 <figure class="video"><video controls muted playsinline preload="none" poster="/demo-poster.jpg" width="1920" height="1080" aria-label="Installing Angelia: from the install command to the first reply"><source src="/angelia-demo.webm" type="video/webm"><source src="/angelia-demo-muted.mp4" type="video/mp4"><a href="/angelia-demo-muted.mp4">Download the video</a></video><figcaption>The install command, the signature check, the setup wizard and the first reply. 48 seconds, sped up.</figcaption></figure>
 <ul>
-  <li><strong>Needs:</strong> macOS, Node 22 or newer, git, and a CLI you already use, signed in to your own account: Claude Code (2.1.270 or newer), Codex, Grok Build or pi. A Telegram bot (setup asks for its token), or for WhatsApp a second, established number, not your personal one: Angelia ignores what its own account sends, so on your personal number it would not hear you. WhatsApp bans newly created numbers that start acting like bots, often within hours.</li>
+  <li><strong>Needs:</strong> macOS, Node 22.23.4+, 24.22.1+ or 26.12.1+, git, and a CLI you already use, signed in to your own account: Claude Code (2.1.270 or newer), Codex, Grok Build or pi. A Telegram bot (setup asks for its token), or for WhatsApp a second, established number, not your personal one: Angelia ignores what its own account sends, so on your personal number it would not hear you. WhatsApp bans newly created numbers that start acting like bots, often within hours.</li>
   <li><strong>Good at:</strong> an assistant per chat that answers whenever your Mac is on. A command the profile may not run on its own comes to the chat and waits for an owner's yes; no answer means no. Voice notes (with Whisper installed) and scheduled check-ins work too. API keys are kept out of the CLI's environment, so in the default mode a chat cannot switch you to per-token billing.</li>
   <li><strong>Keep in mind:</strong> it is a young project (v0.3), maintained by one person. Each chat keeps a warm CLI process, so ten chats are ten processes on your Mac, all drawing on the same plan limits.</li>
   <li><strong>Security:</strong> every profile is compiled with deny rules for your credentials and the other profiles' folders, but a deny stops the CLI's file tools, not every program it runs. For a profile other people can talk to, keep shell commands asking, or set <code>sandbox: true</code>. Its WhatsApp link can read every chat on the second number.</li>
@@ -86,7 +87,7 @@ angelia service install</code></pre>
 <p><strong>With Remote Control</strong> (optional, Claude Code only): set <code>tui: true</code> on a profile and install tmux 3.7 or newer. The profile then runs as a real interactive session that registers with Remote Control, so the chat also shows up in the Claude app and you can carry on there. What you type in the app stays in the app; it does not go back to the chat. Remote Control's terms apply: a claude.ai plan, and the transcript is stored on Anthropic's servers while connected.</p>
 <figure class="shot"><img src="/guides/claude-app-recents.jpg" width="443" height="450" loading="lazy" alt="The Claude app on a phone, Recents list: Claude Code sessions named angelia-make-me-rich, angelia-sports-health-assistant, angelia-inbox-zero-hero, angelia-dinner-decider, angelia-family, cc-code-lab and angelia-plant-whisperer"><figcaption>The Claude app's Recents list. Each &lt;/&gt; row is a Claude Code session: the angelia-… rows are Angelia chats (profile names made up), cc-code-lab is an ordinary one.</figcaption></figure>
 
-<h2 id="when-not-angelia">When not to use Angelia</h2>
+<h2 id="when-not-angelia">When should you not use Angelia?</h2>
 <ul>
   <li>You only want to keep an eye on a coding session while you make coffee. Remote Control does that better, with the full session view.</li>
   <li>You live in Discord or iMessage. Use the official channel.</li>
@@ -109,5 +110,5 @@ angelia service install</code></pre>
 <div class="try" id="try">
 <h2 id="try-angelia">Try Angelia</h2>
 <pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
-<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/#security">Security</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/">How it works</a> · <a href="/docs/security/">Security model</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
 </div>

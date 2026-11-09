@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator, envelope, agentText, isAgentCommand } from '../src/core/orchestrator.js';
-import { LATE_ANSWER_LINE } from '../src/core/deliver/text.js';
+import { DENIED_LINE, LATE_ANSWER_LINE, NO_ANSWER_LINE } from '../src/core/deliver/text.js';
 import type { Inbound } from '../src/core/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -76,6 +76,31 @@ test('permission relay through the chat, and a crash yields the failure line onc
   assert.match(sent.at(-1)!.text, /^echo:/);
 });
 
+test('a turn that ends empty after a denied request says so; after an allowed one, the no-answer line', async (t) => {
+  const { o, sent } = setup(); t.after(() => o.shutdown());
+  await o.handle(dm('1', 'warm up'));
+  let p = o.handle(dm('1', 'PERMQUIET do it'));
+  await new Promise((r) => setTimeout(r, 300));
+  let id = /no ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
+  await o.handle(dm('1', `no ${id}`));
+  await p;
+  assert.equal(sent.at(-1)!.text, DENIED_LINE);
+  // The denial belongs to that turn only: the next quiet end, with a yes, gets the plain line.
+  p = o.handle(dm('1', 'PERMQUIET again'));
+  await new Promise((r) => setTimeout(r, 300));
+  id = /yes ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
+  await o.handle(dm('1', `yes ${id}`));
+  await p;
+  assert.equal(sent.at(-1)!.text, NO_ANSWER_LINE);
+  // A CLI command that says nothing keeps its own "done" line.
+  await o.handle(dm('1', '/compact EMPTY'));
+  assert.equal(sent.at(-1)!.text, '/compact done.');
+  // A progress line reached the chat, then an empty result: the chat heard the agent, no line is added.
+  const before = sent.length;
+  await o.handle(dm('1', 'PROGRESS EMPTY'));
+  assert.deepEqual(sent.slice(before).map((s) => s.text), ['working on it']);
+});
+
 test('a resumed session whose transcript is gone from every project folder starts fresh, says so once, and answers', async (t) => {
   const here2 = mkdtempSync(join(tmpdir(), 'angelia-orch-cwd-'));
   const projects = mkdtempSync(join(tmpdir(), 'angelia-orch-projects-'));
@@ -108,12 +133,13 @@ test('a resumed session whose transcript is gone from every project folder start
   assert.ok(existsSync(join(projects, projectFolder(here2), `${id}.jsonl`)), 'copied next to the cwd');
 });
 
-test('status, help, resume texts and empty result silence', async (t) => {
+test('status, help, resume texts; an empty result is said as one line, not silence', async (t) => {
   const { o, sent } = setup(); t.after(() => o.shutdown());
   await o.handle(dm('1', '/status'));
   assert.match(sent.at(-1)!.text, /no active session/);
   await o.handle(dm('1', 'EMPTY'));
-  assert.equal(sent.length, 1);
+  assert.equal(sent.length, 2);
+  assert.equal(sent.at(-1)!.text, NO_ANSWER_LINE);
   await o.handle(dm('1', '/resume'));
   assert.match(sent.at(-1)!.text, /^1\. [0-9a-f]{8} \*/);
   await o.handle(dm('1', '/help'));

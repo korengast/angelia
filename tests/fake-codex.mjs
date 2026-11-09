@@ -11,6 +11,7 @@
 //   text contains "SEP"       -> an answer with U+2028 inside the JSON string
 //   text contains "ARGS"      -> the answer is this process's argv and the thread params, as JSON
 //   text contains "RESOLVE"   -> an approval request Codex then settles itself (serverRequest/resolved)
+//   text contains "SAYFIRST"  -> with ESCALATE: an agentMessage before the approval request, as Codex says what it is about to ask
 //   "/compact"                -> thread/compact/start, then a compaction turn (as real 0.157.0: no thread/compacted)
 //   env FAKE_CODEX_HANG=1      -> never answers anything (a binary that does not start)
 //   env FAKE_CODEX_BUSY=1      -> thread/resume fails: the thread has another writer
@@ -72,6 +73,7 @@ async function turn(text) {
     msg(r.decision === 'accept' ? 'edit allowed' : 'edit denied'); return done();
   }
   if (text.includes('ESCALATE')) {
+    if (text.includes('SAYFIRST')) msg('Asking for access first.');
     const r = await ask('item/permissions/requestApproval', { threadId, turnId: tid, itemId: 'p1', environmentId: 'local', startedAtMs: 0, cwd: '/w', reason: 'copy notes.md there', permissions: { network: null, fileSystem: { read: null, write: ['/Users/example/Downloads'], entries: [{ path: { type: 'path', path: '/Users/example/Downloads' }, access: 'write' }] } } });
     msg(`granted: ${JSON.stringify(r)}`); return done();
   }

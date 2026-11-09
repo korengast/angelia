@@ -4,6 +4,7 @@
 //   text contains "PROGRESS" -> an assistant text block, then a tool_use block, then the result
 //   text contains "TAILTEXT" -> an assistant text block immediately followed by the result (must not be emitted as progress)
 //   text contains "PERM"     -> a can_use_tool control_request; result reports allow/deny
+//                               with "PERMQUIET" the result after the answer is empty (Grok Build ends a denied turn so)
 //   text contains "CRASH"    -> exit 1 mid-turn
 //   text contains "EMPTY"    -> empty result
 //   text contains "SLOW"     -> the answer takes 3s, so a turn can be interrupted mid-flight
@@ -44,6 +45,7 @@ const init = () => { if (inited) return; inited = true; out({ type: 'system', su
       permissionMode: 'acceptEdits', model: 'fake', tools: [], mcp_servers: [] }); };
 
 let pending = null; // permission request awaiting a control_response
+let quiet = false; // the result after the permission answer says nothing
 let initialized = false; // like the real CLI: no initialize handshake, no permission requests (tools are denied)
 const rl = createInterface({ input: process.stdin });
 rl.on('line', (line) => {
@@ -58,9 +60,9 @@ rl.on('line', (line) => {
     // The CLI runs the tool with updatedInput, so an allow must carry the request's own input back.
     const ran = msg.response?.response?.updatedInput?.command;
     const said = `tool ${behavior}ed${behavior === 'allow' ? `: ${ran ?? 'no command'}` : ''}`;
-    out({ type: 'assistant', message: { content: [{ type: 'text', text: said }] } });
-    out({ type: 'result', subtype: 'success', is_error: false, result: said, session_id: sid });
-    pending = null;
+    if (!quiet) out({ type: 'assistant', message: { content: [{ type: 'text', text: said }] } });
+    out({ type: 'result', subtype: 'success', is_error: false, result: quiet ? '' : said, session_id: sid });
+    pending = null; quiet = false;
     return;
   }
   if (msg.type !== 'user') return;
@@ -91,6 +93,7 @@ rl.on('line', (line) => {
   }
   if (text.includes('PERM')) {
     pending = '6b480a6f-d386-4972-95d9-2eeaef82f3bc';
+    quiet = text.includes('PERMQUIET');
     out({ type: 'control_request', request_id: pending, request: { subtype: 'can_use_tool', tool_name: 'Bash',
           input: { command: 'rm -rf /tmp/x' }, description: 'remove x' } });
     return;

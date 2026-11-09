@@ -1,8 +1,9 @@
 /**
  * Values shaped like a credential, never keywords: a line that says "token" is documentation, one
  * that holds `ghp_…` is a leak. Only added lines are read, so removing a secret is never blocked.
+ * The daemon's log redaction (daemon/redact.ts) masks the same shapes.
  */
-const SECRET_SHAPES: [string, RegExp][] = [
+export const SECRET_SHAPES: [string, RegExp][] = [
   ['a private key', /-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY/],
   ['an Anthropic or OpenAI key', /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}/],
   ['a GitHub token', /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/],
@@ -47,9 +48,10 @@ function iban(s: string): boolean {
 }
 
 /** A path from a diff header, as git wrote it: quoted, with octal escapes, when it holds a byte
- *  outside ASCII (a Hebrew file name). Taken literally, `git reset -- <name>` would match nothing. */
+ *  outside ASCII (a Hebrew file name), and ended with a tab when it holds a space ("+++ b/my notes.md\t").
+ *  Taken literally, `git reset -- <name>` would match nothing, and the file would be committed after all. */
 function diffPath(header: string): string {
-  let p = header.slice(4);
+  let p = header.slice(4).replace(/\t$/, '');
   if (p.startsWith('"') && p.endsWith('"')) {
     const bytes: number[] = [];
     const body = p.slice(1, -1);
@@ -65,12 +67,23 @@ function diffPath(header: string): string {
   return p.replace(/^b\//, '');
 }
 
+/**
+ * The diff the scan reads, staged. The prefixes are pinned, because diff.mnemonicPrefix, diff.noprefix
+ * or diff.dstPrefix in the user's own git config would name a path the reset then misses; --no-ext-diff
+ * keeps a difftool out of the output (an empty one scans clean); --text keeps a `*.md -diff` attribute
+ * from turning a file into "Binary files differ", which has no lines to read.
+ */
+export const STAGED_DIFF = ['diff', '--cached', '-U0', '--no-color', '--no-ext-diff', '--text', '--src-prefix=a/', '--dst-prefix=b/'];
+
 /** Each added line in a unified diff that holds a secret-shaped value, as `file: what`. Never the value. */
 export function secretFindings(diff: string): string[] {
   const out: string[] = [];
   let file = '';
+  let inHunk = false; // "+++ " names the file only before its first @@; after it, it is an added "++ " line
   for (const line of diff.split('\n')) {
-    if (line.startsWith('+++ ')) { file = diffPath(line); continue; }
+    if (line.startsWith('diff --git ')) { inHunk = false; continue; }
+    if (line.startsWith('@@')) { inHunk = true; continue; }
+    if (!inHunk && line.startsWith('+++ ')) { file = diffPath(line); continue; }
     if (!line.startsWith('+')) continue;
     for (const [what, re] of SECRET_SHAPES) if (re.test(line)) out.push(`${file}: ${what}`);
     for (const [what, re, ok] of CHECKED_SHAPES) if ([...line.matchAll(re)].some((m) => ok(m[0]))) out.push(`${file}: ${what}`);

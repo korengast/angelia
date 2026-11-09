@@ -4,6 +4,13 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// The developer's own ~/.gitconfig (diff.mnemonicPrefix, diff.external) must not shape these runs:
+// git reads this empty file instead. A test that needs a setting writes it here.
+const GIT_GLOBAL = join(mkdtempSync(join(tmpdir(), 'angelia-gitconfig-')), 'gitconfig');
+writeFileSync(GIT_GLOBAL, '');
+process.env.GIT_CONFIG_GLOBAL = GIT_GLOBAL;
+process.env.GIT_CONFIG_NOSYSTEM = '1';
 import { GITIGNORE, buildSkeleton, configPath, defaultConfigPath, describeInstance, initRepo, isRepo, profileDir, syncWorkspace, workspaceDir } from '../src/instance/instance.js';
 
 const fresh = () => mkdtempSync(join(tmpdir(), 'angelia-inst-'));
@@ -132,4 +139,48 @@ test('the starter skills are copied into a new workspace once, and an owner\'s o
   writeFileSync(join(skills, 'mfa', 'SKILL.md'), 'mine');
   buildSkeleton([], dir);
   assert.equal(readFileSync(join(skills, 'mfa', 'SKILL.md'), 'utf8'), 'mine');
+});
+
+test('workspace sync holds back a flagged file whose path has a space: git ends its diff header with a tab', () => {
+  const instance = mkdtempSync(join(tmpdir(), 'angelia-sync-'));
+  const ws = buildSkeleton(['p'], instance).workspace;
+  initRepo(ws);
+  const git = (args: string[]) => execFileSync('git', args, { cwd: ws, encoding: 'utf8' });
+  writeFileSync(join(ws, 'profiles', 'p', 'my notes.md'), `token ${'ghp_'}${'A1b2'.repeat(9)}\n`);
+  writeFileSync(join(ws, 'profiles', 'p', 'kept.md'), 'k');
+  const said = syncWorkspace(ws, new Date('2026-10-30T03:30:00Z'));
+  assert.equal(said, 'saved 1 file, no remote to push to; left out, secret-shaped: profiles/p/my notes.md: a GitHub token');
+  assert.doesNotMatch(git(['ls-files']), /my notes/, 'the flagged file was not committed');
+  assert.match(git(['status', '--porcelain']), /\?\? "profiles\/p\/my notes\.md"/, 'still on disk, unstaged');
+});
+
+test('workspace sync refuses when a flagged file is still staged after the reset: nothing committed, index clean', () => {
+  const instance = mkdtempSync(join(tmpdir(), 'angelia-sync-'));
+  const ws = buildSkeleton(['p'], instance).workspace;
+  initRepo(ws);
+  const git = (args: string[], cwd = ws) => execFileSync('git', args, { cwd, encoding: 'utf8' });
+  writeFileSync(join(ws, 'profiles', 'p', 'leak.md'), `token ${'ghp_'}${'A1b2'.repeat(9)}\n`);
+  writeFileSync(join(ws, 'profiles', 'p', 'kept.md'), 'k');
+  const head = git(['rev-parse', 'HEAD']);
+  // A git whose targeted reset does nothing, as one given a name it does not know.
+  const blind = (args: string[], cwd: string) => (args[0] === 'reset' && args.includes('--') ? '' : git(args, cwd));
+  assert.throws(() => syncWorkspace(ws, new Date('2026-10-30T03:30:00Z'), blind), /still staged after the reset, nothing committed: profiles\/p\/leak\.md/);
+  assert.equal(git(['rev-parse', 'HEAD']), head, 'no commit');
+  assert.equal(git(['diff', '--cached', '--name-only']), '', 'nothing left staged');
+});
+
+test('workspace sync holds a flagged file back whatever the owner\'s git config: mnemonic prefixes, an external diff tool, a -diff attribute', () => {
+  const instance = mkdtempSync(join(tmpdir(), 'angelia-sync-'));
+  const ws = buildSkeleton(['p'], instance).workspace;
+  initRepo(ws);
+  const git = (args: string[]) => execFileSync('git', args, { cwd: ws, encoding: 'utf8' });
+  writeFileSync(GIT_GLOBAL, '[diff]\n\tmnemonicPrefix = true\n\texternal = /usr/bin/true\n');
+  try {
+    writeFileSync(join(ws, '.gitattributes'), '*.md -diff\n');
+    writeFileSync(join(ws, 'profiles', 'p', 'leak.md'), `token ${'ghp_'}${'A1b2'.repeat(9)}\n`);
+    writeFileSync(join(ws, 'profiles', 'p', 'kept.md'), 'k');
+    assert.equal(syncWorkspace(ws, new Date('2026-10-30T03:30:00Z')), 'saved 2 files, no remote to push to; left out, secret-shaped: profiles/p/leak.md: a GitHub token');
+    assert.doesNotMatch(git(['ls-files']), /leak/, 'never committed');
+    assert.doesNotMatch(git(['show', 'HEAD']), /ghp_/, 'no token in the commit');
+  } finally { writeFileSync(GIT_GLOBAL, ''); }
 });

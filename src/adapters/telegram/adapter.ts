@@ -240,9 +240,12 @@ export class TelegramAdapter implements Sender {
             if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
             const dest = await saveInbound(inbox, extname(f.file_path), Readable.fromWeb(res.body as any));
             if (dest) media.push(dest); else note(`a file over ${MAX_INBOUND >> 20} MB was sent and not downloaded`);
-          }
+          } else { this.log(`telegram: getFile gave no file_path chat=${chat}`); note('the file sent could not be downloaded'); }
         } catch (e) {
+          // Said to the agent too (#35): a file with no caption would otherwise be no turn at all, and one
+          // with a caption would be answered as if nothing was attached.
           this.log(`telegram: media download failed chat=${chat}: ${String((e as Error).message ?? e).split(this.opts.token).join('<token>').slice(0, 160)}`);
+          note('the file sent could not be downloaded');
         }
       }
       if (!head.text && !media.length) return;

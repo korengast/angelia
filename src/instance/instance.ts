@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { secretFindings } from './secrets.js';
+import { STAGED_DIFF, secretFindings } from './secrets.js';
 
 /**
  * Where one person's Angelia lives.
@@ -208,9 +208,16 @@ export function syncWorkspace(workspace = workspaceDir(), now = new Date(), run 
   run(['add', '-A'], workspace);
   // The same scan workspace commit runs: agents write their own memory, and a pasted key must not
   // reach the remote because the nightly save took everything. A flagged file is left out, and said.
-  const leaks = secretFindings(run(['diff', '--cached', '-U0', '--no-color'], workspace));
+  const leaks = secretFindings(run(STAGED_DIFF, workspace));
   const held = [...new Set(leaks.map((l) => l.slice(0, l.lastIndexOf(': '))))];
-  if (held.length) run(['reset', '-q', '--', ...held], workspace);
+  if (held.length) {
+    run(['reset', '-q', '--', ...held], workspace);
+    // Scanned again: a path the reset did not match (a name git wrote differently from the index)
+    // would be saved and pushed while this says it was left out. Then nothing is committed, and the
+    // job reports it.
+    const still = secretFindings(run(STAGED_DIFF, workspace));
+    if (still.length) { run(['reset', '-q'], workspace); throw new Error(`secret-shaped content still staged after the reset, nothing committed: ${still.join('; ')}`); }
+  }
   const files = run(['diff', '--cached', '--name-only'], workspace).split('\n').filter(Boolean);
   if (files.length) run(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', `Workspace sync ${now.toISOString().slice(0, 10)}: ${files.length} file${files.length > 1 ? 's' : ''}`], workspace);
   const saved = files.length ? `saved ${files.length} file${files.length > 1 ? 's' : ''}` : '';

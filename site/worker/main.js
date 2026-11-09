@@ -39,6 +39,13 @@ const withHeaders = (res, set, status = res.status) => {
   return new Response(res.body, { status, headers, ...(status === res.status ? { statusText: res.statusText } : {}) });
 };
 const MARKDOWN = { 'content-type': 'text/markdown; charset=utf-8', vary: 'Accept' };
+/** Pages where the visitor types a secret get a narrower policy than the site's own (_headers, built by
+ *  site/build.mjs): scripts from this site only, no analytics beacon, and connections to the one API the
+ *  page calls. Set here, not in _headers: a second Content-Security-Policy there would be joined to the
+ *  first, and a browser enforces both. */
+export const PAGE_CSP = {
+  '/tools/telegram-bot-check/': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src https://api.telegram.org; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+};
 const isHtml = (res) => (res.headers.get('content-type') ?? '').startsWith('text/html');
 
 export default {
@@ -57,6 +64,6 @@ export default {
         if (md.status === 200) return withHeaders(md, MARKDOWN, res.status);
       }
     }
-    return withHeaders(res, { vary: 'Accept' });
+    return withHeaders(res, { vary: 'Accept', ...(PAGE_CSP[url.pathname] ? { 'content-security-policy': PAGE_CSP[url.pathname] } : {}) });
   },
 };

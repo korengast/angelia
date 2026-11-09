@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Angelia: your coding agent, your personal assistant</title>
+<title>Angelia: Claude Code on WhatsApp and Telegram</title>
 <meta name="description" content="Turn the coding agent CLI you already know into the brain of your personal assistant, on WhatsApp and Telegram. Runs on your machine. Open source, MIT.">
 <link rel="canonical" href="{{SITE}}/">
 <link rel="alternate" type="text/markdown" href="{{SITE}}/index.md">
@@ -15,7 +15,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Angelia">
 <meta property="og:url" content="{{SITE}}/">
-<meta property="og:title" content="Angelia: your coding agent, your personal assistant">
+<meta property="og:title" content="Angelia: Claude Code on WhatsApp and Telegram">
 <meta property="og:description" content="The coding agent CLI you already trust becomes the brain of your personal assistant, on WhatsApp and Telegram. Runs on your machine. Open source.">
 <meta property="og:image" content="{{SITE}}/og.png">
 <meta property="og:image:width" content="1200">
@@ -268,7 +268,8 @@ footer a{text-decoration:none}
  "description":"Turns the coding agent CLI you already know into the brain of your personal assistant, on WhatsApp and Telegram. Runs on your own machine.",
  "applicationCategory":"DeveloperApplication","operatingSystem":"macOS","softwareVersion":"{{VERSION}}",
  "offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"license":"https://opensource.org/licenses/MIT",
- "image":"{{SITE}}/og.png","downloadUrl":"https://github.com/{{REPO}}/releases","codeRepository":"https://github.com/{{REPO}}"}
+ "image":"{{SITE}}/og.png","downloadUrl":"https://github.com/{{REPO}}/releases","codeRepository":"https://github.com/{{REPO}}",
+ "sameAs":["https://github.com/{{REPO}}","https://www.npmjs.com/package/angelia-gateway"]}
 </script>
 </head>
 <body>
@@ -294,7 +295,7 @@ footer a{text-decoration:none}
       <li><a href="#how">How it works</a></li>
       <li class="keep"><a href="#security">Security</a></li>
       <!--GUIDES-->
-      <li><a href="https://github.com/{{REPO}}#readme">Docs</a></li>
+      <li><a href="/docs/">Docs</a></li>
       <li class="keep"><a href="https://github.com/{{REPO}}">GitHub</a></li>
     </ul>
   </nav>
@@ -321,7 +322,7 @@ footer a{text-decoration:none}
                 <li><a href="#security"><svg aria-hidden="true"><use href="#i-nodb"/></svg>Stores no messages</a></li>
         <li><a href="#security"><svg aria-hidden="true"><use href="#i-off"/></svg>No telemetry</a></li>
       </ul>
-      <p class="fine">Alpha · macOS, Node 22+ · Chat through a Telegram bot, or a second WhatsApp number, not your own (<a href="/guides/claude-code-whatsapp-telegram/#angelia">why</a>).<!--COMPARE-HERO--></p>
+      <p class="fine">Alpha · macOS, Node 22.23.4+, 24.22.1+ or 26.12.1+ · Chat through a Telegram bot, or a second WhatsApp number, not your own (<a href="/guides/claude-code-whatsapp-telegram/#angelia">why</a>).<!--COMPARE-HERO--></p>
     </div>
     <figure class="phone" aria-label="Example chat">
       <div class="top"><svg aria-hidden="true"><use href="#mark"/></svg><div><b>side-project</b><small>Telegram · you and your assistant</small></div></div>
@@ -415,7 +416,7 @@ footer a{text-decoration:none}
       <li><svg aria-hidden="true"><use href="#i-sign"/></svg><h3>Signed, local, quiet</h3><p>Every release is signed and checked before it installs. No Angelia server, no account, no telemetry.</p></li>
     </ul>
     <div class="ctas">
-      <a class="btn solid safe" href="https://github.com/{{REPO}}/blob/main/docs/security.md">Read the security model</a>
+      <a class="btn solid safe" href="/docs/security/">Read the security model</a>
       <a class="btn" href="https://github.com/{{REPO}}/blob/main/SECURITY.md">Report a hole privately</a>
     </div>
   </div>
@@ -491,6 +492,7 @@ footer a{text-decoration:none}
 <footer>
   <div class="wrap">
     <span><span class="greek">Ἀγγελία</span> · message, tidings</span>
+    <!--PAGE-LINKS-->
     <span><a href="mailto:info@useangelia.com">info@useangelia.com</a> · <a href="https://github.com/{{REPO}}">GitHub</a> · <a href="https://github.com/{{REPO}}/blob/main/LICENSE">MIT license</a></span>
   </div>
 </footer>

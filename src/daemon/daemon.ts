@@ -2,7 +2,7 @@ import { isDaemonPid, pidAlive } from './pid.js';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, statSync } from 'node:fs';
 import { workspaceDir } from '../instance/instance.js';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { loadConfig, configWarnings } from '../instance/config/load.js';
 import { effectiveTable, writeAccepted } from '../instance/accepted.js';
@@ -21,9 +21,13 @@ import { API_SOCKET, ApiServer, claimSocket, loadOrMintToken, sessionToken } fro
 import { selfPrompt, selfOverrideWarning, upsertSelfBlock, FILE_BACKENDS } from './self.js';
 import { blockText, floorWarnings, launchCheck, nestingWarnings, readRecord, seedGuards } from '../capabilities/compile.js';
 import { launchChatRestart, takeRestartNote } from './restart.js';
+import { CUT_LINE, takeCutTurns } from '../core/cut-turns.js';
 import { onboardChat } from '../instance/onboard.js';
 import { apiDeps } from './api/deps.js';
 import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
+import { nodeAdvice, nodeFixProblem } from './node-fix.js';
+import { LABEL } from './service.js';
+import { redactLog } from './redact.js';
 import type { Inbound } from '../core/types.js';
 
 export const STATE_DIR = process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia');
@@ -39,6 +43,8 @@ let logSize = -1;
 
 export function logLine(line: string): void {
   const stamp = new Date().toISOString();
+  // Masked before either copy: a library's error line can quote the request it made, token and all.
+  line = redactLog(line);
   const file = join(STATE_DIR, 'daemon.log'), text = `${stamp} ${line}\n`;
   try {
     if (logSize < 0) logSize = existsSync(file) ? statSync(file).size : 0;
@@ -79,6 +85,9 @@ export async function runDaemon(configPath: string): Promise<void> {
     if (old) logLine(`daemon.pid named pid ${old}, which is not a running angelia daemon (left by a crash?); replaced`);
   }
   writeFileSync(pidFile, String(process.pid));
+  // A warning, not a refusal: refusing would take every chat down, and the fix is the owner's to install.
+  const started = nodeStart(), open = nodeFixProblem(process.versions.node, process.execPath);
+  if (open) logLine(`WARNING: ${open}. This process decodes what Telegram and WhatsApp send: ${nodeAdvice(started, started !== undefined)}.`);
 
   // Held in memory, never copied into process.env: everything this process starts inherits that.
   const secrets = envFile();
@@ -197,7 +206,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   let telegram: TelegramAdapter | undefined;
   const tgState = () => telegram?.state ?? 'off';
   let waState = 'off';
-  const statusNow = () => ({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), tg: tgState(), wa: waState, sessions: orch.status() });
+  const statusNow = () => ({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), node: process.versions.node, nodePath: process.execPath, nodeStart: started, tg: tgState(), wa: waState, sessions: orch.status() });
   const api = new ApiServer(apiDeps(orch, cfg, statusNow, STATE_DIR), apiToken);
   const socket = join(STATE_DIR, API_SOCKET);
   await claimSocket(socket);
@@ -219,6 +228,10 @@ export async function runDaemon(configPath: string): Promise<void> {
     senders.whatsapp = wa;
     waAdapter = wa;
     wa.on('open', () => { waState = 'connected'; });
+    // Cleared on a close, so `angelia status` does not say connected through a reconnect, or while the
+    // watchdog (adapter.ts, check()) is giving up; 'logged-out' and 'dead' come after their close.
+    wa.on('close', () => { waState = 'reconnecting'; });
+    wa.on('dead', () => { waState = 'not connected: restart the daemon'; });
     wa.on('logged-out', () => { waState = 'logged out: run angelia pair'; });
     adapters.push(wa);
     await startPlatform('whatsapp', () => wa.start());
@@ -251,29 +264,51 @@ export async function runDaemon(configPath: string): Promise<void> {
   // Before the first sweep below, so their panes count as ours.
   await orch.restoreBackground().catch((e) => logLine(`background restore failed: ${(e as Error).message}`));
   const reapTimer = setInterval(() => void reap().catch((e) => logLine(`idle reap failed: ${(e as Error).message}`)), 60_000);
-  // A /restart asked for this: tell that chat we are back, once its platform can deliver.
+  // Said once the chat's platform can deliver: WhatsApp may still be opening here.
+  const whenUp = (key: string, say: () => void) => {
+    if (key.startsWith('whatsapp:') && waAdapter && !waAdapter.connected) waAdapter.once('open', say);
+    else say();
+  };
+  // A /restart asked for this: tell that chat we are back.
   const note = takeRestartNote(STATE_DIR);
-  if (note) {
-    const back = () => void orch.notify(note.key, `Angelia is back up (pid ${process.pid}).`).catch((e) => logLine(`restart note: ${(e as Error).message}`));
-    if (note.key.startsWith('whatsapp:') && waAdapter && !waAdapter.connected) waAdapter.once('open', back);
-    else back();
+  if (note) whenUp(note.key, () => void orch.notify(note.key, `Angelia is back up (pid ${process.pid}).`).catch((e) => logLine(`restart note: ${(e as Error).message}`)));
+  // Chats whose turn the last shutdown cut (core/cut-turns.ts): one line each, so nobody waits on an answer that is not coming.
+  for (const key of takeCutTurns(STATE_DIR)) {
+    if (key === note?.key) continue; // that chat asked for the restart and is told it is done
+    whenUp(key, () => void orch.notify(key, CUT_LINE).catch((e) => logLine(`cut turn note: ${(e as Error).message}`)));
   }
   logLine(`daemon up pid=${process.pid} profiles=${Object.keys(cfg.profiles).length} routes=${cfg.routes.length} tg=${tgState()} wa=${waState} api=${API_SOCKET}${missing.length ? ` cli_missing=${missing.length}` : ''}`);
 
-  const shutdown = async (sig: string) => {
+  const shutdown = async (sig: string, code = 0) => {
     // Once: a restart under launchd sends SIGTERM twice (the service stop and the restart itself), and
     // the second would run the whole shutdown again beside the first.
     if (stopping) return;
     stopping = true;
     logLine(`shutdown on ${sig}`);
+    // A stop that hangs (a tmux that does not answer, a socket that never ends) must still end in an
+    // exit, or nothing restarts us; 20 s is more than a stop ever took.
+    setTimeout(() => process.exit(code), 20_000).unref();
     clearInterval(statusTimer); clearInterval(reapTimer);
-    await Promise.allSettled(adapters.map((a) => a.stop()));
-    await orch.shutdown();
-    try { unlinkSync(pidFile); } catch {}
-    process.exit(0);
+    try {
+      // The chats with a turn running, for the next daemon to tell: before anything that can hang.
+      orch.cutTurns();
+      await Promise.allSettled(adapters.map((a) => a.stop()));
+      await orch.shutdown();
+      try { unlinkSync(pidFile); } catch {}
+    } finally { process.exit(code); }
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
+  // WhatsApp paired and not connected for two windows, its own reopen included (adapter.ts, check()).
+  // Under launchd: the same stop a restart does (orch.shutdown ends every running print turn, on every
+  // platform, as SIGTERM does), then a non-zero exit, which the service's KeepAlive answers with a fresh
+  // process (service.ts). Started by hand, or on Linux, nothing would start a fresh one: the line says
+  // so, and the adapter goes on opening again by itself.
+  waAdapter?.on('dead', () => {
+    const service = process.ppid === 1 && process.env.XPC_SERVICE_NAME === LABEL;
+    if (service) { logLine('whatsapp: still not connected; exiting so the service starts a fresh process'); void shutdown('whatsapp dead', 1); }
+    else logLine('whatsapp: still not connected; restart the daemon');
+  });
   // One process carries every chat on every platform. A transient error in one of them - a socket
   // that closed mid-write, a promise nobody awaited - must not be the end of all of them. Node's
   // default for both of these is to print and exit.
@@ -282,12 +317,31 @@ export async function runDaemon(configPath: string): Promise<void> {
   await new Promise(() => {});
 }
 
+/** The plist's node path when launchd started this daemon (launchd passes it as argv[0] and names the
+ *  job in XPC_SERVICE_NAME, which its children inherit, so the parent must be launchd too): it decides whether a new Node reaches the daemon by a restart or needs the
+ *  plist written again. Without the service there is no plist to point anywhere, so nothing. process.execPath
+ *  is no use here: it is always the real binary, a versioned folder even when the plist names a link
+ *  that follows upgrades, and `angelia restart` spawns that same binary. */
+export function nodeStart(argv0 = process.argv0, service = process.ppid === 1 && process.env.XPC_SERVICE_NAME === LABEL): string | undefined {
+  return service && isAbsolute(argv0) ? argv0 : undefined;
+}
+
+/** status's line about the daemon's Node, from what status.json recorded: fine, unknown, or what is wrong with it. */
+export function nodeLine(s: { node?: unknown; nodePath?: unknown; nodeStart?: unknown }): string {
+  if (typeof s.node !== 'string') return "daemon's Node unknown (started before this version); angelia restart records it";
+  const path = typeof s.nodePath === 'string' ? s.nodePath : undefined;
+  const open = nodeFixProblem(s.node, path);
+  return open ? `warning: ${open}; ${nodeAdvice(typeof s.nodeStart === 'string' ? s.nodeStart : undefined, typeof s.nodeStart === 'string')}` : `node ${s.node}${path ? ` at ${path}` : ''} (has the CVE-2026-111497 fix)`;
+}
+
 export function readStatus(): string {
   const p = join(STATE_DIR, 'status.json');
   if (!existsSync(p)) return 'no daemon status file';
   const s = JSON.parse(readFileSync(p, 'utf8'));
   const alive = pidAlive(Number(s.pid));
   const lines = [`daemon pid ${s.pid} ${alive ? 'alive' : 'DEAD'} · written ${s.at}`, `telegram: ${s.tg} · whatsapp: ${s.wa}`];
+  // The daemon's own Node, which launchd picks from the plist: not always the one this command runs on.
+  lines.push(nodeLine(s));
   for (const x of s.sessions ?? []) lines.push(`  ${x.key} ${x.alive ? 'warm' : 'cold'} queued=${x.queued}`);
   return lines.join('\n');
 }
