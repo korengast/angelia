@@ -286,5 +286,30 @@ test('send: a phone the group lists only by lid is tagged through the lid map; p
   sock.ev.emit('group-participants.update', { id: G, author: 'x', participants: [], action: 'add' });
   await a.send(G, sock.members[G].map((m) => `@${m.id.slice(0, 11)}`).join(' '), undefined, { mentions: true });
   assert.equal(sock.posts.at(-1)!.content.mentions.length, 5);
-  assert.ok(log.some((l) => /7 members tagged in one message, 2 left as text \(at most 5\)/.test(l)), log.join('\n'));
+  assert.ok(log.some((l) => /7 members named in one message, 2 not tagged \(at most 5\)/.test(l)), log.join('\n'));
+});
+
+test('send: a phone the lid map knows goes out as the lid with tags off, after a failed fetch, and past the cap', async (t) => {
+  const { a, sock, authDir } = await connected(); t.after(() => a.stop());
+  writeFileSync(join(authDir, 'lid-mapping-15550003333.json'), JSON.stringify('33333333333333@lid'));
+  sock.ev.emit('creds.update', {});
+  // A progress line: no tag, no fetch, and still no phone.
+  await a.send(G, 'asking @15550003333 now');
+  assert.deepEqual(sock.posts.at(-1)!.content, { text: 'asking @33333333333333 now' });
+  assert.equal(sock.fetches.length, 0);
+  // A DM is left alone.
+  await a.send('15550002222@s.whatsapp.net', 'about @15550003333');
+  assert.deepEqual(sock.posts.at(-1)!.content, { text: 'about @15550003333' });
+  // The fetch fails: no tag, no phone.
+  sock.failFetch = new Error('timed out');
+  await a.send(G, 'thanks @15550003333', undefined, { mentions: true });
+  assert.deepEqual(sock.posts.at(-1)!.content, { text: 'thanks @33333333333333' });
+  // Past the cap: five others are tagged first; the sixth is named by lid, untagged.
+  sock.failFetch = undefined;
+  sock.members[G] = [...Array.from({ length: 5 }, (_, n) => ({ id: `1555000000${n}@s.whatsapp.net` })), { id: '33333333333333@lid' }];
+  await a.send(G, `${[0, 1, 2, 3, 4].map((n) => `@1555000000${n}`).join(' ')} @15550003333`, undefined, { mentions: true });
+  const last = sock.posts.at(-1)!.content;
+  assert.equal(last.mentions.length, 5);
+  assert.ok(!last.mentions.includes('33333333333333@lid'));
+  assert.match(last.text, /@33333333333333$/);
 });

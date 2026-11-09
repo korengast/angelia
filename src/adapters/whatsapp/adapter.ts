@@ -319,21 +319,21 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
 
   /**
    * `mentions`: an agent's answer or `angelia send` may tag group members with `@<number>`; Angelia's own
-   * lines and progress lines never do. A group whose members cannot be fetched gets the text as written:
-   * the answer matters more than the tag.
+   * lines and progress lines never do. Every group text with `@<digit>` is rewritten either way: a phone
+   * the lid map knows goes out as the lid (withMentions). A group whose members cannot be fetched gets
+   * that text with no tags: the answer matters more than the tag.
    */
   async send(chat: string, text: string, _thread?: string, o: SendOptions = {}): Promise<void> {
     if (!this.sock || !this.connected) throw new Error('whatsapp: not connected');
-    if (o.mentions && chat.endsWith('@g.us') && /@\+?\d/.test(text)) {
-      const meta = await this.groupMeta(chat).catch((e) => {
+    if (chat.endsWith('@g.us') && /@\+?\d/.test(text)) {
+      const meta = o.mentions ? await this.groupMeta(chat).catch((e) => {
         this.log(`whatsapp: group members not fetched, sent without tags chat=${chat.slice(0, 8)}…: ${String((e as Error).message ?? e).slice(0, 120)}`);
         return undefined;
-      });
-      if (meta) {
-        const m = withMentions(text, meta.participants, { lidFor: (n) => this.lids.lidFor(n) });
-        if (m.capped) this.log(`whatsapp: ${m.mentions.length + m.capped} members tagged in one message, ${m.capped} left as text (at most ${MAX_MENTIONS}) chat=${chat.slice(0, 8)}…`);
-        if (m.mentions.length) { await this.post(chat, { text: m.text, mentions: m.mentions }); return; }
-      }
+      }) : undefined;
+      const m = withMentions(text, meta?.participants, { lidFor: (n) => this.lids.lidFor(n) });
+      if (m.capped) this.log(`whatsapp: ${m.mentions.length + m.capped} members named in one message, ${m.capped} not tagged (at most ${MAX_MENTIONS}) chat=${chat.slice(0, 8)}…`);
+      await this.post(chat, m.mentions.length ? { text: m.text, mentions: m.mentions } : { text: m.text });
+      return;
     }
     await this.post(chat, { text });
   }

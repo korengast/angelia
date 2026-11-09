@@ -121,27 +121,27 @@ export interface MentionOptions {
 }
 
 /**
- * `@<number>` in an outgoing group text -> a real mention. The number may be the member's phone or
- * lid (the agent sees whichever the envelope showed). The token is rewritten to the member's `id`,
- * the form WhatsApp renders as their name, so a phone the group hides is not shown either. A number
- * that is no member is left as plain text, and so is any token past `max` distinct members
- * (`capped` counts those). Text inside backticks is never touched.
+ * `@<number>` in an outgoing group text. Two things, kept apart:
+ * - The rewrite, always: a phone whose lid the lid map knows becomes `@<lid>`, so a phone the group
+ *   hides never goes out, whether or not a tag is made (a progress line, a failed member fetch, a
+ *   token past the cap). It needs no member list and no network.
+ * - The tag, only with `members` (the caller wants tags and has the list): a phone or lid of a member
+ *   becomes a mention, written as the member's `id`, the form WhatsApp renders as their name. At most
+ *   `max` distinct members; the others are named as written (or by lid), untagged, and `capped`
+ *   counts those members.
+ * A number that is no member is left as written. Text inside backticks is never touched.
  */
-export function withMentions(text: string, members: Participant[], o: MentionOptions = {}): { text: string; mentions: string[]; capped: number } {
+export function withMentions(text: string, members: Participant[] | undefined, o: MentionOptions = {}): { text: string; mentions: string[]; capped: number } {
   const max = o.max ?? MAX_MENTIONS;
   const byNum = new Map<string, string>();
-  for (const p of members) for (const j of [p.id, p.lid, p.phoneNumber]) if (j) byNum.set(bareId(j), normalizeJid(p.id));
-  const mentions = new Set<string>();
-  let capped = 0;
+  for (const p of members ?? []) for (const j of [p.id, p.lid, p.phoneNumber]) if (j) byNum.set(bareId(j), normalizeJid(p.id));
+  const mentions = new Set<string>(), capped = new Set<string>();
   const tag = (plain: string) => plain.replace(TOKEN, (tok, n: string) => {
-    let jid = byNum.get(n);
-    if (!jid) { const lid = o.lidFor?.(n); if (lid) jid = byNum.get(lid); }
-    if (!jid) return tok;
-    if (!mentions.has(jid)) {
-      if (mentions.size >= max) { capped++; return tok; }
-      mentions.add(jid);
-    }
-    return `@${bareId(jid)}`;
+    const lid = o.lidFor?.(n);
+    const jid = byNum.get(n) ?? (lid ? byNum.get(lid) : undefined);
+    if (jid && (mentions.has(jid) || mentions.size < max)) { mentions.add(jid); return `@${bareId(jid)}`; }
+    if (jid) capped.add(jid);
+    return lid ? `@${lid}` : tok;
   });
   let out = '', at = 0;
   for (const c of text.matchAll(CODE)) {
@@ -149,5 +149,5 @@ export function withMentions(text: string, members: Participant[], o: MentionOpt
     at = c.index + c[0].length;
   }
   out += tag(text.slice(at));
-  return { text: out, mentions: [...mentions], capped };
+  return { text: out, mentions: [...mentions], capped: capped.size };
 }

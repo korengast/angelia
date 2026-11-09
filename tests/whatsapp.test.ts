@@ -153,6 +153,26 @@ test('withMentions: at most MAX_MENTIONS members; tokens past the cap stay as wr
   assert.equal(withMentions(text, members, { max: 2 }).mentions.length, 2);
 });
 
+test('withMentions: the cap counts members, not tokens', () => {
+  const members = Array.from({ length: 7 }, (_, n) => ({ id: `1555000000${n}@s.whatsapp.net` }));
+  const at = (n: number) => `@1555000000${n}`;
+  // Member 0 three times and 1 twice are two members; 2-4 make five; 5 and 6 are two capped members, named twice each.
+  const r = withMentions([0, 0, 1, 0, 1, 2, 3, 4, 5, 6, 5, 6].map(at).join(' '), members);
+  assert.equal(r.mentions.length, 5);
+  assert.equal(r.capped, 2);
+});
+
+test('withMentions: a phone the lid map knows goes out as the lid even with no tag: no member list, past the cap', () => {
+  const lidFor = (n: string) => ({ '15550005555': '44444444444444', '15550006666': '66666666666666' } as Record<string, string>)[n];
+  // No member list (tags off, or the fetch failed): rewritten, never tagged.
+  assert.deepEqual(withMentions('cc @+15550005555 and @15550007777', undefined, { lidFor }), { text: 'cc @44444444444444 and @15550007777', mentions: [], capped: 0 });
+  // Past the cap: the member is not tagged, and the phone is still not shown.
+  const members = [{ id: '44444444444444@lid' }, { id: '66666666666666@lid' }];
+  assert.deepEqual(withMentions('@15550005555 @15550006666', members, { lidFor, max: 1 }), { text: '@44444444444444 @66666666666666', mentions: ['44444444444444@lid'], capped: 1 });
+  // In code it stays as written.
+  assert.equal(withMentions('`@15550005555`', undefined, { lidFor }).text, '`@15550005555`');
+});
+
 test('#34: stacked wrappers are all peeled: a captioned document in a disappearing chat, a view-once voice note', () => {
   const nested = group({ ephemeralMessage: { message: { documentWithCaptionMessage: { message: { documentMessage: { caption: 'the plan', fileName: 'plan.pdf', mimetype: 'application/pdf', fileLength: 12 } } } } } });
   const p = parseMessage(nested, US)!;
