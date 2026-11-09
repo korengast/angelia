@@ -74,7 +74,7 @@ export function jobsView(cfg: Config, profile: string, stateDir: string, home = 
     const kind = j.turn ? 'turn' : j.send ? 'send' : 'run';
     return {
       name,
-      when: j.every ? `every ${j.every}` : `cron ${j.schedule ?? ''}`,
+      when: j.every ? `every ${j.every}` : j.at ? `at ${j.at}` : `cron ${j.schedule ?? ''}`,
       kind,
       what: (j.turn ?? j.send ?? j.run ?? '').slice(0, WHAT_MAX),
       chat,

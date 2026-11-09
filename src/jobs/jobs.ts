@@ -40,6 +40,8 @@ export const Job = z.object({
   schedule: z.string().optional(),
   /** Or a fixed interval: 30m, 2h, 1d. */
   every: z.string().regex(/^\d+[mhd]$/, 'every: a number and m, h or d (30m, 2h, 1d)').optional(),
+  /** Or once, at a local date and time: "2026-11-12 09:00". The timer removes itself after it runs. */
+  at: z.string().optional(),
   /** Where the result goes. Defaults to the profile's one routed chat. */
   chat: z.string().optional(),
   /** Exactly one of these three. */
@@ -50,8 +52,9 @@ export const Job = z.object({
   timeout_seconds: z.number().positive().default(600),
   enabled: z.boolean().default(true),
 }).strict().superRefine((j, ctx) => {
-  if (!!j.schedule === !!j.every) ctx.addIssue({ code: 'custom', message: 'give schedule or every, not both and not neither' });
+  if ([j.schedule, j.every, j.at].filter(Boolean).length !== 1) ctx.addIssue({ code: 'custom', message: 'give one of schedule, every or at' });
   if ([j.turn, j.send, j.run].filter(Boolean).length !== 1) ctx.addIssue({ code: 'custom', message: 'give exactly one of turn, send or run' });
+  if (j.at) { try { atDate(j.at); } catch (e) { ctx.addIssue({ code: 'custom', message: (e as Error).message }); } }
   if (j.schedule) { try { cronCalendar(j.schedule); } catch (e) { ctx.addIssue({ code: 'custom', message: (e as Error).message }); } }
 });
 export type Job = z.infer<typeof Job>;
@@ -169,6 +172,19 @@ export function cronCalendar(expr: string): Cal[] {
   return out;
 }
 
+/** A one-time job's moment, in local time: "YYYY-MM-DD HH:MM". */
+export function atDate(at: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec(at.trim());
+  if (!m) throw new Error(`at: "${at}" is not YYYY-MM-DD HH:MM`);
+  const [y, mo, d, h, mi] = m.slice(1).map(Number);
+  const date = new Date(y, mo - 1, d, h, mi);
+  if (date.getFullYear() !== y || date.getMonth() !== mo - 1 || date.getDate() !== d || date.getHours() !== h || date.getMinutes() !== mi) throw new Error(`at: "${at}" is not a real local time`);
+  return date;
+}
+
+/** A one-time job whose moment has passed: its timer has fired (or will on wake) and is not installed again. */
+export const jobPast = (j: Job, now = new Date()): boolean => !!j.at && atDate(j.at) <= now;
+
 export function everySeconds(every: string): number {
   const n = Number(every.slice(0, -1));
   return n * ({ m: 60, h: 3600, d: 86400 } as const)[every.slice(-1) as 'm' | 'h' | 'd'];
@@ -190,9 +206,12 @@ export interface JobPlistInput { label: string; node: string; entry: string; pro
 
 export function buildJobPlist(i: JobPlistInput): string {
   const env: Record<string, string> = { PATH: i.path, HOME: i.home, ANGELIA_STATE_DIR: i.stateDir, ANGELIA_CONFIG: i.config };
+  // launchd calendars have no year: an `at` timer would fire every year, so it removes itself after its run.
+  const at = i.j.at ? atDate(i.j.at) : undefined;
+  const cal: Cal[] = at ? [{ Month: at.getMonth() + 1, Day: at.getDate(), Hour: at.getHours(), Minute: at.getMinutes() }] : i.j.schedule ? cronCalendar(i.j.schedule) : [];
   const when = i.j.every
     ? `  <key>StartInterval</key><integer>${everySeconds(i.j.every)}</integer>`
-    : `  <key>StartCalendarInterval</key>\n  <array>\n${cronCalendar(i.j.schedule!).map((c) => `    <dict>${Object.entries(c).map(([k, v]) => `<key>${k}</key><integer>${v}</integer>`).join('')}</dict>`).join('\n')}\n  </array>`;
+    : `  <key>StartCalendarInterval</key>\n  <array>\n${cal.map((c) => `    <dict>${Object.entries(c).map(([k, v]) => `<key>${k}</key><integer>${v}</integer>`).join('')}</dict>`).join('\n')}\n  </array>`;
   const out = join(i.stateDir, 'jobs.out');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -302,6 +321,7 @@ export async function runJob(cfg: Config, profile: string, name: string, deliver
   if (opts.hash && opts.hash !== jobPin(j, cfg.profiles[profile]) && opts.hash !== jobHash(j)) {
     throw new Error(`job ${profile}/${name}, or a script it runs, changed since it was installed; if that change was yours, run angelia jobs install ${profile}`);
   }
+  if (j.at && !jobPast(j)) throw new Error(`job ${profile}/${name} is due at ${j.at}, not before`);
   const chat = jobChat(cfg, profile, name, j);
   if (j.send) { await deliver('send', chat, j.send); return `sent to ${chat}`; }
   if (j.turn) { await deliver('turn', chat, j.turn); return `turn queued in ${chat}`; }
@@ -362,9 +382,11 @@ export function loadJob(label: string, home = homedir()): void {
   const r = launchctl(['bootstrap', domain(), jobPlistPath(label, home)]);
   if (r.code !== 0) throw new Error(`launchctl bootstrap ${label} failed: ${r.out || `exit ${r.code}`}`);
 }
+/** The plist goes first: a job that unloads itself is stopped by its own bootout, and must not leave
+ *  a file behind for launchd to load at the next login. */
 export function unloadJob(label: string, home = homedir()): void {
-  launchctl(['bootout', `${domain()}/${label}`]);
   if (existsSync(jobPlistPath(label, home))) unlinkSync(jobPlistPath(label, home));
+  launchctl(['bootout', `${domain()}/${label}`]);
 }
 export function jobLoaded(label: string): boolean {
   return launchctl(['print', `${domain()}/${label}`]).code === 0;

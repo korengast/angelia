@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
-import { buildJobPlist, cronCalendar, sameJob, everySeconds, installedJobs, jobHash, jobLabel, readJobs, runJob, JOBS_FILE } from '../src/jobs/jobs.js';
+import { atDate, buildJobPlist, cronCalendar, sameJob, everySeconds, installedJobs, jobHash, jobLabel, readJobs, runJob, JOBS_FILE } from '../src/jobs/jobs.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-jobs-'));
 
@@ -43,7 +43,7 @@ test('cron schedules become launchd calendar entries', () => {
 });
 
 test('a job file is checked: one schedule, one action, a routed chat, shell for commands', () => {
-  assert.throws(() => readJobs(rig('jobs:\n  a: {send: hi}\n').cfg, 'p'), /schedule or every/);
+  assert.throws(() => readJobs(rig('jobs:\n  a: {send: hi}\n').cfg, 'p'), /one of schedule, every or at/);
   assert.throws(() => readJobs(rig('jobs:\n  a: {every: 1h, send: hi, turn: hi}\n').cfg, 'p'), /exactly one of turn, send or run/);
   assert.throws(() => readJobs(rig('jobs:\n  a: {every: 1h, send: hi, color: red}\n').cfg, 'p'), /color|Unrecognized/);
   assert.throws(() => readJobs(rig('jobs:\n  a: {every: 1h, run: date}\n').cfg, 'p'), /does not have shell: true/);
@@ -229,4 +229,18 @@ test('Claude Code rules are read as Claude reads them before they go into the sa
   assert.equal(claudeRuleAbs('Edit(notes.md)', '/p'), 'Edit(//p/notes.md)');
   assert.equal(claudeRuleAbs('Read(~/.ssh/**)', '/p'), 'Read(~/.ssh/**)');
   assert.equal(claudeRuleAbs('Bash(rm:*)', '/p'), 'Bash(rm:*)');
+});
+
+test('an at: job fires once on its date, and not before', async () => {
+  assert.throws(() => readJobs(rig('jobs:\n  a: {at: "2026-02-30 09:00", send: hi}\n').cfg, 'p'), /not a real local time/);
+  assert.throws(() => readJobs(rig('jobs:\n  a: {at: "tomorrow", send: hi}\n').cfg, 'p'), /YYYY-MM-DD HH:MM/);
+  assert.throws(() => readJobs(rig('jobs:\n  a: {at: "2030-01-01 09:00", every: 1h, send: hi}\n').cfg, 'p'), /one of schedule, every or at/);
+  assert.equal(atDate('2030-03-04 05:06').getTime(), new Date(2030, 2, 4, 5, 6).getTime());
+  const { cfg, cwd } = rig('jobs:\n  later: {at: "2099-03-04 05:06", send: hi}\n  past: {at: "2001-01-01 00:00", send: hi}\n');
+  const jobs = readJobs(cfg, 'p').jobs;
+  const plist = buildJobPlist({ node: '/n', entry: '/e', profile: 'p', config: '/c', stateDir: '/i', path: '/usr/bin', home: '/h', cwd, label: jobLabel('p', 'later'), job: 'later', hash: jobHash(jobs.later), j: jobs.later });
+  assert.match(plist, /<dict><key>Month<\/key><integer>3<\/integer><key>Day<\/key><integer>4<\/integer><key>Hour<\/key><integer>5<\/integer><key>Minute<\/key><integer>6<\/integer><\/dict>/);
+  const r = recorder();
+  await assert.rejects(runJob(cfg, 'p', 'later', r.deliver), /due at 2099-03-04 05:06/, 'a year-early launchd fire is refused');
+  assert.equal(await runJob(cfg, 'p', 'past', r.deliver), 'sent to whatsapp:g@g.us');
 });

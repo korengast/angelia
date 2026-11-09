@@ -233,13 +233,13 @@ in a separate file the instruction file points to by path, read when needed.`,
 
 jobs:
   morning-card:
-    schedule: "0 8 * * mon-fri"     # five-field cron; or every: 30m / 2h / 1d
+    schedule: "0 8 * * mon-fri"     # five-field cron; or every: 30m / 2h / 1d; or once: at: "2026-11-12 09:00"
     turn: "Write today's card."      # or send: <text>, or run: <shell command>
   # chat: whatsapp:<id>              # needed only when the profile has more than one routed chat
 
 turn asks the agent, in the chat's own session; send posts text; run executes a command in the
 profile folder (the profile needs shell: true) and posts what it prints. Printing nothing, or
-[SILENT], posts nothing; a failure is posted as one line. On a profile whose agent is sandboxed
+[SILENT], posts nothing; an at: job runs once, local time, and its timer removes itself after; a failure is posted as one line. On a profile whose agent is sandboxed
 (sandbox: true on Claude Code; Codex and pi unless sandbox: false) a run: command runs in the same
 macOS sandbox: it writes only in the agent's folders and temp, reads nothing the agent may not,
 cannot start apps or launchd jobs, and runs only while the profile is compiled.

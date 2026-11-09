@@ -12,7 +12,7 @@ import { apiCall, ownerToken, post } from '../daemon/api/client.js';
 import { sessionToken } from '../daemon/api/server.js';
 import {
   buildJobPlist, installedJobs, jobChat, jobLabel, jobPin, jobLoaded, jobPlistPath, loadJob, logJob,
-  jobSandboxed, readJobs, runJob, sameJob, unloadJob, JOBS_FILE, type Job,
+  jobPast, jobSandboxed, readJobs, runJob, sameJob, unloadJob, JOBS_FILE, type Job,
 } from './jobs.js';
 
 /** What a job delivers: its own definition (`send:`, `turn:`) with the owner's token, as written in
@@ -41,7 +41,7 @@ const same = (a: string | undefined, b: string | undefined): boolean => !!a && !
 
 /** What a job does; a command on a sandboxed profile says it runs in the agent's sandbox. */
 const what = (j: Job, p?: Profile): string => (j.turn ? `turn "${j.turn.slice(0, 50)}"` : j.send ? `send "${j.send.slice(0, 50)}"` : `run ${j.run!.slice(0, 60)}${p && jobSandboxed(p) ? ' (sandboxed)' : ''}`);
-const when = (j: Job): string => (j.every ? `every ${j.every}` : `cron ${j.schedule}`);
+const when = (j: Job): string => (j.every ? `every ${j.every}` : j.at ? `at ${j.at}` : `cron ${j.schedule}`);
 
 function plan(cfg: Config, table: string, profile: string) {
   const { jobs, file } = readJobs(cfg, profile);
@@ -49,7 +49,7 @@ function plan(cfg: Config, table: string, profile: string) {
   const path = servicePath(process.env, extra);
   const want = new Map<string, { plist: string; name: string; j: Job }>();
   for (const [name, j] of Object.entries(jobs)) {
-    if (!j.enabled) continue;
+    if (!j.enabled || jobPast(j)) continue;
     const label = jobLabel(profile, name);
     want.set(label, { name, j, plist: buildJobPlist({ label, node: stableNode(), entry: entry(), profile, job: name, hash: jobPin(j, cfg.profiles[profile]), config: table, stateDir: STATE_DIR, path, home: homedir(), cwd: cfg.profiles[profile].cwd, j }) });
   }
@@ -85,6 +85,8 @@ export async function jobsCommand(argv: string[]): Promise<void> {
         const line = await runJob(cfg, profile, job, jobDeliver, { hash, secrets: envFile(STATE_DIR), stateDir: STATE_DIR, chatToken: (key) => sessionToken(ownerToken(), key) });
         logJob(STATE_DIR, `${profile}/${job} ${line}`);
         console.log(line);
+        // A one-time job's timer goes once it has run; last, since its own bootout stops this process.
+        if (hash && readJobs(cfg, profile).jobs[job]?.at) unloadJob(jobLabel(profile, job));
       } catch (e) {
         const msg = (e as Error).message;
         logJob(STATE_DIR, `${profile}/${job} error: ${msg}`);
@@ -148,8 +150,8 @@ export function jobsState(cfg: Config, table: string, profiles: string[]): { lin
     lines.push(`${profile}  (${join(cfg.profiles[profile].cwd, JOBS_FILE)})`);
     for (const [name, j] of Object.entries(p.jobs)) {
       const label = jobLabel(profile, name);
-      const state = !j.enabled ? 'disabled' : !p.have.has(label) ? 'not installed' : !same(p.have.get(label), p.want.get(label)?.plist) ? 'out of date' : 'installed';
-      if (state === 'not installed' || state === 'out of date' || (state === 'disabled' && p.have.has(label))) drift++;
+      const state = !j.enabled ? 'disabled' : jobPast(j) && !p.have.has(label) ? 'done' : !p.have.has(label) ? 'not installed' : !same(p.have.get(label), p.want.get(label)?.plist) ? 'out of date' : 'installed';
+      if (state === 'not installed' || state === 'out of date' || ((state === 'disabled' || jobPast(j)) && p.have.has(label))) drift++;
       lines.push(`  ${name.padEnd(18)} ${when(j).padEnd(22)} ${state.padEnd(13)} ${what(j, cfg.profiles[profile])}`);
     }
     for (const label of p.have.keys()) if (![...p.want.keys()].includes(label) && !Object.keys(p.jobs).some((n) => jobLabel(profile, n) === label)) { lines.push(`  ${label}: a timer with no job in the file (angelia jobs install removes it)`); drift++; }
