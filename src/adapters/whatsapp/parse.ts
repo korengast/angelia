@@ -107,9 +107,11 @@ export interface Participant { id: string; lid?: string; phoneNumber?: string }
 /** At most this many members are tagged in one message: a tag notifies even a member who muted the group. */
 export const MAX_MENTIONS = 5;
 
-/** `@<5-20 digits>`, `+` allowed, not inside a word, a URL path or an email address (`a@1555…`,
- *  `x.com/@1555…`, `@1555….example.com`), and never a part of a longer number. */
-const TOKEN = /(?<![\p{L}\p{N}_/.@])@\+?(\d{5,20})(?![\p{L}\p{N}_]|\.[\p{L}\p{N}_])/gu;
+/** `@<5-20 digits>`, `+` allowed, and never a part of a longer number. Not after a Latin letter or a
+ *  digit (an email address, `a@1555…`), nor inside a URL (`x.com/@1555…`, `?u=@1555…`, `#@1555…`) or a
+ *  domain (`@1555….example.com`). A non-Latin letter may come right before it, as a Hebrew prefix
+ *  does (`ל@1555…`), and `_` on either side (WhatsApp italics). */
+const TOKEN = /(?<![\p{Script=Latin}\p{N}/.@=?#])@\+?(\d{5,20})(?![\p{L}\p{N}]|\.[\p{L}\p{N}_])/gu;
 /** Code is shown as written: a fenced block (an unclosed one runs to the end) or an inline span. */
 const CODE = /```[\s\S]*?(?:```|$)|`[^`\n]+`/g;
 

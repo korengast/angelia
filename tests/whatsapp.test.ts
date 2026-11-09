@@ -173,6 +173,15 @@ test('withMentions: a phone the lid map knows goes out as the lid even with no t
   assert.equal(withMentions('`@15550005555`', undefined, { lidFor }).text, '`@15550005555`');
 });
 
+test('withMentions: URL queries and fragments are left; italics and a Hebrew prefix still tag', () => {
+  const members = [{ id: '15550001111@s.whatsapp.net' }];
+  for (const t of ['https://x.com/a?u=@15550001111', 'https://x.com/a?@15550001111', 'https://x.com/a#@15550001111', 'x=@15550001111', 'é@15550001111'])
+    assert.deepEqual(withMentions(t, members), { text: t, mentions: [], capped: 0 }, t);
+  for (const t of ['_@15550001111_', 'thanks _@15550001111_!', 'תודה ל@15550001111', 'ול@+15550001111.']) {
+    assert.deepEqual(withMentions(t, members).mentions, ['15550001111@s.whatsapp.net'], t);
+  }
+});
+
 test('#34: stacked wrappers are all peeled: a captioned document in a disappearing chat, a view-once voice note', () => {
   const nested = group({ ephemeralMessage: { message: { documentWithCaptionMessage: { message: { documentMessage: { caption: 'the plan', fileName: 'plan.pdf', mimetype: 'application/pdf', fileLength: 12 } } } } } });
   const p = parseMessage(nested, US)!;
