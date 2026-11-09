@@ -104,20 +104,50 @@ export function toInbound(p: ParsedMessage, senderId: string, mediaPaths: string
 /** A group member as `groupMetadata` lists them: `id` is the jid WhatsApp addresses them by (lid or phone). */
 export interface Participant { id: string; lid?: string; phoneNumber?: string }
 
+/** At most this many members are tagged in one message: a tag notifies even a member who muted the group. */
+export const MAX_MENTIONS = 5;
+
+/** `@<5-20 digits>`, `+` allowed, not inside a word, a URL path or an email address (`a@1555…`,
+ *  `x.com/@1555…`, `@1555….example.com`), and never a part of a longer number. */
+const TOKEN = /(?<![\p{L}\p{N}_/.@])@\+?(\d{5,20})(?![\p{L}\p{N}_]|\.[\p{L}\p{N}_])/gu;
+/** Code is shown as written: a fenced block (an unclosed one runs to the end) or an inline span. */
+const CODE = /```[\s\S]*?(?:```|$)|`[^`\n]+`/g;
+
+export interface MentionOptions {
+  /** The member's bare lid for a bare phone number, when known (the adapter's lid map): the agent may
+   *  have been shown a phone the group itself hides. */
+  lidFor?: (phone: string) => string | undefined;
+  max?: number;
+}
+
 /**
  * `@<number>` in an outgoing group text -> a real mention. The number may be the member's phone or
  * lid (the agent sees whichever the envelope showed). The token is rewritten to the member's `id`,
- * the form WhatsApp renders as their name. A number that is no member is left as plain text.
+ * the form WhatsApp renders as their name, so a phone the group hides is not shown either. A number
+ * that is no member is left as plain text, and so is any token past `max` distinct members
+ * (`capped` counts those). Text inside backticks is never touched.
  */
-export function withMentions(text: string, members: Participant[]): { text: string; mentions: string[] } {
+export function withMentions(text: string, members: Participant[], o: MentionOptions = {}): { text: string; mentions: string[]; capped: number } {
+  const max = o.max ?? MAX_MENTIONS;
   const byNum = new Map<string, string>();
   for (const p of members) for (const j of [p.id, p.lid, p.phoneNumber]) if (j) byNum.set(bareId(j), normalizeJid(p.id));
   const mentions = new Set<string>();
-  const out = text.replace(/@\+?(\d{5,20})\b/g, (tok, n: string) => {
-    const jid = byNum.get(n);
+  let capped = 0;
+  const tag = (plain: string) => plain.replace(TOKEN, (tok, n: string) => {
+    let jid = byNum.get(n);
+    if (!jid) { const lid = o.lidFor?.(n); if (lid) jid = byNum.get(lid); }
     if (!jid) return tok;
-    mentions.add(jid);
+    if (!mentions.has(jid)) {
+      if (mentions.size >= max) { capped++; return tok; }
+      mentions.add(jid);
+    }
     return `@${bareId(jid)}`;
   });
-  return { text: out, mentions: [...mentions] };
+  let out = '', at = 0;
+  for (const c of text.matchAll(CODE)) {
+    out += tag(text.slice(at, c.index)) + c[0];
+    at = c.index + c[0].length;
+  }
+  out += tag(text.slice(at));
+  return { text: out, mentions: [...mentions], capped };
 }

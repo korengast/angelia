@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeJid, bareId, isGroupJid, LidMap } from '../src/adapters/whatsapp/ids.js';
-import { parseMessage, toInbound, messageContent, withMentions } from '../src/adapters/whatsapp/parse.js';
+import { parseMessage, toInbound, messageContent, withMentions, MAX_MENTIONS } from '../src/adapters/whatsapp/parse.js';
 
 const US = ['15550000000:12@s.whatsapp.net', '11111111111111:3@lid'];
 const group = (message: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ key: { remoteJid: '120363000000000001@g.us', fromMe: false, participant: '22222222222222@lid', id: 'ABC' }, pushName: 'Someone', message, ...extra });
@@ -23,6 +23,9 @@ test('LidMap reads Baileys lid-mapping files and falls back to the bare id', () 
   assert.equal(m.phoneFor('22222222222222:5@lid'), '15551111111');
   assert.equal(m.phoneFor('33333333333333@lid'), '33333333333333');
   assert.equal(m.phoneFor('15559999999@s.whatsapp.net'), '15559999999');
+  // The way back, for tagging a member the group lists by lid only.
+  assert.equal(m.lidFor('15551111111'), '22222222222222');
+  assert.equal(m.lidFor('15559999999'), undefined);
 });
 
 test('parse: text, mention by jid or by lid, reply to us, caption media, ignored kinds', () => {
@@ -88,6 +91,66 @@ test('withMentions: phone or lid tags the member by their id; strangers stay tex
   assert.deepEqual(r.mentions, ['15550002222@lid', '15550001111@s.whatsapp.net']);
   assert.deepEqual(withMentions('@15550002222 @15550002222', members).mentions, ['15550002222@lid']);
   assert.deepEqual(withMentions('no tags', members).mentions, []);
+});
+
+test('withMentions: a lid token tags a LID-group member; a PN-mode group rewrites a lid token to the phone id', () => {
+  // LID group: id is the lid, the phone only when the server sent it.
+  assert.deepEqual(withMentions('@22222222222222 hi', [{ id: '22222222222222@lid' }]), { text: '@22222222222222 hi', mentions: ['22222222222222@lid'], capped: 0 });
+  // PN-mode group: id is the phone, the lid rides along.
+  const pn = [{ id: '15550004444@s.whatsapp.net', lid: '33333333333333@lid' }];
+  assert.deepEqual(withMentions('cc @33333333333333', pn), { text: 'cc @15550004444', mentions: ['15550004444@s.whatsapp.net'], capped: 0 });
+});
+
+test('withMentions: a device suffix in the id is dropped; a shorter or longer number is no match', () => {
+  const members = [{ id: '15550001111:7@s.whatsapp.net' }];
+  assert.deepEqual(withMentions('@15550001111', members).mentions, ['15550001111@s.whatsapp.net']);
+  for (const t of ['@1555000111', '@155500011112', '@15550001111222233334444', '@1555']) {
+    const r = withMentions(t, members);
+    assert.deepEqual(r, { text: t, mentions: [], capped: 0 }, t);
+  }
+});
+
+test('withMentions: a number in a URL, an email address or code is left as written', () => {
+  const members = [{ id: '15550001111@s.whatsapp.net' }];
+  for (const t of [
+    'see https://x.com/@15550001111 now',
+    'mail foo@15550001111.example.com',
+    'mail a@15550001111',
+    'host @15550001111.example.com',
+    'run `@15550001111` here',
+    'block:\n```\nping @15550001111\n```\ndone',
+    'open fence ```\n@15550001111',
+    'word@15550001111',
+  ]) assert.deepEqual(withMentions(t, members), { text: t, mentions: [], capped: 0 }, t);
+  // Next to code and punctuation it still tags.
+  const r = withMentions('`x` (@15550001111), and @15550001111.', members);
+  assert.equal(r.text, '`x` (@15550001111), and @15550001111.');
+  assert.deepEqual(r.mentions, ['15550001111@s.whatsapp.net']);
+});
+
+test('withMentions: a phone the group hides becomes the member\'s lid through the lid map, never shown', () => {
+  // The header showed the phone (from the lid map); the server listed the member by lid only.
+  const members = [{ id: '44444444444444@lid' }];
+  const lidFor = (n: string) => (n === '15550005555' ? '44444444444444' : undefined);
+  assert.deepEqual(withMentions('thanks @+15550005555', members, { lidFor }), { text: 'thanks @44444444444444', mentions: ['44444444444444@lid'], capped: 0 });
+  // Without the map the number stays as written: no tag, nothing made up.
+  assert.deepEqual(withMentions('thanks @15550005555', members).mentions, []);
+  // A known lid that is no member of this group is no match either.
+  assert.deepEqual(withMentions('@15550005555', [{ id: '55555555555555@lid' }], { lidFor }).mentions, []);
+});
+
+test('withMentions: at most MAX_MENTIONS members; tokens past the cap stay as written, repeats of a tagged one still tag', () => {
+  const members = Array.from({ length: 8 }, (_, n) => ({ id: `1555000000${n}@s.whatsapp.net` }));
+  const text = members.map((m) => `@${m.id.slice(0, 11)}`).join(' ') + ' and again @15550000000';
+  const r = withMentions(text, members);
+  assert.equal(MAX_MENTIONS, 5);
+  assert.equal(r.mentions.length, 5);
+  assert.equal(r.capped, 3);
+  assert.equal(r.text, text, 'every token is already the id form, so the text is the same');
+  // With a + the cut is visible: the first five lose it, the rest keep it.
+  const plus = withMentions(members.map((m) => `@+${m.id.slice(0, 11)}`).join(' '), members);
+  assert.equal(plus.text, members.map((m, n) => `@${n < 5 ? '' : '+'}${m.id.slice(0, 11)}`).join(' '));
+  assert.equal(withMentions(text, members, { max: 2 }).mentions.length, 2);
 });
 
 test('#34: stacked wrappers are all peeled: a captioned document in a disappearing chat, a view-once voice note', () => {

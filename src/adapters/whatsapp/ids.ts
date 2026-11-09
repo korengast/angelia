@@ -19,10 +19,12 @@ export function bareId(jid: string): string { return normalizeJid(jid).replace(/
  */
 export class LidMap {
   private lidToPhone = new Map<string, string>();
+  private phoneToLid = new Map<string, string>();
   constructor(private readonly authDir: string) { this.reload(); }
 
   reload(): void {
     this.lidToPhone.clear();
+    this.phoneToLid.clear();
     let files: string[] = [];
     try { files = readdirSync(this.authDir); } catch { return; }
     for (const f of files) {
@@ -30,7 +32,10 @@ export class LidMap {
       if (!m) continue;
       try {
         const lid = JSON.parse(readFileSync(join(this.authDir, f), 'utf8'));
-        if (lid) this.lidToPhone.set(String(lid).replace(/@.*$/, ''), m[1]);
+        if (!lid) continue;
+        const bare = String(lid).replace(/@.*$/, '');
+        this.lidToPhone.set(bare, m[1]);
+        this.phoneToLid.set(m[1], bare);
       } catch { /* a half-written file; next reload */ }
     }
   }
@@ -40,4 +45,7 @@ export class LidMap {
     const bare = bareId(jid);
     return jid.endsWith('@lid') ? (this.lidToPhone.get(bare) ?? bare) : bare;
   }
+
+  /** The bare lid of a phone number (bare digits), when known: the way back of phoneFor(). */
+  lidFor(phone: string): string | undefined { return this.phoneToLid.get(phone); }
 }
