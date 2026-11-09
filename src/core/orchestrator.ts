@@ -37,7 +37,8 @@ import { writeCutTurns } from './cut-turns.js';
 import type { Switched } from '../instance/switch-backend.js';
 
 /** `mentions`: the text is the agent's own (an answer, `angelia send`): WhatsApp turns `@<number>` of a
- *  group member into a tag. Off for everything Angelia writes itself and for progress lines. */
+ *  group member into a tag. Off for everything Angelia writes itself and for progress lines. A late
+ *  answer (one owed after a failed delivery) tags too: it is the agent's answer, sent once. */
 export interface SendOptions { mentions?: boolean }
 
 export interface Sender {
@@ -667,6 +668,8 @@ export class Orchestrator {
     // What the agent said along the way and the rate limit held back goes in front of the answer.
     const unsent = await progress.close();
     if (stalled) {
+      // Progress lines the rate limit held back never went out, so they go as the agent's words and may
+      // tag; the same on the failure path below.
       if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
       await this.reply(i, `The agent gave no output for ${this.cfg.defaults.turn_stall_minutes} minutes, so Angelia stopped it. Send your message again, or /new for a fresh session.`).catch(() => {});
       return 'stalled';

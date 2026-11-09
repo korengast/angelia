@@ -155,6 +155,8 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
       // ends. Unknown ids get undefined: Baileys then resends nothing, which is the honest outcome.
       getMessage: async (key) => this.sent.get(key.id),
       // Filled by groupMeta(); an empty answer and Baileys asks the server itself, as it would without it.
+      // A change to disappearing messages or to the addressing mode emits no groups.update, so for those
+      // an entry can be up to the cache's 60 s stale. Accepted: the next minute reads it fresh.
       cachedGroupMetadata: async (jid) => this.groups.get(jid),
     });
     // The socket this one replaces (the check() path ends one that never opened) is done with: a late

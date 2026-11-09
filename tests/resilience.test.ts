@@ -67,8 +67,8 @@ test('/stop mid-turn is not reported as a crash', async (t) => {
 test('a send that keeps failing does not reject the turn or leave the agent running; the answer goes out with the next line', async (t) => {
   const cfg = Config.parse({ profiles: { a: { cwd: here } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000 } });
   let fail = false, tries = 0;
-  const sent: string[] = [];
-  const sender = { send: async (_c: string, text: string) => { if (fail) { tries++; throw new Error('chat is gone'); } sent.push(text); } };
+  const sent: string[] = [], tags: (boolean | undefined)[] = [];
+  const sender = { send: async (_c: string, text: string, _t?: string, opt?: { mentions?: boolean }) => { if (fail) { tries++; throw new Error('chat is gone'); } sent.push(text); tags.push(opt?.mentions); } };
   const o = new Orchestrator(cfg, { telegram: sender, whatsapp: sender },
     { stateDir: mkdtempSync(join(tmpdir(), 'angelia-res-')), bins: { 'claude-code': FAKE }, sendRetryMs: [10, 10] });
   t.after(() => o.shutdown());
@@ -80,6 +80,8 @@ test('a send that keeps failing does not reject the turn or leave the agent runn
   fail = false; sent.length = 0;
   await o.handle(msg('/status'));
   assert.match(sent.at(-1)!, /^An answer that could not be delivered earlier:\n\necho: .*hello/s);
+  // The late answer is the agent's, so it may tag group members; the /status line it rode on may not.
+  assert.deepEqual(tags.slice(-2), [false, true]);
 });
 
 test('a send that fails for a moment is tried again and delivered once; a 403 is not tried again', async (t) => {
