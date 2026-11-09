@@ -12,7 +12,7 @@ import { apiCall, ownerToken, post } from '../daemon/api/client.js';
 import { sessionToken } from '../daemon/api/server.js';
 import {
   buildJobPlist, installedJobs, jobChat, jobLabel, jobPin, jobLoaded, jobPlistPath, loadJob, logJob,
-  jobSandboxed, onceState, readJobs, runJob, sameJob, unloadJob, JobEarly, JobMissed, JOBS_FILE,
+  jobSandboxed, onceRan, onceState, readJobs, recordOnce, runJob, sameJob, unloadJob, JobEarly, JobMissed, JOBS_FILE,
   type Deliver, type Job,
 } from './jobs.js';
 import { lastRuns } from './jobs-view.js';
@@ -57,10 +57,11 @@ function plan(cfg: Config, table: string, profile: string, at: Place = here()) {
   // A one-time job after its moment gets no timer, and says whether it ran.
   const past = new Map<string, { name: string; j: Job; state: 'done' | 'passed' }>();
   const runs = lastRuns(at.stateDir);
+  const ran = onceRan(at.stateDir);
   for (const [name, j] of Object.entries(jobs)) {
     if (!j.enabled) continue;
     const label = jobLabel(profile, name);
-    const once = onceState(j, runs.get(`${profile}/${name}`) ?? [], at.now);
+    const once = onceState(j, runs.get(`${profile}/${name}`) ?? [], at.now, ran[`${profile}/${name}`]);
     if (once) { past.set(label, { name, j, state: once }); continue; }
     want.set(label, { name, j, plist: buildJobPlist({ label, node: stableNode(), entry: entry(), profile, job: name, hash: jobPin(j, cfg.profiles[profile]), config: table, stateDir: at.stateDir, path, home: at.home, cwd: cfg.profiles[profile].cwd, j }) });
   }
@@ -128,6 +129,8 @@ export async function runAndReport(cfg: Config, profile: string, job: string, ha
     throw e;
   }
   log(line);
+  // Before the unload, which may end this process: the list says done from this, after the log moves on.
+  if (def?.at) recordOnce(d.stateDir, `${profile}/${job}`, def.at, d.now);
   d.print?.(line);
   done();
   return line;

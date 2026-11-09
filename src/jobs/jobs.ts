@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { parse } from 'yaml';
@@ -213,12 +213,34 @@ export class JobMissed extends Error {}
 /** What `runJob` returns for a job that ran (a command that failed included), as jobs.log keeps it. */
 export const JOB_RAN = /^(sent to |turn queued in |ran, |failed )/;
 
-/** A one-time job after its moment: `done` when jobs.log has a run of it since then, else `passed`.
- *  Nothing for any other job. */
-export function onceState(j: Job, runs: { at: string; result: string }[], now = new Date()): 'done' | 'passed' | undefined {
+/** A one-time job after its moment: `done` when it ran for that date (its record, or failing that a
+ *  run in jobs.log since then), else `passed`. Nothing for any other job. */
+export function onceState(j: Job, runs: { at: string; result: string }[], now = new Date(), ran?: { at?: unknown }): 'done' | 'passed' | undefined {
   if (!j.enabled || !jobPast(j, now)) return undefined;
+  if (ran?.at === j.at) return 'done';
   const from = atDate(j.at!).getTime() - AT_EARLY_MS;
   return runs.some((r) => Date.parse(r.at) >= from && JOB_RAN.test(r.result)) ? 'done' : 'passed';
+}
+
+const ONCE_FILE = 'jobs-once.json';
+
+/** The one-time jobs that ran, by `profile/job`: the date each ran for, and when. jobs.log is read
+ *  from its end only, so a run there drops out of sight as the log grows; this keeps it. */
+export function onceRan(stateDir: string): Record<string, { at?: unknown; ran?: unknown }> {
+  try {
+    const v: unknown = JSON.parse(readFileSync(join(stateDir, ONCE_FILE), 'utf8'));
+    return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, { at?: unknown }> : {};
+  } catch { return {}; }
+}
+
+/** Notes that a one-time job ran for its date; written whole, then renamed into place. */
+export function recordOnce(stateDir: string, key: string, at: string, now = new Date()): void {
+  try {
+    const all = { ...onceRan(stateDir), [key]: { at, ran: now.toISOString() } };
+    const file = join(stateDir, ONCE_FILE);
+    writeFileSync(`${file}.tmp`, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
+    renameSync(`${file}.tmp`, file);
+  } catch { /* jobs.log still has the run */ }
 }
 
 export function everySeconds(every: string): number {

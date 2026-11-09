@@ -2,7 +2,7 @@ import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Config } from '../instance/config/schema.js';
-import { installedJobs, jobChat, jobLabel, onceState, readJobs } from './jobs.js';
+import { installedJobs, jobChat, jobLabel, onceRan, onceState, readJobs } from './jobs.js';
 
 /** One job as a client shows it: when, what, where to, and how its last runs went. */
 export interface JobView {
@@ -49,7 +49,8 @@ export function lastRuns(stateDir: string, max = RUNS_MAX): Map<string, { at: st
   }
   const lines = text.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
-    const m = /^(\S+) ([A-Za-z0-9_-]+\/[A-Za-z0-9_-]+) (.*)$/.exec(lines[i] ?? '');
+    // A profile name may be anything without a space (Hebrew, dots); a job name is the file's.
+    const m = /^(\S+) (\S+?\/[A-Za-z0-9_-]+) (.*)$/.exec(lines[i] ?? '');
     if (!m) continue;
     const key = m[2] ?? '';
     const list = out.get(key) ?? [];
@@ -70,12 +71,13 @@ export function jobsView(cfg: Config, profile: string, stateDir: string, home = 
   }
   const have = installedJobs(stateDir, home);
   const runs = lastRuns(stateDir);
+  const ran = onceRan(stateDir);
   const jobs = Object.entries(read.jobs).map(([name, j]): JobView => {
     let chat: string | null = null;
     try { chat = jobChat(cfg, profile, name, j); } catch { /* readJobs checked it already */ }
     const kind = j.turn ? 'turn' : j.send ? 'send' : 'run';
     const mine = runs.get(`${profile}/${name}`) ?? [];
-    const state = onceState(j, mine, now);
+    const state = onceState(j, mine, now, ran[`${profile}/${name}`]);
     return {
       name,
       when: j.every ? `every ${j.every}` : j.at ? `at ${j.at}` : `cron ${j.schedule ?? ''}`,

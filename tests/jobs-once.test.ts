@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Config } from '../src/instance/config/schema.js';
@@ -140,6 +140,25 @@ test('install skips a past one-time job, removes a timer left for it, and the li
   const v = jobsView(r.cfg, 'p', r.state, home, plus(24 * H));
   assert.deepEqual(v.jobs.map((j) => [j.name, j.state]), [['ran', 'done'], ['missed', 'passed'], ['later', undefined], ['off', undefined]]);
   assert.equal(jobsView(r.cfg, 'p', r.state, home, plus(-H)).jobs[0]?.state, undefined, 'before its moment it has no state');
+});
+
+test('done survives jobs.log growing, and a Hebrew or dotted profile name is read from it', async () => {
+  const r = rig(`jobs:\n  once: {at: "${AT}", send: hi}\n`);
+  const home = tmp();
+  const table = join(r.state, 'routing.yaml');
+  await run(r).go('once', hashOf(r, 'once'), plus(5_000));
+  assert.ok(existsSync(join(r.state, 'jobs-once.json')));
+  const filler = `${plus(H).toISOString()} other/tick sent to whatsapp:x@g.us ${'x'.repeat(200)}\n`;
+  appendFileSync(join(r.state, 'jobs.log'), filler.repeat(Math.ceil((600 * 1024) / filler.length)));
+  assert.equal(lastRuns(r.state).get('p/once'), undefined, 'the run line is past the tail read');
+  const at = { stateDir: r.state, home, now: plus(24 * H) };
+  assert.match(jobsState(r.cfg, table, ['p'], at).lines.find((l) => l.startsWith('  once '))!, / done /);
+  assert.equal(jobsView(r.cfg, 'p', r.state, home, plus(24 * H)).jobs[0]?.state, 'done');
+
+  const state = tmp();
+  logJob(state, 'עוזר-בית/morning sent to whatsapp:g@g.us');
+  logJob(state, 'home.v2/tick ran, nothing to send');
+  assert.deepEqual([...lastRuns(state).keys()], ['home.v2/tick', 'עוזר-בית/morning']);
 });
 
 test('a line break in a log line cannot add a run that never happened', () => {
