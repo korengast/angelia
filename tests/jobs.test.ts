@@ -232,7 +232,8 @@ test('Claude Code rules are read as Claude reads them before they go into the sa
 });
 
 test('an at: job fires once on its date, and not before', async () => {
-  assert.throws(() => readJobs(rig('jobs:\n  a: {at: "2026-02-30 09:00", send: hi}\n').cfg, 'p'), /not a real local time/);
+  assert.throws(() => readJobs(rig('jobs:\n  a: {at: "2026-02-30 09:00", send: hi}\n').cfg, 'p'), /not a real date and time/);
+  assert.throws(() => atDate('2026-11-12 24:00'), /not a real date and time/);
   assert.throws(() => readJobs(rig('jobs:\n  a: {at: "tomorrow", send: hi}\n').cfg, 'p'), /YYYY-MM-DD HH:MM/);
   assert.throws(() => readJobs(rig('jobs:\n  a: {at: "2030-01-01 09:00", every: 1h, send: hi}\n').cfg, 'p'), /one of schedule, every or at/);
   assert.equal(atDate('2030-03-04 05:06').getTime(), new Date(2030, 2, 4, 5, 6).getTime());
@@ -243,4 +244,20 @@ test('an at: job fires once on its date, and not before', async () => {
   const r = recorder();
   await assert.rejects(runJob(cfg, 'p', 'later', r.deliver), /due at 2099-03-04 05:06/, 'a year-early launchd fire is refused');
   assert.equal(await runJob(cfg, 'p', 'past', r.deliver), 'sent to whatsapp:g@g.us');
+});
+
+test('an at: time that a clock change skips is refused, naming the zone used', () => {
+  const tz = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  try {
+    assert.throws(() => atDate('2030-03-10 02:30'), /falls in a clock change in America\/New_York/);
+    assert.equal(atDate('2030-11-03 01:30').getHours(), 1, 'the hour repeated in the fall is a real time');
+    // The plist takes the fields as written, not from a Date: the same entry in any zone.
+    const { cfg, cwd } = rig('jobs:\n  a: {at: "2030-11-03 01:30", send: hi}\n');
+    const j = readJobs(cfg, 'p').jobs.a;
+    const plist = buildJobPlist({ node: '/n', entry: '/e', profile: 'p', config: '/c', stateDir: '/i', path: '/usr/bin', home: '/h', cwd, label: jobLabel('p', 'a'), job: 'a', hash: jobHash(j), j });
+    assert.match(plist, /<key>Month<\/key><integer>11<\/integer><key>Day<\/key><integer>3<\/integer><key>Hour<\/key><integer>1<\/integer><key>Minute<\/key><integer>30<\/integer>/);
+  } finally {
+    if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz;
+  }
 });

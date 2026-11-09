@@ -172,13 +172,24 @@ export function cronCalendar(expr: string): Cal[] {
   return out;
 }
 
-/** A one-time job's moment, in local time: "YYYY-MM-DD HH:MM". */
-export function atDate(at: string): Date {
+/** A one-time job's date and time as written: "YYYY-MM-DD HH:MM", local time. */
+function atParts(at: string): { Year: number; Month: number; Day: number; Hour: number; Minute: number } {
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec(at.trim());
   if (!m) throw new Error(`at: "${at}" is not YYYY-MM-DD HH:MM`);
-  const [y, mo, d, h, mi] = m.slice(1).map(Number);
-  const date = new Date(y, mo - 1, d, h, mi);
-  if (date.getFullYear() !== y || date.getMonth() !== mo - 1 || date.getDate() !== d || date.getHours() !== h || date.getMinutes() !== mi) throw new Error(`at: "${at}" is not a real local time`);
+  const [Year, Month, Day, Hour, Minute] = m.slice(1).map(Number);
+  // Feb 30 or 24:00 is no date on any clock; checked in UTC, which has no clock changes.
+  const u = new Date(Date.UTC(Year, Month - 1, Day, Hour, Minute));
+  if (u.getUTCFullYear() !== Year || u.getUTCMonth() !== Month - 1 || u.getUTCDate() !== Day || u.getUTCHours() !== Hour || u.getUTCMinutes() !== Minute) throw new Error(`at: "${at}" is not a real date and time`);
+  return { Year, Month, Day, Hour, Minute };
+}
+
+/** A one-time job's moment, in local time: "YYYY-MM-DD HH:MM". */
+export function atDate(at: string): Date {
+  const { Year, Month, Day, Hour, Minute } = atParts(at);
+  const date = new Date(Year, Month - 1, Day, Hour, Minute);
+  if (date.getFullYear() !== Year || date.getMonth() !== Month - 1 || date.getDate() !== Day || date.getHours() !== Hour || date.getMinutes() !== Minute) {
+    throw new Error(`at: "${at}" falls in a clock change in ${Intl.DateTimeFormat().resolvedOptions().timeZone}, the time zone used here, so that local time does not happen; pick another`);
+  }
   return date;
 }
 
@@ -207,8 +218,8 @@ export interface JobPlistInput { label: string; node: string; entry: string; pro
 export function buildJobPlist(i: JobPlistInput): string {
   const env: Record<string, string> = { PATH: i.path, HOME: i.home, ANGELIA_STATE_DIR: i.stateDir, ANGELIA_CONFIG: i.config };
   // launchd calendars have no year: an `at` timer would fire every year, so it removes itself after its run.
-  const at = i.j.at ? atDate(i.j.at) : undefined;
-  const cal: Cal[] = at ? [{ Month: at.getMonth() + 1, Day: at.getDate(), Hour: at.getHours(), Minute: at.getMinutes() }] : i.j.schedule ? cronCalendar(i.j.schedule) : [];
+  const at = i.j.at ? atParts(i.j.at) : undefined;
+  const cal: Cal[] = at ? [{ Month: at.Month, Day: at.Day, Hour: at.Hour, Minute: at.Minute }] : i.j.schedule ? cronCalendar(i.j.schedule) : [];
   const when = i.j.every
     ? `  <key>StartInterval</key><integer>${everySeconds(i.j.every)}</integer>`
     : `  <key>StartCalendarInterval</key>\n  <array>\n${cal.map((c) => `    <dict>${Object.entries(c).map(([k, v]) => `<key>${k}</key><integer>${v}</integer>`).join('')}</dict>`).join('\n')}\n  </array>`;
@@ -385,8 +396,11 @@ export function loadJob(label: string, home = homedir()): void {
 /** The plist goes first: a job that unloads itself is stopped by its own bootout, and must not leave
  *  a file behind for launchd to load at the next login. */
 export function unloadJob(label: string, home = homedir()): void {
-  if (existsSync(jobPlistPath(label, home))) unlinkSync(jobPlistPath(label, home));
-  launchctl(['bootout', `${domain()}/${label}`]);
+  try {
+    if (existsSync(jobPlistPath(label, home))) unlinkSync(jobPlistPath(label, home));
+  } finally {
+    launchctl(['bootout', `${domain()}/${label}`]);
+  }
 }
 export function jobLoaded(label: string): boolean {
   return launchctl(['print', `${domain()}/${label}`]).code === 0;
