@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { parse } from 'yaml';
@@ -33,7 +33,7 @@ import { tmuxSocketPath } from '../brain/tmux.js';
 export const JOBS_FILE = 'angelia-jobs.yaml';
 export const JOB_PREFIX = 'angelia.job.';
 
-const NAME = /^[A-Za-z0-9_-]{1,40}$/;
+const NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,39}$/;
 
 export const Job = z.object({
   /** Five-field cron: minute hour day-of-month month day-of-week. Lists, ranges and steps work. */
@@ -217,29 +217,42 @@ export const JOB_RAN = /^(sent to |turn queued in |ran, |failed )/;
  *  run in jobs.log since then), else `passed`. Nothing for any other job. */
 export function onceState(j: Job, runs: { at: string; result: string }[], now = new Date(), ran?: { at?: unknown }): 'done' | 'passed' | undefined {
   if (!j.enabled || !jobPast(j, now)) return undefined;
-  if (ran?.at === j.at) return 'done';
+  if (typeof ran?.at === 'string' && sameMoment(ran.at, j.at!)) return 'done';
   const from = atDate(j.at!).getTime() - AT_EARLY_MS;
   return runs.some((r) => Date.parse(r.at) >= from && JOB_RAN.test(r.result)) ? 'done' : 'passed';
 }
 
-const ONCE_FILE = 'jobs-once.json';
-
-/** The one-time jobs that ran, by `profile/job`: the date each ran for, and when. jobs.log is read
- *  from its end only, so a run there drops out of sight as the log grows; this keeps it. */
-export function onceRan(stateDir: string): Record<string, { at?: unknown; ran?: unknown }> {
-  try {
-    const v: unknown = JSON.parse(readFileSync(join(stateDir, ONCE_FILE), 'utf8'));
-    return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, { at?: unknown }> : {};
-  } catch { return {}; }
+/** Two at: strings name the same moment ("2026-11-10 09:00" and "2026-11-10T09:00"). */
+function sameMoment(a: string, b: string): boolean {
+  try { return atDate(a).getTime() === atDate(b).getTime(); } catch { return a === b; }
 }
 
-/** Notes that a one-time job ran for its date; written whole, then renamed into place. */
+const ONCE_FILE = 'jobs-once.jsonl';
+
+/** The one-time jobs that ran, by `profile/job`: the date each ran for, and when. jobs.log is read
+ *  from its end only, so a run there drops out of sight as the log grows; this keeps it. One JSON
+ *  line per run, appended; a later line for the same job wins. */
+export function onceRan(stateDir: string): Record<string, { at?: unknown; ran?: unknown }> {
+  const out: Record<string, { at?: unknown; ran?: unknown }> = {};
+  let text = '';
+  try { text = readFileSync(join(stateDir, ONCE_FILE), 'utf8'); } catch { return out; }
+  for (const line of text.split('\n')) {
+    try {
+      const v: unknown = JSON.parse(line);
+      if (v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { key?: unknown }).key === 'string') {
+        const { key, at, ran } = v as { key: string; at?: unknown; ran?: unknown };
+        out[key] = { at, ran };
+      }
+    } catch { /* a torn or foreign line */ }
+  }
+  return out;
+}
+
+/** Notes that a one-time job ran for its date. One short line appended with O_APPEND, so two jobs
+ *  finishing at once cannot lose each other's line (a read-modify-write file could). */
 export function recordOnce(stateDir: string, key: string, at: string, now = new Date()): void {
   try {
-    const all = { ...onceRan(stateDir), [key]: { at, ran: now.toISOString() } };
-    const file = join(stateDir, ONCE_FILE);
-    writeFileSync(`${file}.tmp`, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
-    renameSync(`${file}.tmp`, file);
+    appendFileSync(join(stateDir, ONCE_FILE), `${JSON.stringify({ key, at, ran: now.toISOString() })}\n`, { mode: 0o600 });
   } catch { /* jobs.log still has the run */ }
 }
 

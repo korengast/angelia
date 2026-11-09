@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Config } from '../src/instance/config/schema.js';
-import { buildJobPlist, jobHash, jobLabel, jobPlistPath, logJob, readJobs, JOBS_FILE } from '../src/jobs/jobs.js';
+import { buildJobPlist, jobHash, jobLabel, jobPlistPath, logJob, onceRan, readJobs, recordOnce, JOBS_FILE } from '../src/jobs/jobs.js';
 import { installTimers, jobsState, runAndReport } from '../src/jobs/jobs-cli.js';
 import { jobsView, lastRuns } from '../src/jobs/jobs-view.js';
 
@@ -181,7 +181,7 @@ test('done survives jobs.log growing, and a Hebrew or dotted profile name is rea
   const home = tmp();
   const table = join(r.state, 'routing.yaml');
   await run(r).go('once', hashOf(r, 'once'), plus(5_000), AT);
-  assert.ok(existsSync(join(r.state, 'jobs-once.json')));
+  assert.ok(existsSync(join(r.state, 'jobs-once.jsonl')));
   const filler = `${plus(H).toISOString()} other/tick sent to whatsapp:x@g.us ${'x'.repeat(200)}\n`;
   appendFileSync(join(r.state, 'jobs.log'), filler.repeat(Math.ceil((600 * 1024) / filler.length)));
   assert.equal(lastRuns(r.state).get('p/once'), undefined, 'the run line is past the tail read');
@@ -190,9 +190,9 @@ test('done survives jobs.log growing, and a Hebrew or dotted profile name is rea
   assert.equal(jobsView(r.cfg, 'p', r.state, home, plus(24 * H)).jobs[0]?.state, 'done');
 
   const state = tmp();
-  logJob(state, 'עוזר-בית/morning sent to whatsapp:g@g.us');
+  logJob(state, 'בדיקה-בית/morning sent to whatsapp:g@g.us');
   logJob(state, 'home.v2/tick ran, nothing to send');
-  assert.deepEqual([...lastRuns(state).keys()], ['home.v2/tick', 'עוזר-בית/morning']);
+  assert.deepEqual([...lastRuns(state).keys()], ['home.v2/tick', 'בדיקה-בית/morning']);
 });
 
 test('a line break in a log line cannot add a run that never happened', () => {
@@ -201,4 +201,28 @@ test('a line break in a log line cannot add a run that never happened', () => {
   const text = readFileSync(join(state, 'jobs.log'), 'utf8');
   assert.equal(text.trim().split('\n').length, 1);
   assert.deepEqual(lastRuns(state).get('p/once')?.map((x) => x.result.slice(0, 11)), ['error: boom']);
+});
+
+test('runs noted at the same time all stay; a torn line is skipped; the same moment written two ways is done', () => {
+  const state = tmp();
+  for (let i = 0; i < 12; i++) recordOnce(state, `p/j${i}`, AT, moment);
+  appendFileSync(join(state, 'jobs-once.jsonl'), '{"key": "p/torn", "at":');
+  const ran = onceRan(state);
+  assert.equal(Object.keys(ran).length, 12);
+  assert.equal(ran['p/torn'], undefined);
+  const r = rig(`jobs:\n  once: {at: "2030-06-01T09:00", send: hi}\n`);
+  recordOnce(r.state, 'p/once', AT, plus(5_000));
+  assert.equal(jobsView(r.cfg, 'p', r.state, tmp(), plus(24 * H)).jobs[0]?.state, 'done');
+});
+
+test('a timer installed before --once existed still removes itself, through the file', async () => {
+  const r = rig(`jobs:\n  once: {at: "${AT}", send: hi}\n`);
+  const x = run(r);
+  await x.go('once', hashOf(r, 'once'), plus(5_000));
+  assert.ok(x.events.some((e) => e.startsWith(`unload ${jobLabel('p', 'once')}`)));
+});
+
+test('a job name cannot start with a dash, so it is never read as --once or --hash', () => {
+  const r = rig(`jobs:\n  --once: {every: 1h, send: hi}\n`);
+  assert.throws(() => readJobs(r.cfg, 'p'), /jobs\.--once/);
 });

@@ -106,7 +106,8 @@ export async function runAndReport(cfg: Config, profile: string, job: string, ha
   // Read before the run, so a file edited during it cannot turn a run that happened into a failure.
   let def: Job | undefined;
   try { def = readJobs(cfg, profile).jobs[job]; } catch { /* runJob says what is wrong */ }
-  const once = hash ? d.once : undefined;
+  // A timer installed before --once existed still names an at: job through the file.
+  const once = hash ? (d.once ?? def?.at) : undefined;
   // Last, after the log and the chat line: a timer's bootout of its own label stops this process.
   const done = () => { if (once) d.unload(jobLabel(profile, job)); };
   const log = (line: string) => logJob(d.stateDir, `${profile}/${job} ${line}`);
