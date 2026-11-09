@@ -264,7 +264,8 @@ export interface JobPlistInput { label: string; node: string; entry: string; pro
 
 export function buildJobPlist(i: JobPlistInput): string {
   const env: Record<string, string> = { PATH: i.path, HOME: i.home, ANGELIA_STATE_DIR: i.stateDir, ANGELIA_CONFIG: i.config };
-  // launchd calendars have no year: an `at` timer would fire every year, so it removes itself after its run.
+  // launchd calendars have no year: an `at` timer would fire every year, so it removes itself after its
+  // run. Its date goes in its arguments (--once), so it knows that even when the file has changed.
   const at = i.j.at ? atParts(i.j.at) : undefined;
   const cal: Cal[] = at ? [{ Month: at.Month, Day: at.Day, Hour: at.Hour, Minute: at.Minute }] : i.j.schedule ? cronCalendar(i.j.schedule) : [];
   const when = i.j.every
@@ -279,7 +280,7 @@ export function buildJobPlist(i: JobPlistInput): string {
   <key>Label</key><string>${esc(i.label)}</string>
   <key>ProgramArguments</key>
   <array>
-${[i.node, i.entry, 'jobs', 'run', i.profile, i.job, '--hash', i.hash].map((a) => `    <string>${esc(a)}</string>`).join('\n')}
+${[i.node, i.entry, 'jobs', 'run', i.profile, i.job, '--hash', i.hash, ...(i.j.at ? ['--once', i.j.at] : [])].map((a) => `    <string>${esc(a)}</string>`).join('\n')}
   </array>
   <key>WorkingDirectory</key><string>${esc(i.cwd)}</string>
   <key>EnvironmentVariables</key>

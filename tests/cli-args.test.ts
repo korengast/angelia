@@ -24,6 +24,7 @@ test('a flag the command does not know is refused, with the usage', () => {
 test('the flags each command reads pass, and a value is not read as a flag', () => {
   assert.deepEqual(checkArgs('workspace', ['sync', '--quiet']), { ok: true });
   assert.deepEqual(checkArgs('jobs', ['run', 'p', 'j', '--hash', 'abc', '--config', '/t.yaml']), { ok: true });
+  assert.deepEqual(checkArgs('jobs', ['run', 'p', 'j', '--hash', 'abc', '--once', '2030-06-01 09:00']), { ok: true });
   assert.deepEqual(checkArgs('restart', ['--from-daemon', '/t.yaml']), { ok: true });
   assert.deepEqual(checkArgs('send-media', ['whatsapp:1', '/a.pdf', '--name', '--odd name.pdf']), { ok: true });
   assert.deepEqual(checkArgs('send-media', ['whatsapp:1', '/a.jpg', '--caption', '--help me', '--no-voice']), { ok: true });

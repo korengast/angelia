@@ -114,6 +114,7 @@ test('the plist runs the job by name with its hash, on its schedule, for this in
   assert.match(cal, /<key>StartCalendarInterval<\/key>\s*<array>\s*<dict><key>Minute<\/key><integer>40<\/integer><key>Hour<\/key><integer>4<\/integer><\/dict>/);
   assert.match(cal, /<key>ANGELIA_STATE_DIR<\/key><string>\/i<\/string>/);
   assert.doesNotMatch(cal, /RunAtLoad|KeepAlive/);
+  assert.doesNotMatch(cal, /--once/, 'only a one-time job carries a date');
   const iv = buildJobPlist({ ...base, label: jobLabel('p', 'tick'), job: 'tick', hash: jobHash(jobs.tick), j: jobs.tick });
   assert.match(iv, /<key>StartInterval<\/key><integer>1800<\/integer>/);
   assert.ok(sameJob(cal, buildJobPlist({ ...base, path: '/other/bin:/usr/bin', node: '/other/node', entry: '/x/angelia', label: jobLabel('p', 'dream'), job: 'dream', hash: jobHash(jobs.dream), j: jobs.dream })), 'a different PATH is the same job');

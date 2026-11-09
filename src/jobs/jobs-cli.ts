@@ -10,9 +10,10 @@ import { pathWithBins } from '../brain/locate.js';
 import { entry, servicePath, stableNode } from '../daemon/service.js';
 import { apiCall, ownerToken, post } from '../daemon/api/client.js';
 import { sessionToken } from '../daemon/api/server.js';
+import { sessionKey } from '../core/types.js';
 import {
   buildJobPlist, installedJobs, jobChat, jobLabel, jobPin, jobLoaded, jobPlistPath, loadJob, logJob,
-  jobSandboxed, onceRan, onceState, readJobs, recordOnce, runJob, sameJob, unloadJob, JobEarly, JobMissed, JOBS_FILE,
+  atDate, jobSandboxed, onceRan, onceState, readJobs, recordOnce, runJob, sameJob, unloadJob, AT_EARLY_MS, AT_GRACE_MS, JobEarly, JobMissed, JOBS_FILE,
   type Deliver, type Job,
 } from './jobs.js';
 import { lastRuns } from './jobs-view.js';
@@ -98,18 +99,31 @@ export function installTimers(cfg: Config, table: string, profiles: string[], at
 }
 
 /** `angelia jobs run`: one run, logged, and from a timer said in the chat when it did not run. A
- *  one-time job's timer (`hash` given) is removed after it fires, whatever happened, except when it
- *  fired before the job's date. */
-export async function runAndReport(cfg: Config, profile: string, job: string, hash: string | undefined, d: { stateDir: string; deliver: Deliver; unload: (label: string) => void; print?: (line: string) => void; now?: Date; secrets?: Record<string, string>; chatToken?: (key: string) => string }): Promise<string> {
+ *  one-time job's timer (`hash` and `once`, its date, given) is removed after it fires, whatever
+ *  happened, except when it fired before that date. The date comes from the timer, not the file: a
+ *  file that broke or changed since must not keep a timer that would fire again every year. */
+export async function runAndReport(cfg: Config, profile: string, job: string, hash: string | undefined, d: { stateDir: string; deliver: Deliver; unload: (label: string) => void; once?: string; print?: (line: string) => void; now?: Date; secrets?: Record<string, string>; chatToken?: (key: string) => string }): Promise<string> {
   // Read before the run, so a file edited during it cannot turn a run that happened into a failure.
   let def: Job | undefined;
   try { def = readJobs(cfg, profile).jobs[job]; } catch { /* runJob says what is wrong */ }
-  const once = !!hash && !!def?.at;
+  const once = hash ? d.once : undefined;
   // Last, after the log and the chat line: a timer's bootout of its own label stops this process.
   const done = () => { if (once) d.unload(jobLabel(profile, job)); };
   const log = (line: string) => logJob(d.stateDir, `${profile}/${job} ${line}`);
+  // Where a timer's refusal is said: the job's chat, or with no job to read, the profile's one chat.
+  const chat = (): string | undefined => {
+    if (def) return jobChat(cfg, profile, job, def);
+    const mine = cfg.routes.filter((r) => r.profile === profile).map((r) => sessionKey(r));
+    return mine.length === 1 ? mine[0] : undefined;
+  };
+  let late = 0;
+  try { if (once) late = (d.now ?? new Date()).getTime() - atDate(once).getTime(); } catch { /* not a date: the run below says what is wrong */ }
   let line: string;
   try {
+    // The timer's own date first, before the file is checked: a year-early fire stays quiet and
+    // keeps its timer even when the file changed since.
+    if (late < -AT_EARLY_MS) throw new JobEarly(`job ${profile}/${job} is due at ${once}, not before`);
+    if (late > AT_GRACE_MS) throw new JobMissed(`job ${profile}/${job} was due at ${once}; its timer fired more than ${AT_GRACE_MS / 3600_000} h after that, so it does not run`);
     line = await runJob(cfg, profile, job, d.deliver, { hash, secrets: d.secrets, stateDir: d.stateDir, chatToken: d.chatToken, now: d.now });
   } catch (e) {
     const msg = (e as Error).message;
@@ -117,20 +131,21 @@ export async function runAndReport(cfg: Config, profile: string, job: string, ha
     if (hash && e instanceof JobEarly) { log(`early: ${msg}`); d.print?.(`early: ${msg}`); return `early: ${msg}`; }
     log(`${e instanceof JobMissed ? 'missed' : 'error'}: ${msg}`);
     // A timer has nobody watching its output: say it in the chat, when there is one to say it to.
-    if (hash && def) {
+    if (hash) {
       // As the chat, never the owner: the message can echo text the job printed (a daemon error
       // quoting a MEDIA: path), and the owner's token would attach it past the profile's rules.
       const text = e instanceof JobMissed
-        ? `Scheduled job ${job} missed its time, ${def.at}: the Mac was asleep, off or logged out then, so it does not run.`
+        ? `Scheduled job ${job} missed its time, ${once ?? def?.at}: the Mac was asleep, off or logged out then, so it does not run.`
         : `Scheduled job ${job} did not run: ${msg}`;
-      try { await d.deliver('send', jobChat(cfg, profile, job, def), text, true); } catch { /* the log line is all we can do */ }
+      try { const to = chat(); if (to) await d.deliver('send', to, text, true); } catch { /* the log line is all we can do */ }
     }
     done();
     throw e;
   }
   log(line);
   // Before the unload, which may end this process: the list says done from this, after the log moves on.
-  if (def?.at) recordOnce(d.stateDir, `${profile}/${job}`, def.at, d.now);
+  const at = once ?? def?.at;
+  if (at) recordOnce(d.stateDir, `${profile}/${job}`, at, d.now);
   d.print?.(line);
   done();
   return line;
@@ -139,12 +154,19 @@ export async function runAndReport(cfg: Config, profile: string, job: string, ha
 export async function jobsCommand(argv: string[]): Promise<void> {
   const { table, words } = tableOf(argv);
   const [sub, ...all] = words;
-  // --hash is what a timer passes to jobs run. Taken out here for every subcommand, so it is never read
-  // as a profile name, and refused anywhere it means nothing.
-  const hashAt = all.indexOf('--hash');
-  const hash = hashAt >= 0 ? all[hashAt + 1] : undefined;
-  const rest = all.filter((_, i) => !(hashAt >= 0 && (i === hashAt || i === hashAt + 1)));
-  if (hashAt >= 0 && sub !== 'run') throw new Error(`--hash is what a timer passes to angelia jobs run; it means nothing to jobs ${sub ?? ''}`.trim());
+  // --hash and --once are what a timer passes to jobs run. Taken out here for every subcommand, so they
+  // are never read as a profile name, and refused anywhere they mean nothing.
+  let rest = all;
+  const take = (flag: string): string | undefined => {
+    const at = rest.indexOf(flag);
+    if (at < 0) return undefined;
+    if (sub !== 'run') throw new Error(`${flag} is what a timer passes to angelia jobs run; it means nothing to jobs ${sub ?? ''}`.trim());
+    const v = rest[at + 1];
+    rest = rest.filter((_, i) => i !== at && i !== at + 1);
+    return v;
+  };
+  const hash = take('--hash');
+  const onceAt = take('--once');
   // A job runs on the table the owner accepted, as the daemon does (instance/accepted.ts): a timer
   // must not take a sandbox an agent switched off in the table, or a secret it added.
   const live = loadConfig(table);
@@ -161,7 +183,7 @@ export async function jobsCommand(argv: string[]): Promise<void> {
       if (!profile || !job) throw new Error(USAGE);
       // Printed from inside: a one-time timer's unload comes after, and may end this process.
       await runAndReport(cfg, profile, job, hash, {
-        stateDir: STATE_DIR, deliver: jobDeliver, secrets: envFile(STATE_DIR), chatToken: (key) => sessionToken(ownerToken(), key),
+        once: onceAt, stateDir: STATE_DIR, deliver: jobDeliver, secrets: envFile(STATE_DIR), chatToken: (key) => sessionToken(ownerToken(), key),
         print: (line) => console.log(line),
         unload: (label) => { console.log(`${profile}/${job}: one-time job, its timer is removed`); unloadJob(label); },
       });
