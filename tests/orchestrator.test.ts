@@ -60,6 +60,29 @@ test('group without mention is silent; with mention answers; progress then resul
   assert.deepEqual(sent.map((s) => s.text), ['working on it', 'echo: [whatsapp group g@g.us · Owner (u1)]\n\nPROGRESS hi']);
 });
 
+test('only the agent\'s answer and angelia send may tag group members: progress, permission and Angelia\'s own lines never', async (t) => {
+  const { o } = setup(); t.after(() => o.shutdown());
+  const calls: { text: string; mentions?: boolean }[] = [];
+  (o as unknown as { senders: Record<string, unknown> }).senders.whatsapp = { send: async (_c: string, text: string, _t?: string, opt?: { mentions?: boolean }) => { calls.push({ text, mentions: opt?.mentions }); } };
+  const g = (text: string) => dm('g@g.us', text, { platform: 'whatsapp', isGroup: true, mentioned: true });
+  await o.handle(g('PROGRESS @15550001111'));
+  assert.deepEqual(calls.map((c) => [c.text.split('\n')[0], c.mentions]), [['working on it', false], ['echo: [whatsapp group g@g.us · Owner (u1)]', true]]);
+  calls.length = 0;
+  const p = o.handle(g('PERM do it'));
+  await new Promise((r) => setTimeout(r, 300));
+  const id = /yes ([0-9a-f-]+)/.exec(calls.at(-1)!.text)![1];
+  assert.equal(calls.at(-1)!.mentions, false, 'the permission prompt');
+  await o.handle(g(`yes ${id}`));
+  await p;
+  assert.deepEqual(calls.at(-1), { text: 'tool allowed: rm -rf /tmp/x', mentions: true });
+  calls.length = 0;
+  await o.handle(g('/help'));
+  await o.notify('whatsapp:g@g.us', 'Angelia is back up.');
+  const { apiDeps } = await import('../src/daemon/api/deps.js');
+  await apiDeps(o, (o as unknown as { cfg: never }).cfg, () => ({})).send('whatsapp:g@g.us', 'from a script @15550001111');
+  assert.deepEqual(calls.map((c) => c.mentions), [false, false, true]);
+});
+
 test('permission relay through the chat, and a crash yields the failure line once', async (t) => {
   const { o, sent } = setup(); t.after(() => o.shutdown());
   await o.handle(dm('1', 'warm up'));
