@@ -8,7 +8,7 @@ import qrcode from 'qrcode-terminal';
 import type { Inbound } from '../../core/types.js';
 import type { Sender } from '../../core/orchestrator.js';
 import { LidMap, normalizeJid } from './ids.js';
-import { parseMessage, SeenIds, type WaMessageLike } from './parse.js';
+import { parseMessage, SeenIds, withMentions, type WaMessageLike } from './parse.js';
 import { SentMessages } from './sent.js';
 import { isOpus, type Media } from '../../core/deliver/media.js';
 import { asVoice } from '../../voice/opus.js';
@@ -223,6 +223,10 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
 
   async send(chat: string, text: string): Promise<void> {
     if (!this.sock || !this.connected) throw new Error('whatsapp: not connected');
+    if (chat.endsWith('@g.us') && /@\+?\d/.test(text)) {
+      const m = withMentions(text, (await this.sock.groupMetadata(chat)).participants);
+      if (m.mentions.length) { await this.post(chat, m); return; }
+    }
     await this.post(chat, { text });
   }
 

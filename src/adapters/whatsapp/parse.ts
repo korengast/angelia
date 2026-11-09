@@ -89,3 +89,24 @@ export function parseMessage(m: WaMessageLike, us: string[]): ParsedMessage | nu
 export function toInbound(p: ParsedMessage, senderId: string, mediaPaths: string[]): Inbound {
   return { platform: 'whatsapp', chat: p.chat, sender: senderId, senderName: p.senderName, text: p.text, isGroup: p.isGroup, mentioned: p.mentioned, media: mediaPaths };
 }
+
+/** A group member as `groupMetadata` lists them: `id` is the jid WhatsApp addresses them by (lid or phone). */
+export interface Participant { id: string; lid?: string; phoneNumber?: string }
+
+/**
+ * `@<number>` in an outgoing group text -> a real mention. The number may be the member's phone or
+ * lid (the agent sees whichever the envelope showed). The token is rewritten to the member's `id`,
+ * the form WhatsApp renders as their name. A number that is no member is left as plain text.
+ */
+export function withMentions(text: string, members: Participant[]): { text: string; mentions: string[] } {
+  const byNum = new Map<string, string>();
+  for (const p of members) for (const j of [p.id, p.lid, p.phoneNumber]) if (j) byNum.set(bareId(j), normalizeJid(p.id));
+  const mentions = new Set<string>();
+  const out = text.replace(/@\+?(\d{5,20})\b/g, (tok, n: string) => {
+    const jid = byNum.get(n);
+    if (!jid) return tok;
+    mentions.add(jid);
+    return `@${bareId(jid)}`;
+  });
+  return { text: out, mentions: [...mentions] };
+}

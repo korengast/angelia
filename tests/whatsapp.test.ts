@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeJid, bareId, isGroupJid, LidMap } from '../src/adapters/whatsapp/ids.js';
-import { parseMessage, toInbound, messageContent } from '../src/adapters/whatsapp/parse.js';
+import { parseMessage, toInbound, messageContent, withMentions } from '../src/adapters/whatsapp/parse.js';
 
 const US = ['15550000000:12@s.whatsapp.net', '11111111111111:3@lid'];
 const group = (message: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ key: { remoteJid: '120363000000000001@g.us', fromMe: false, participant: '22222222222222@lid', id: 'ABC' }, pushName: 'Someone', message, ...extra });
@@ -77,3 +77,15 @@ test('a message id is handed on once, however often it is delivered; old ids fal
   assert.equal(s.first('c/1'), true);
 });
 
+
+test('withMentions: phone or lid tags the member by their id; strangers stay text', () => {
+  const members = [
+    { id: '15550002222@lid', phoneNumber: '15550003333@s.whatsapp.net' },
+    { id: '15550001111@s.whatsapp.net' },
+  ];
+  const r = withMentions('hi @15550003333 and @+15550001111, not @999999999, email a@b.c', members);
+  assert.equal(r.text, 'hi @15550002222 and @15550001111, not @999999999, email a@b.c');
+  assert.deepEqual(r.mentions, ['15550002222@lid', '15550001111@s.whatsapp.net']);
+  assert.deepEqual(withMentions('@15550002222 @15550002222', members).mentions, ['15550002222@lid']);
+  assert.deepEqual(withMentions('no tags', members).mentions, []);
+});
