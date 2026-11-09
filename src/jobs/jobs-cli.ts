@@ -12,7 +12,8 @@ import { apiCall, ownerToken, post } from '../daemon/api/client.js';
 import { sessionToken } from '../daemon/api/server.js';
 import {
   buildJobPlist, installedJobs, jobChat, jobLabel, jobPin, jobLoaded, jobPlistPath, loadJob, logJob,
-  jobPast, jobSandboxed, readJobs, runJob, sameJob, unloadJob, JOBS_FILE, type Job,
+  jobPast, jobSandboxed, readJobs, runJob, sameJob, unloadJob, JobEarly, JobMissed, JOBS_FILE,
+  type Deliver, type Job,
 } from './jobs.js';
 
 /** What a job delivers: its own definition (`send:`, `turn:`) with the owner's token, as written in
@@ -58,6 +59,43 @@ function plan(cfg: Config, table: string, profile: string) {
   return { file, jobs, want, have };
 }
 
+/** `angelia jobs run`: one run, logged, and from a timer said in the chat when it did not run. A
+ *  one-time job's timer (`hash` given) is removed after it fires, whatever happened, except when it
+ *  fired before the job's date. */
+export async function runAndReport(cfg: Config, profile: string, job: string, hash: string | undefined, d: { stateDir: string; deliver: Deliver; unload: (label: string) => void; print?: (line: string) => void; now?: Date; secrets?: Record<string, string>; chatToken?: (key: string) => string }): Promise<string> {
+  // Read before the run, so a file edited during it cannot turn a run that happened into a failure.
+  let def: Job | undefined;
+  try { def = readJobs(cfg, profile).jobs[job]; } catch { /* runJob says what is wrong */ }
+  const once = !!hash && !!def?.at;
+  // Last, after the log and the chat line: a timer's bootout of its own label stops this process.
+  const done = () => { if (once) d.unload(jobLabel(profile, job)); };
+  const log = (line: string) => logJob(d.stateDir, `${profile}/${job} ${line}`);
+  let line: string;
+  try {
+    line = await runJob(cfg, profile, job, d.deliver, { hash, secrets: d.secrets, stateDir: d.stateDir, chatToken: d.chatToken, now: d.now });
+  } catch (e) {
+    const msg = (e as Error).message;
+    // A year-early fire is launchd's, not news: logged, and the timer kept for the real date.
+    if (hash && e instanceof JobEarly) { log(`early: ${msg}`); d.print?.(`early: ${msg}`); return `early: ${msg}`; }
+    log(`${e instanceof JobMissed ? 'missed' : 'error'}: ${msg}`);
+    // A timer has nobody watching its output: say it in the chat, when there is one to say it to.
+    if (hash && def) {
+      // As the chat, never the owner: the message can echo text the job printed (a daemon error
+      // quoting a MEDIA: path), and the owner's token would attach it past the profile's rules.
+      const text = e instanceof JobMissed
+        ? `Scheduled job ${job} missed its time, ${def.at}: the Mac was asleep, off or logged out then, so it does not run.`
+        : `Scheduled job ${job} did not run: ${msg}`;
+      try { await d.deliver('send', jobChat(cfg, profile, job, def), text, true); } catch { /* the log line is all we can do */ }
+    }
+    done();
+    throw e;
+  }
+  log(line);
+  d.print?.(line);
+  done();
+  return line;
+}
+
 export async function jobsCommand(argv: string[]): Promise<void> {
   const { table, words } = tableOf(argv);
   const [sub, ...all] = words;
@@ -81,26 +119,12 @@ export async function jobsCommand(argv: string[]): Promise<void> {
     case 'run': {
       const [profile, job] = rest;
       if (!profile || !job) throw new Error(USAGE);
-      try {
-        const line = await runJob(cfg, profile, job, jobDeliver, { hash, secrets: envFile(STATE_DIR), stateDir: STATE_DIR, chatToken: (key) => sessionToken(ownerToken(), key) });
-        logJob(STATE_DIR, `${profile}/${job} ${line}`);
-        console.log(line);
-        // A one-time job's timer goes once it has run; last, since its own bootout stops this process.
-        if (hash && readJobs(cfg, profile).jobs[job]?.at) unloadJob(jobLabel(profile, job));
-      } catch (e) {
-        const msg = (e as Error).message;
-        logJob(STATE_DIR, `${profile}/${job} error: ${msg}`);
-        // A timer has nobody watching its output: say it in the chat, when there is one to say it to.
-        if (hash) {
-          try {
-            const j = readJobs(cfg, profile).jobs[job];
-            // As the chat, never the owner: the message can echo text the job printed (a daemon error
-            // quoting a MEDIA: path), and the owner's token would attach it past the profile's rules.
-            if (j) await jobDeliver('send', jobChat(cfg, profile, job, j), `Scheduled job ${job} did not run: ${msg}`, true);
-          } catch { /* the log line is all we can do */ }
-        }
-        throw e;
-      }
+      // Printed from inside: a one-time timer's unload comes after, and may end this process.
+      await runAndReport(cfg, profile, job, hash, {
+        stateDir: STATE_DIR, deliver: jobDeliver, secrets: envFile(STATE_DIR), chatToken: (key) => sessionToken(ownerToken(), key),
+        print: (line) => console.log(line),
+        unload: (label) => { console.log(`${profile}/${job}: one-time job, its timer is removed`); unloadJob(label); },
+      });
       return;
     }
     case 'install': {

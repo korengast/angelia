@@ -193,8 +193,22 @@ export function atDate(at: string): Date {
   return date;
 }
 
+/** How early a timer may fire and still run: the clock may be a little off from launchd's. */
+export const AT_EARLY_MS = 60_000;
+/** How late a one-time job's timer still runs it. launchd makes up a time missed in sleep at the
+ *  wake, so a night asleep still delivers; a weekend with the lid shut is a reminder whose moment is
+ *  gone. A time missed while the Mac was off or logged out is not made up: the timer would fire a
+ *  year later, and is refused then. */
+export const AT_GRACE_MS = 12 * 3600_000;
+
 /** A one-time job whose moment has passed: its timer has fired (or will on wake) and is not installed again. */
 export const jobPast = (j: Job, now = new Date()): boolean => !!j.at && atDate(j.at) <= now;
+
+/** A timer that fired before its job's date (launchd has no year, so a date over a year out fires
+ *  a year early): refused, and its timer kept for the real date. */
+export class JobEarly extends Error {}
+/** A one-time job whose timer fired more than AT_GRACE_MS after its moment: refused. */
+export class JobMissed extends Error {}
 
 export function everySeconds(every: string): number {
   const n = Number(every.slice(0, -1));
@@ -322,7 +336,7 @@ const SILENT = '[SILENT]';
 /** One run of a job: what the timer calls, and `angelia jobs run` by hand. Returns a log line.
  *  `chatToken`: the job's chat token, put in the command's environment so a script can `angelia send`
  *  to its own chat (inside the sandbox the owner's token file is closed). */
-export async function runJob(cfg: Config, profile: string, name: string, deliver: Deliver, opts: { hash?: string; env?: NodeJS.ProcessEnv; secrets?: Record<string, string>; stateDir?: string; chatToken?: (key: string) => string } = {}): Promise<string> {
+export async function runJob(cfg: Config, profile: string, name: string, deliver: Deliver, opts: { hash?: string; env?: NodeJS.ProcessEnv; secrets?: Record<string, string>; stateDir?: string; chatToken?: (key: string) => string; now?: Date } = {}): Promise<string> {
   const { jobs } = readJobs(cfg, profile);
   const j = jobs[name];
   if (!j) throw new Error(`profile ${profile} has no job "${name}"`);
@@ -332,7 +346,12 @@ export async function runJob(cfg: Config, profile: string, name: string, deliver
   if (opts.hash && opts.hash !== jobPin(j, cfg.profiles[profile]) && opts.hash !== jobHash(j)) {
     throw new Error(`job ${profile}/${name}, or a script it runs, changed since it was installed; if that change was yours, run angelia jobs install ${profile}`);
   }
-  if (j.at && !jobPast(j)) throw new Error(`job ${profile}/${name} is due at ${j.at}, not before`);
+  if (j.at) {
+    const late = (opts.now ?? new Date()).getTime() - atDate(j.at).getTime();
+    if (late < -AT_EARLY_MS) throw new JobEarly(`job ${profile}/${name} is due at ${j.at}, not before`);
+    // Only a timer is held to the grace: a run by hand is the owner asking for it now.
+    if (opts.hash && late > AT_GRACE_MS) throw new JobMissed(`job ${profile}/${name} was due at ${j.at}; its timer fired more than ${AT_GRACE_MS / 3600_000} h after that (the Mac was asleep, off or logged out then), so it does not run`);
+  }
   const chat = jobChat(cfg, profile, name, j);
   if (j.send) { await deliver('send', chat, j.send); return `sent to ${chat}`; }
   if (j.turn) { await deliver('turn', chat, j.turn); return `turn queued in ${chat}`; }
