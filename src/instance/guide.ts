@@ -247,8 +247,8 @@ cannot start apps or launchd jobs, and runs only while the profile is compiled.
 An at: job runs once, at that local time, and its timer removes itself after it fires, whether
 the run worked or not. A Mac asleep then runs it at the wake if that is within 12 hours; later,
 the job does not run and the chat gets one line that it was missed. A Mac off or logged out then
-does not run it at all. After its time angelia jobs lists it as done (jobs.log has its run) or
-passed (it did not run), and install skips it and removes a timer left for it.
+does not run it at all. After its time angelia jobs lists it as done (it ran) or passed (it did
+not), and install skips it and removes a timer left for it.
 
 angelia jobs                 lists jobs and whether their timers match the file
 angelia jobs install [p]     writes and loads the timers (a LaunchAgent each, macOS)
