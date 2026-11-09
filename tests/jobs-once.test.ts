@@ -129,11 +129,11 @@ test('install skips a past one-time job, removes a timer left for it, and the li
   const calls: string[] = [];
   const out = installTimers(r.cfg, table, ['p'], at, { load: (l) => calls.push(`load ${l}`), unload: (l) => calls.push(`unload ${l}`), loaded: () => false });
   assert.deepEqual(calls, [`unload ${left}`, `load ${jobLabel('p', 'later')}`]);
-  assert.deepEqual(out.slice(0, 3), [
+  assert.deepEqual(out, [
     `removed ${left}: at ${AT} has passed, and it did not run (missed)`,
-    `skipped ran: at ${AT} has passed`,
-    // 'missed' had a timer: it was removed above, not skipped again.
+    // 'ran' had no timer left: nothing to say, the list shows it.
     `installed ${jobLabel('p', 'later')}: at 2031-01-01 08:00 → whatsapp:g@g.us, send "c"`,
+    'Timers match the job files.',
   ]);
   assert.match(readFileSync(jobPlistPath(jobLabel('p', 'later'), home), 'utf8'), /<key>Month<\/key><integer>1<\/integer><key>Day<\/key><integer>1<\/integer><key>Hour<\/key><integer>8<\/integer>/);
 

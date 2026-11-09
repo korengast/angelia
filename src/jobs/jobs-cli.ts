@@ -84,7 +84,6 @@ export function installTimers(cfg: Config, table: string, profiles: string[], at
       const p = past.get(label);
       out.push(p ? `removed ${label}: at ${p.j.at} has passed${p.state === 'done' ? '' : ', and it did not run (missed)'}` : `removed ${label}`);
     }
-    for (const [label, p] of past) if (!have.has(label)) out.push(`skipped ${p.name}: at ${p.j.at} has passed`);
     for (const [label, w] of want) {
       if (same(have.get(label), w.plist) && t.loaded(label)) continue;
       mkdirSync(dirname(jobPlistPath(label, at.home)), { recursive: true });
