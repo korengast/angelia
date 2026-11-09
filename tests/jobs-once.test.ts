@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Config } from '../src/instance/config/schema.js';
-import { jobHash, jobLabel, readJobs, JOBS_FILE } from '../src/jobs/jobs.js';
-import { runAndReport } from '../src/jobs/jobs-cli.js';
+import { buildJobPlist, jobHash, jobLabel, jobPlistPath, readJobs, JOBS_FILE } from '../src/jobs/jobs.js';
+import { installTimers, jobsState, runAndReport } from '../src/jobs/jobs-cli.js';
+import { jobsView } from '../src/jobs/jobs-view.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-once-'));
 const AT = '2030-06-01 09:00';
@@ -96,4 +97,47 @@ test('a job file edited during a run that worked posts no failure line', async (
   });
   assert.equal(line, 'sent to whatsapp:g@g.us');
   assert.deepEqual(events, ['hi', `unload ${jobLabel('p', 'once')}`]);
+});
+
+test('install skips a past one-time job, removes a timer left for it, and the list says done or passed', () => {
+  const r = rig([
+    'jobs:',
+    `  ran: {at: "${AT}", send: a}`,
+    `  missed: {at: "${AT}", send: b}`,
+    '  later: {at: "2031-01-01 08:00", send: c}',
+    `  off: {at: "${AT}", send: d, enabled: false}`,
+  ].join('\n'));
+  const home = tmp();
+  const table = join(r.state, 'routing.yaml');
+  const jobs = readJobs(r.cfg, 'p').jobs;
+  const left = jobLabel('p', 'missed');
+  mkdirSync(join(home, 'Library', 'LaunchAgents'), { recursive: true });
+  writeFileSync(jobPlistPath(left, home), buildJobPlist({ label: left, node: '/n', entry: '/e', profile: 'p', job: 'missed', hash: jobHash(jobs.missed!), config: table, stateDir: r.state, path: '/usr/bin', home, cwd: r.cfg.profiles.p!.cwd, j: jobs.missed! }));
+  writeFileSync(join(r.state, 'jobs.log'), [
+    '2030-05-01T07:00:00.000Z p/ran early: job p/ran is due at 2030-06-01 09:00, not before',
+    `${plus(2_000).toISOString()} p/ran sent to whatsapp:g@g.us`,
+    `${plus(2_000).toISOString()} p/missed error: the daemon did not answer`,
+  ].join('\n') + '\n');
+  const at = { stateDir: r.state, home, now: plus(24 * H) };
+
+  const before = jobsState(r.cfg, table, ['p'], at);
+  // The state column of `angelia jobs`: after a name of 18 and a when of 22, 13 wide.
+  const state = (lines: string[], name: string) => lines.find((l) => l.startsWith(`  ${name} `))?.slice(44, 57).trim();
+  assert.deepEqual(['ran', 'missed', 'later', 'off'].map((n) => state(before.lines, n)), ['done', 'passed', 'not installed', 'disabled']);
+  assert.equal(before.drift, 2, 'the later job is not installed, and a timer is left for a past one');
+
+  const calls: string[] = [];
+  const out = installTimers(r.cfg, table, ['p'], at, { load: (l) => calls.push(`load ${l}`), unload: (l) => calls.push(`unload ${l}`), loaded: () => false });
+  assert.deepEqual(calls, [`unload ${left}`, `load ${jobLabel('p', 'later')}`]);
+  assert.deepEqual(out.slice(0, 3), [
+    `removed ${left}: at ${AT} has passed, and it did not run (missed)`,
+    `skipped ran: at ${AT} has passed`,
+    // 'missed' had a timer: it was removed above, not skipped again.
+    `installed ${jobLabel('p', 'later')}: at 2031-01-01 08:00 → whatsapp:g@g.us, send "c"`,
+  ]);
+  assert.match(readFileSync(jobPlistPath(jobLabel('p', 'later'), home), 'utf8'), /<key>Month<\/key><integer>1<\/integer><key>Day<\/key><integer>1<\/integer><key>Hour<\/key><integer>8<\/integer>/);
+
+  const v = jobsView(r.cfg, 'p', r.state, home, plus(24 * H));
+  assert.deepEqual(v.jobs.map((j) => [j.name, j.state]), [['ran', 'done'], ['missed', 'passed'], ['later', undefined], ['off', undefined]]);
+  assert.equal(jobsView(r.cfg, 'p', r.state, home, plus(-H)).jobs[0]?.state, undefined, 'before its moment it has no state');
 });

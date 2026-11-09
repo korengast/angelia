@@ -12,9 +12,10 @@ import { apiCall, ownerToken, post } from '../daemon/api/client.js';
 import { sessionToken } from '../daemon/api/server.js';
 import {
   buildJobPlist, installedJobs, jobChat, jobLabel, jobPin, jobLoaded, jobPlistPath, loadJob, logJob,
-  jobPast, jobSandboxed, readJobs, runJob, sameJob, unloadJob, JobEarly, JobMissed, JOBS_FILE,
+  jobSandboxed, onceState, readJobs, runJob, sameJob, unloadJob, JobEarly, JobMissed, JOBS_FILE,
   type Deliver, type Job,
 } from './jobs.js';
+import { lastRuns } from './jobs-view.js';
 
 /** What a job delivers: its own definition (`send:`, `turn:`) with the owner's token, as written in
  *  the table's folder and pinned at install; a command's output with the chat's token, so the daemon
@@ -44,19 +45,56 @@ const same = (a: string | undefined, b: string | undefined): boolean => !!a && !
 const what = (j: Job, p?: Profile): string => (j.turn ? `turn "${j.turn.slice(0, 50)}"` : j.send ? `send "${j.send.slice(0, 50)}"` : `run ${j.run!.slice(0, 60)}${p && jobSandboxed(p) ? ' (sandboxed)' : ''}`);
 const when = (j: Job): string => (j.every ? `every ${j.every}` : j.at ? `at ${j.at}` : `cron ${j.schedule}`);
 
-function plan(cfg: Config, table: string, profile: string) {
+/** Where timers and their log live, and the time now: the real ones, or a test's. */
+export interface Place { stateDir: string; home: string; now?: Date }
+const here = (): Place => ({ stateDir: STATE_DIR, home: homedir() });
+
+function plan(cfg: Config, table: string, profile: string, at: Place = here()) {
   const { jobs, file } = readJobs(cfg, profile);
   const extra = [...pathWithBins(cfg).path.split(delimiter), dirname(process.execPath)];
   const path = servicePath(process.env, extra);
   const want = new Map<string, { plist: string; name: string; j: Job }>();
+  // A one-time job after its moment gets no timer, and says whether it ran.
+  const past = new Map<string, { name: string; j: Job; state: 'done' | 'passed' }>();
+  const runs = lastRuns(at.stateDir);
   for (const [name, j] of Object.entries(jobs)) {
-    if (!j.enabled || jobPast(j)) continue;
+    if (!j.enabled) continue;
     const label = jobLabel(profile, name);
-    want.set(label, { name, j, plist: buildJobPlist({ label, node: stableNode(), entry: entry(), profile, job: name, hash: jobPin(j, cfg.profiles[profile]), config: table, stateDir: STATE_DIR, path, home: homedir(), cwd: cfg.profiles[profile].cwd, j }) });
+    const once = onceState(j, runs.get(`${profile}/${name}`) ?? [], at.now);
+    if (once) { past.set(label, { name, j, state: once }); continue; }
+    want.set(label, { name, j, plist: buildJobPlist({ label, node: stableNode(), entry: entry(), profile, job: name, hash: jobPin(j, cfg.profiles[profile]), config: table, stateDir: at.stateDir, path, home: at.home, cwd: cfg.profiles[profile].cwd, j }) });
   }
   const prefix = jobLabel(profile, '');
-  const have = new Map([...installedJobs(STATE_DIR)].filter(([l]) => l.startsWith(prefix)));
-  return { file, jobs, want, have };
+  const have = new Map([...installedJobs(at.stateDir, at.home)].filter(([l]) => l.startsWith(prefix)));
+  return { file, jobs, want, have, past };
+}
+
+/** What the timers are done with; launchctl itself, or a test's stand-in. */
+export interface Timers { load(label: string): void; unload(label: string): void; loaded(label: string): boolean }
+const launchd = (home: string): Timers => ({ load: (l) => loadJob(l, home), unload: (l) => unloadJob(l, home), loaded: jobLoaded });
+
+/** `angelia jobs install`: each profile's timers made to match its file. Returns the lines it says. */
+export function installTimers(cfg: Config, table: string, profiles: string[], at: Place = here(), t: Timers = launchd(at.home)): string[] {
+  const out: string[] = [];
+  for (const profile of profiles) {
+    const { want, have, past } = plan(cfg, table, profile, at);
+    for (const label of have.keys()) {
+      if (want.has(label)) continue;
+      t.unload(label);
+      const p = past.get(label);
+      out.push(p ? `removed ${label}: at ${p.j.at} has passed${p.state === 'done' ? '' : ', and it did not run (missed)'}` : `removed ${label}`);
+    }
+    for (const [label, p] of past) if (!have.has(label)) out.push(`skipped ${p.name}: at ${p.j.at} has passed`);
+    for (const [label, w] of want) {
+      if (same(have.get(label), w.plist) && t.loaded(label)) continue;
+      mkdirSync(dirname(jobPlistPath(label, at.home)), { recursive: true });
+      writeFileSync(jobPlistPath(label, at.home), w.plist, { mode: 0o644 });
+      t.load(label);
+      out.push(`installed ${label}: ${when(w.j)} → ${jobChat(cfg, profile, w.name, w.j)}, ${what(w.j, cfg.profiles[profile])}`);
+    }
+  }
+  out.push('Timers match the job files.');
+  return out;
 }
 
 /** `angelia jobs run`: one run, logged, and from a timer said in the chat when it did not run. A
@@ -129,18 +167,7 @@ export async function jobsCommand(argv: string[]): Promise<void> {
     }
     case 'install': {
       needMac();
-      for (const profile of names(rest)) {
-        const { want, have } = plan(cfg, table, profile);
-        for (const label of have.keys()) if (!want.has(label)) { unloadJob(label); console.log(`removed ${label}`); }
-        for (const [label, w] of want) {
-          if (same(have.get(label), w.plist) && jobLoaded(label)) continue;
-          mkdirSync(dirname(jobPlistPath(label)), { recursive: true });
-          writeFileSync(jobPlistPath(label), w.plist, { mode: 0o644 });
-          loadJob(label);
-          console.log(`installed ${label}: ${when(w.j)} → ${jobChat(cfg, profile, w.name, w.j)}, ${what(w.j, cfg.profiles[profile])}`);
-        }
-      }
-      console.log('Timers match the job files.');
+      for (const line of installTimers(cfg, table, names(rest))) console.log(line);
       return;
     }
     case 'remove': {
@@ -164,18 +191,20 @@ export async function jobsCommand(argv: string[]): Promise<void> {
 }
 
 /** Each profile's jobs and whether its timers match the file; `drift` counts the ones that do not. */
-export function jobsState(cfg: Config, table: string, profiles: string[]): { lines: string[]; drift: number } {
+export function jobsState(cfg: Config, table: string, profiles: string[], at: Place = here()): { lines: string[]; drift: number } {
   const lines: string[] = [];
   let drift = 0;
   for (const profile of profiles) {
     let p;
-    try { p = plan(cfg, table, profile); } catch (e) { lines.push(`${profile}: ${(e as Error).message}`); drift++; continue; }
+    try { p = plan(cfg, table, profile, at); } catch (e) { lines.push(`${profile}: ${(e as Error).message}`); drift++; continue; }
     if (!Object.keys(p.jobs).length && !p.have.size) continue;
     lines.push(`${profile}  (${join(cfg.profiles[profile].cwd, JOBS_FILE)})`);
     for (const [name, j] of Object.entries(p.jobs)) {
       const label = jobLabel(profile, name);
-      const state = !j.enabled ? 'disabled' : jobPast(j) && !p.have.has(label) ? 'done' : !p.have.has(label) ? 'not installed' : !same(p.have.get(label), p.want.get(label)?.plist) ? 'out of date' : 'installed';
-      if (state === 'not installed' || state === 'out of date' || ((state === 'disabled' || jobPast(j)) && p.have.has(label))) drift++;
+      // A one-time job after its moment is done or passed, and a timer still left for it is drift.
+      const once = p.past.get(label)?.state;
+      const state = !j.enabled ? 'disabled' : once ?? (!p.have.has(label) ? 'not installed' : !same(p.have.get(label), p.want.get(label)?.plist) ? 'out of date' : 'installed');
+      if (state === 'not installed' || state === 'out of date' || ((state === 'disabled' || once) && p.have.has(label))) drift++;
       lines.push(`  ${name.padEnd(18)} ${when(j).padEnd(22)} ${state.padEnd(13)} ${what(j, cfg.profiles[profile])}`);
     }
     for (const label of p.have.keys()) if (![...p.want.keys()].includes(label) && !Object.keys(p.jobs).some((n) => jobLabel(profile, n) === label)) { lines.push(`  ${label}: a timer with no job in the file (angelia jobs install removes it)`); drift++; }

@@ -1439,6 +1439,14 @@
                                 "result"
                               ]
                             }
+                          },
+                          "state": {
+                            "description": "A one-time (at) job after its moment: done when it ran since, passed when it did not.",
+                            "type": "string",
+                            "enum": [
+                              "done",
+                              "passed"
+                            ]
                           }
                         },
                         "required": [

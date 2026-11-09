@@ -2,7 +2,7 @@ import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Config } from '../instance/config/schema.js';
-import { installedJobs, jobChat, jobLabel, readJobs } from './jobs.js';
+import { installedJobs, jobChat, jobLabel, onceState, readJobs } from './jobs.js';
 
 /** One job as a client shows it: when, what, where to, and how its last runs went. */
 export interface JobView {
@@ -17,6 +17,8 @@ export interface JobView {
   installed: boolean;
   /** Newest first, at most RUNS_MAX, from jobs.log. */
   runs: { at: string; result: string }[];
+  /** A one-time (`at`) job after its moment: `done` when it ran since, `passed` when it did not. */
+  state?: 'done' | 'passed';
 }
 
 export interface JobsView { file: string; jobs: JobView[]; error?: string }
@@ -59,7 +61,7 @@ export function lastRuns(stateDir: string, max = RUNS_MAX): Map<string, { at: st
 }
 
 /** A profile's jobs for a client. A jobs file that does not load is reported, not thrown. */
-export function jobsView(cfg: Config, profile: string, stateDir: string, home = homedir()): JobsView {
+export function jobsView(cfg: Config, profile: string, stateDir: string, home = homedir(), now = new Date()): JobsView {
   let read;
   try {
     read = readJobs(cfg, profile);
@@ -72,6 +74,8 @@ export function jobsView(cfg: Config, profile: string, stateDir: string, home = 
     let chat: string | null = null;
     try { chat = jobChat(cfg, profile, name, j); } catch { /* readJobs checked it already */ }
     const kind = j.turn ? 'turn' : j.send ? 'send' : 'run';
+    const mine = runs.get(`${profile}/${name}`) ?? [];
+    const state = onceState(j, mine, now);
     return {
       name,
       when: j.every ? `every ${j.every}` : j.at ? `at ${j.at}` : `cron ${j.schedule ?? ''}`,
@@ -80,7 +84,8 @@ export function jobsView(cfg: Config, profile: string, stateDir: string, home = 
       chat,
       enabled: j.enabled,
       installed: have.has(jobLabel(profile, name)),
-      runs: runs.get(`${profile}/${name}`) ?? [],
+      runs: mine,
+      ...(state ? { state } : {}),
     };
   });
   return { file: read.file, jobs };

@@ -210,6 +210,17 @@ export class JobEarly extends Error {}
 /** A one-time job whose timer fired more than AT_GRACE_MS after its moment: refused. */
 export class JobMissed extends Error {}
 
+/** What `runJob` returns for a job that ran (a command that failed included), as jobs.log keeps it. */
+export const JOB_RAN = /^(sent to |turn queued in |ran, |failed )/;
+
+/** A one-time job after its moment: `done` when jobs.log has a run of it since then, else `passed`.
+ *  Nothing for any other job. */
+export function onceState(j: Job, runs: { at: string; result: string }[], now = new Date()): 'done' | 'passed' | undefined {
+  if (!j.enabled || !jobPast(j, now)) return undefined;
+  const from = atDate(j.at!).getTime() - AT_EARLY_MS;
+  return runs.some((r) => Date.parse(r.at) >= from && JOB_RAN.test(r.result)) ? 'done' : 'passed';
+}
+
 export function everySeconds(every: string): number {
   const n = Number(every.slice(0, -1));
   return n * ({ m: 60, h: 3600, d: 86400 } as const)[every.slice(-1) as 'm' | 'h' | 'd'];
