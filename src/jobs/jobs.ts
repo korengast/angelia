@@ -407,8 +407,10 @@ function runCommand(cmd: string, cwd: string, ms: number, env: NodeJS.ProcessEnv
   });
 }
 
+/** One line in jobs.log. A line break in the text (an error quoting what a job printed) becomes a
+ *  space, so the text cannot add a line of its own, such as a run that never happened. */
 export function logJob(stateDir: string, line: string): void {
-  try { mkdirSync(stateDir, { recursive: true }); appendFileSync(join(stateDir, 'jobs.log'), `${new Date().toISOString()} ${line}\n`, { mode: 0o600 }); } catch {}
+  try { mkdirSync(stateDir, { recursive: true }); appendFileSync(join(stateDir, 'jobs.log'), `${new Date().toISOString()} ${line.replace(/[\r\n]+/g, ' ')}\n`, { mode: 0o600 }); } catch {}
 }
 
 // ---- launchd -----------------------------------------------------------------------------------

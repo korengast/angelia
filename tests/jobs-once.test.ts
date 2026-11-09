@@ -4,9 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Config } from '../src/instance/config/schema.js';
-import { buildJobPlist, jobHash, jobLabel, jobPlistPath, readJobs, JOBS_FILE } from '../src/jobs/jobs.js';
+import { buildJobPlist, jobHash, jobLabel, jobPlistPath, logJob, readJobs, JOBS_FILE } from '../src/jobs/jobs.js';
 import { installTimers, jobsState, runAndReport } from '../src/jobs/jobs-cli.js';
-import { jobsView } from '../src/jobs/jobs-view.js';
+import { jobsView, lastRuns } from '../src/jobs/jobs-view.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-once-'));
 const AT = '2030-06-01 09:00';
@@ -140,4 +140,12 @@ test('install skips a past one-time job, removes a timer left for it, and the li
   const v = jobsView(r.cfg, 'p', r.state, home, plus(24 * H));
   assert.deepEqual(v.jobs.map((j) => [j.name, j.state]), [['ran', 'done'], ['missed', 'passed'], ['later', undefined], ['off', undefined]]);
   assert.equal(jobsView(r.cfg, 'p', r.state, home, plus(-H)).jobs[0]?.state, undefined, 'before its moment it has no state');
+});
+
+test('a line break in a log line cannot add a run that never happened', () => {
+  const state = tmp();
+  logJob(state, `p/once error: boom\n${plus(1_000).toISOString()} p/once sent to whatsapp:g@g.us\r\nend`);
+  const text = readFileSync(join(state, 'jobs.log'), 'utf8');
+  assert.equal(text.trim().split('\n').length, 1);
+  assert.deepEqual(lastRuns(state).get('p/once')?.map((x) => x.result.slice(0, 11)), ['error: boom']);
 });
