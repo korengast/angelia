@@ -15,7 +15,7 @@ import type { Inbound } from '../src/core/types.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-self-'));
 
-test('self prompt names the profile, the table and the guide, and stays under 130 words', () => {
+test('self prompt names the profile, the table and the guide, and stays under 136 words', () => {
   const instance = tmp();
   mkdirSync(join(instance, 'workspace'));
   const text = selfPrompt({ profile: 'ops', table: '/t/routing.yaml', instance });

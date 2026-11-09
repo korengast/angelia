@@ -105,6 +105,11 @@ them (the one that keeps the instance); the others read them.
   owners: sender ids that may use /new /stop /resume /model /effort /backend /sh /restart, send the CLI's own
           slash commands, and answer permission prompts
 
+In a WhatsApp group, \`@<number>\` in the agent's answer or in \`angelia send\` tags that member: the
+number is their phone or their lid, as the message header shows it, with or without +. A number that is
+no member stays text, and so does any tag past 5 members in one message or inside backticks. Progress
+lines and Angelia's own lines never tag.
+
 A turn whose CLI gives no output for defaults.turn_stall_minutes (60; 0 for never) is stopped and the
 chat told; at half of it the chat hears that it may be stuck. tmux turns are not stopped.
 
