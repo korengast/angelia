@@ -36,8 +36,12 @@ import type { ChatEventBody, ChatListener } from './events.js';
 import { writeCutTurns } from './cut-turns.js';
 import type { Switched } from '../instance/switch-backend.js';
 
+/** `mentions`: the text is the agent's own (an answer, `angelia send`): WhatsApp turns `@<number>` of a
+ *  group member into a tag. Off for everything Angelia writes itself and for progress lines. */
+export interface SendOptions { mentions?: boolean }
+
 export interface Sender {
-  send(chat: string, text: string, thread?: string): Promise<void>;
+  send(chat: string, text: string, thread?: string, o?: SendOptions): Promise<void>;
   /** Attach a file that already passed `resolveMedia`. Absent on an adapter that cannot. */
   sendMedia?(chat: string, m: Media, thread?: string): Promise<void>;
   typing?(chat: string, on: boolean): Promise<void>;

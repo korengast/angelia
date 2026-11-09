@@ -3,12 +3,13 @@ import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import pino from 'pino';
 import { ChatChains, MAX_INBOUND, SenderQuota, saveInbound } from '../inbox.js';
-import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage, DisconnectReason, type AnyMessageContent, type WASocket } from 'baileys';
+import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage, DisconnectReason, type AnyMessageContent, type GroupMetadata, type WASocket } from 'baileys';
 import qrcode from 'qrcode-terminal';
 import type { Inbound } from '../../core/types.js';
-import type { Sender } from '../../core/orchestrator.js';
+import type { Sender, SendOptions } from '../../core/orchestrator.js';
 import { LidMap, normalizeJid } from './ids.js';
-import { parseMessage, SeenIds, withMentions, type WaMessageLike } from './parse.js';
+import { MAX_MENTIONS, parseMessage, SeenIds, withMentions, type WaMessageLike } from './parse.js';
+import { GroupCache } from './groups.js';
 import { SentMessages } from './sent.js';
 import { isOpus, type Media } from '../../core/deliver/media.js';
 import { asVoice } from '../../voice/opus.js';
@@ -72,6 +73,8 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
   /** Set by a 440 close, cleared by the next attempt: another client holds the session, and a fresh process
    *  would only trade 440s with it faster. */
   private conflict = false;
+  /** Group members for a minute, for tagging and for Baileys' own lookup on every group send (groups.ts). */
+  private groups = new GroupCache<GroupMetadata>();
 
   constructor(private readonly opts: WhatsAppAdapterOptions) {
     super();
@@ -151,12 +154,18 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
       // Baileys' own cache answers first, but only for 5 minutes and it is cleared when the socket
       // ends. Unknown ids get undefined: Baileys then resends nothing, which is the honest outcome.
       getMessage: async (key) => this.sent.get(key.id),
+      // Filled by groupMeta(); an empty answer and Baileys asks the server itself, as it would without it.
+      cachedGroupMetadata: async (jid) => this.groups.get(jid),
     });
     // The socket this one replaces (the check() path ends one that never opened) is done with: a late
     // close from it would start a second socket beside this one, and a late save would write its credentials.
     const old = this.sock;
     this.sock = sock;
     this.retire(old);
+    // A change made while no socket listened was never heard: a new socket starts with no cached group.
+    this.groups.clear();
+    sock.ev.on('groups.update', (us) => { for (const u of us) this.groups.drop(u.id); });
+    sock.ev.on('group-participants.update', (u) => this.groups.drop(u.id));
     sock.ev.on('creds.update', () => { if (sock !== this.sock) return; void saveCreds(); this.lids.reload(); });
     sock.ev.on('connection.update', (u) => { if (sock === this.sock) void this.onConnection(u as Record<string, any>, sock); });
     sock.ev.on('messages.upsert', ({ messages, type }) => {
@@ -308,13 +317,34 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     });
   }
 
-  async send(chat: string, text: string): Promise<void> {
+  /**
+   * `mentions`: an agent's answer or `angelia send` may tag group members with `@<number>`; Angelia's own
+   * lines and progress lines never do. A group whose members cannot be fetched gets the text as written:
+   * the answer matters more than the tag.
+   */
+  async send(chat: string, text: string, _thread?: string, o: SendOptions = {}): Promise<void> {
     if (!this.sock || !this.connected) throw new Error('whatsapp: not connected');
-    if (chat.endsWith('@g.us') && /@\+?\d/.test(text)) {
-      const m = withMentions(text, (await this.sock.groupMetadata(chat)).participants);
-      if (m.mentions.length) { await this.post(chat, m); return; }
+    if (o.mentions && chat.endsWith('@g.us') && /@\+?\d/.test(text)) {
+      const meta = await this.groupMeta(chat).catch((e) => {
+        this.log(`whatsapp: group members not fetched, sent without tags chat=${chat.slice(0, 8)}…: ${String((e as Error).message ?? e).slice(0, 120)}`);
+        return undefined;
+      });
+      if (meta) {
+        const m = withMentions(text, meta.participants, { lidFor: (n) => this.lids.lidFor(n) });
+        if (m.capped) this.log(`whatsapp: ${m.mentions.length + m.capped} members tagged in one message, ${m.capped} left as text (at most ${MAX_MENTIONS}) chat=${chat.slice(0, 8)}…`);
+        if (m.mentions.length) { await this.post(chat, { text: m.text, mentions: m.mentions }); return; }
+      }
     }
     await this.post(chat, { text });
+  }
+
+  /** A group's metadata, from the cache or the server (which then fills the cache). */
+  private async groupMeta(chat: string): Promise<GroupMetadata> {
+    const hit = this.groups.get(chat);
+    if (hit) return hit;
+    const meta = await this.sock!.groupMetadata(chat);
+    this.groups.set(chat, meta);
+    return meta;
   }
 
   /** Every outgoing message goes through here, so a retry receipt can find it later. */
@@ -325,7 +355,7 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
   /** A group's subject, for naming its profile. A DM has no name here. */
   async chatName(chat: string): Promise<string | undefined> {
     if (!this.sock || !chat.endsWith('@g.us')) return undefined;
-    return (await this.sock.groupMetadata(chat)).subject || undefined;
+    return (await this.groupMeta(chat)).subject || undefined;
   }
 
   /** Attach a file. Baileys streams it from disk, so a large document never sits in this process's heap. */

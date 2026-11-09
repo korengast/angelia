@@ -12,7 +12,18 @@ class FakeSocket {
   user = undefined;
   codes: string[] = [];
   ended = 0;
+  /** What was sent, and the member lists asked for: the send() tests read them. */
+  posts: { chat: string; content: Record<string, any> }[] = [];
+  fetches: string[] = [];
+  members: Record<string, { id: string; lid?: string; phoneNumber?: string }[]> = {};
+  failFetch?: Error;
   constructor(readonly config: Record<string, any>) {}
+  async groupMetadata(jid: string) {
+    this.fetches.push(jid);
+    if (this.failFetch) throw this.failFetch;
+    return { id: jid, subject: 'Team', participants: this.members[jid] ?? [] };
+  }
+  async sendMessage(chat: string, content: Record<string, any>) { this.posts.push({ chat, content }); return { key: { id: `m${this.posts.length}` }, message: {} }; }
   async requestPairingCode(phone: string) { this.codes.push(phone); return 'ABCD1234'; }
   async end() { this.ended++; }
   open() { this.ev.emit('connection.update', { connection: 'open' }); }
@@ -203,4 +214,77 @@ test('watchdog: stop() ends the timer', async () => {
   const after = ticks;
   await settle(60);
   assert.equal(ticks, after, 'no check after stop');
+});
+
+const G = '120363000000000001@g.us';
+
+/** A connected adapter on one fake socket, with members for G. */
+async function connected(extra: Partial<WhatsAppAdapterOptions> = {}) {
+  const r = rig(extra);
+  await r.a.start();
+  const sock = r.sockets[0];
+  sock.members[G] = [{ id: '22222222222222@lid', phoneNumber: '15550002222@s.whatsapp.net' }, { id: '33333333333333@lid' }];
+  sock.open();
+  return { ...r, sock };
+}
+
+test('send: an answer with @<number> in a group tags the member; no @<digit>, a DM or an untagged send fetches nothing', async (t) => {
+  const { a, sock } = await connected(); t.after(() => a.stop());
+  await a.send(G, 'hi @+15550002222', undefined, { mentions: true });
+  assert.deepEqual(sock.posts.at(-1), { chat: G, content: { text: 'hi @22222222222222', mentions: ['22222222222222@lid'] } });
+  assert.equal(sock.fetches.length, 1);
+  // The next send in the same minute, and Baileys' own lookup for it, hit the cache.
+  await a.send(G, 'and @33333333333333', undefined, { mentions: true });
+  assert.deepEqual(sock.posts.at(-1)!.content.mentions, ['33333333333333@lid']);
+  assert.equal(sock.fetches.length, 1, 'cached');
+  assert.equal((await sock.config.cachedGroupMetadata(G)).participants.length, 2);
+  sock.fetches.length = 0;
+  await a.send(G, 'no tags here, mail a@b.c', undefined, { mentions: true });
+  await a.send('15550002222@s.whatsapp.net', 'dm @15550002222', undefined, { mentions: true });
+  await a.send(G, 'a progress line @15550002222');
+  await a.send(G, 'a line @15550002222', undefined, { mentions: false });
+  assert.deepEqual(sock.posts.slice(-4).map((p) => p.content), [
+    { text: 'no tags here, mail a@b.c' }, { text: 'dm @15550002222' }, { text: 'a progress line @15550002222' }, { text: 'a line @15550002222' },
+  ]);
+  assert.equal(sock.fetches.length, 0);
+  // A number that is no member: sent as written, no mentions field.
+  await a.send(G, 'call @15559999999', undefined, { mentions: true });
+  assert.deepEqual(sock.posts.at(-1)!.content, { text: 'call @15559999999' });
+});
+
+test('send: a member fetch that fails sends the text as written and logs one line', async (t) => {
+  const { a, sock, log } = await connected(); t.after(() => a.stop());
+  sock.failFetch = new Error('rate-overlimit');
+  await a.send(G, 'hi @15550002222', undefined, { mentions: true });
+  assert.deepEqual(sock.posts.at(-1)!.content, { text: 'hi @15550002222' });
+  assert.equal(log.filter((l) => /group members not fetched.*rate-overlimit/.test(l)).length, 1);
+});
+
+test('send: a group change drops its cached members; a new socket starts with none', async (t) => {
+  const { a, sock, sockets } = await connected(); t.after(() => a.stop());
+  await a.send(G, '@15550002222', undefined, { mentions: true });
+  sock.ev.emit('group-participants.update', { id: G, author: 'x', participants: [], action: 'add' });
+  assert.equal(await sock.config.cachedGroupMetadata(G), undefined);
+  await a.send(G, '@15550002222', undefined, { mentions: true });
+  sock.ev.emit('groups.update', [{ id: G, subject: 'New name' }]);
+  assert.equal(await sock.config.cachedGroupMetadata(G), undefined);
+  assert.equal(sock.fetches.length, 2);
+  await a.send(G, '@15550002222', undefined, { mentions: true });
+  sock.close(515, 'restart required');
+  await until(() => sockets.length === 2, 'the reopen');
+  assert.equal(await sockets[1].config.cachedGroupMetadata(G), undefined);
+});
+
+test('send: a phone the group lists only by lid is tagged through the lid map; past five members the rest stay text, logged', async (t) => {
+  const { a, sock, authDir, log } = await connected(); t.after(() => a.stop());
+  // Baileys writes this file; creds.update reloads the map.
+  writeFileSync(join(authDir, 'lid-mapping-15550003333.json'), JSON.stringify('33333333333333@lid'));
+  sock.ev.emit('creds.update', {});
+  await a.send(G, 'thanks @15550003333', undefined, { mentions: true });
+  assert.deepEqual(sock.posts.at(-1)!.content, { text: 'thanks @33333333333333', mentions: ['33333333333333@lid'] });
+  sock.members[G] = Array.from({ length: 7 }, (_, n) => ({ id: `1555000000${n}@s.whatsapp.net` }));
+  sock.ev.emit('group-participants.update', { id: G, author: 'x', participants: [], action: 'add' });
+  await a.send(G, sock.members[G].map((m) => `@${m.id.slice(0, 11)}`).join(' '), undefined, { mentions: true });
+  assert.equal(sock.posts.at(-1)!.content.mentions.length, 5);
+  assert.ok(log.some((l) => /7 members tagged in one message, 2 left as text \(at most 5\)/.test(l)), log.join('\n'));
 });
