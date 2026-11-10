@@ -36,8 +36,13 @@ import type { ChatEventBody, ChatListener } from './events.js';
 import { writeCutTurns } from './cut-turns.js';
 import type { Switched } from '../instance/switch-backend.js';
 
+/** `mentions`: the text is the agent's own (an answer, `angelia send`): WhatsApp turns `@<number>` of a
+ *  group member into a tag. Off for everything Angelia writes itself and for progress lines. A late
+ *  answer (one owed after a failed delivery) tags too: it is the agent's answer, sent once. */
+export interface SendOptions { mentions?: boolean }
+
 export interface Sender {
-  send(chat: string, text: string, thread?: string): Promise<void>;
+  send(chat: string, text: string, thread?: string, o?: SendOptions): Promise<void>;
   /** Attach a file that already passed `resolveMedia`. Absent on an adapter that cannot. */
   sendMedia?(chat: string, m: Media, thread?: string): Promise<void>;
   typing?(chat: string, on: boolean): Promise<void>;
@@ -663,6 +668,8 @@ export class Orchestrator {
     // What the agent said along the way and the rate limit held back goes in front of the answer.
     const unsent = await progress.close();
     if (stalled) {
+      // Progress lines the rate limit held back never went out, so they go as the agent's words and may
+      // tag; the same on the failure path below.
       if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
       await this.reply(i, `The agent gave no output for ${this.cfg.defaults.turn_stall_minutes} minutes, so Angelia stopped it. Send your message again, or /new for a fresh session.`).catch(() => {});
       return 'stalled';
@@ -1136,11 +1143,12 @@ export class Orchestrator {
   }
 
   /** Post into the chat behind a session key (`angelia send`, a cron launcher). `fromKey`: another
-   *  profile's agent posted it; the line starts with that profile's name. */
-  async notify(key: string, text: string, fromKey?: string): Promise<void> {
+   *  profile's agent posted it; the line starts with that profile's name. `o.mentions`: the text is an
+   *  agent's or a script's (`angelia send`), not one of Angelia's own lines, so it may tag (SendOptions). */
+  async notify(key: string, text: string, fromKey?: string, o: SendOptions = {}): Promise<void> {
     const k = parseSessionKey(key);
     const said = fromKey ? `[from ${this.profileName(fromKey) ?? fromKey}] ${text}` : text;
-    await this.reply({ ...k, sender: '', text: '', isGroup: isGroupChat(k.platform, k.chat), mentioned: false, media: [] }, said);
+    await this.reply({ ...k, sender: '', text: '', isGroup: isGroupChat(k.platform, k.chat), mentioned: false, media: [] }, said, false, !!o.mentions);
   }
 
   private profileName(key: string): string | undefined {
@@ -1203,8 +1211,9 @@ export class Orchestrator {
     return r;
   }
 
-  /** `held`: the caller already took the first chunk's slot (a progress batch). */
-  private async reply(i: Inbound, text: string, held = false): Promise<void> {
+  /** `held`: the caller already took the first chunk's slot (a progress batch). `mentions`: the agent's
+   *  own words, which may tag group members (SendOptions); every other line goes as written. */
+  private async reply(i: Inbound, text: string, held = false, mentions = false): Promise<void> {
     // `held` is a batch of progress lines, which a client already saw as they came.
     if (!held) this.emit(sessionKey(i), { type: 'out', text });
     if (i.surface === 'app') return;
@@ -1220,7 +1229,7 @@ export class Orchestrator {
     const send = <T>(f: () => Promise<T>) => (held ? f() : this.retrySend(f));
     for (let n = 0; n < parts.length; n++) {
       if (!(held && n === 0)) await this.rateFor(i.platform).acquire(n === 0);
-      try { await send(() => sender.send(i.chat, parts[n], i.thread)); }
+      try { await send(() => sender.send(i.chat, parts[n], i.thread, { mentions })); }
       catch (e) {
         // What did not go out, so a kept answer is not sent twice.
         (e as { unsent?: string }).unsent = parts.slice(n).join('\n\n');
@@ -1277,10 +1286,12 @@ export class Orchestrator {
    * read meaning into the brain's text unless this chat asked it to.
    */
   private async replyFromAgent(i: Inbound, text: string, profile: Profile, held = false): Promise<void> {
+    // A progress batch (`held`) never tags: the answer that follows may tag the same member again.
+    const mentions = !held;
     // An app turn's answer stays with the client; a file line in it is left as text there.
-    if (!profile.media_tags || i.surface === 'app') return this.reply(i, text, held);
+    if (!profile.media_tags || i.surface === 'app') return this.reply(i, text, held, mentions);
     const { text: rest, media } = extractMediaTags(text);
-    if (rest) await this.reply(i, rest, held);
+    if (rest) await this.reply(i, rest, held, mentions);
     for (const req of media) {
       try { await this.sendMediaTo(sessionKey(i), req); }
       catch (e) {

@@ -14,7 +14,8 @@ import type { ApiDeps } from './server.js';
  *  test cannot pass on wiring of its own that the daemon does not have. */
 export function apiDeps(orch: Orchestrator, cfg: Config, status: () => unknown, stateDir?: string): ApiDeps {
   return {
-    send: (key, text, fromKey) => orch.notify(key, text, fromKey),
+    // `angelia send` is an agent's or a script's text: it may tag WhatsApp group members.
+    send: (key, text, fromKey) => orch.notify(key, text, fromKey, { mentions: true }),
     turn: (key, text, fromAgent, fromKey, surface, turnId, media) => orch.injectTurn(key, text, fromAgent, fromKey, 'scheduled', surface, turnId, media),
     attach: (key, paths) => orch.attach(key, paths),
     command: (key, name) => orch.appCommand(key, name),

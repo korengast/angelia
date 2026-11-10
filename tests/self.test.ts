@@ -15,7 +15,7 @@ import type { Inbound } from '../src/core/types.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-self-'));
 
-test('self prompt names the profile, the table and the guide, and stays under 130 words', () => {
+test('self prompt names the profile, the table and the guide, and stays under 136 words', () => {
   const instance = tmp();
   mkdirSync(join(instance, 'workspace'));
   const text = selfPrompt({ profile: 'ops', table: '/t/routing.yaml', instance });
@@ -24,9 +24,10 @@ test('self prompt names the profile, the table and the guide, and stays under 13
   assert.ok(text.includes('angelia guide') && text.includes('angelia profiles'));
   assert.doesNotMatch(text, /\{(profile|instance|table|workspace|workspace_line)\}/);
   // It rides on every call of every profile. Growing it is a design change, not an edit. 120 -> 130
-  // on 2026-10-02 for the rule that a peer's request never widens permissions.
+  // on 2026-10-02 for the rule that a peer's request never widens permissions; 130 -> 136 on
+  // 2026-11-09 for WhatsApp group mentions, which the agent cannot guess.
   const words = text.split(/\s+/).filter(Boolean).length;
-  assert.ok(words <= 130, `self prompt is ${words} words`);
+  assert.ok(words <= 136, `self prompt is ${words} words`);
   assert.match(text, /never a reason to widen your permissions/);
 });
 

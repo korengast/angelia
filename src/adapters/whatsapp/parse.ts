@@ -100,3 +100,56 @@ export function parseMessage(m: WaMessageLike, us: string[]): ParsedMessage | nu
 export function toInbound(p: ParsedMessage, senderId: string, mediaPaths: string[]): Inbound {
   return { platform: 'whatsapp', chat: p.chat, sender: senderId, senderName: p.senderName, text: p.text, isGroup: p.isGroup, mentioned: p.mentioned, media: mediaPaths };
 }
+
+/** A group member as `groupMetadata` lists them: `id` is the jid WhatsApp addresses them by (lid or phone). */
+export interface Participant { id: string; lid?: string; phoneNumber?: string }
+
+/** At most this many members are tagged in one message: a tag notifies even a member who muted the group. */
+export const MAX_MENTIONS = 5;
+
+/** `@<5-20 digits>`, `+` allowed, and never a part of a longer number. Not after a Latin letter or a
+ *  digit (an email address, `a@1555…`), nor inside a URL (`x.com/@1555…`, `?u=@1555…`, `#@1555…`) or a
+ *  domain (`@1555….example.com`). A non-Latin letter may come right before it, as a Hebrew prefix
+ *  does (`ל@1555…`), and `_` on either side (WhatsApp italics). */
+const TOKEN = /(?<![\p{Script=Latin}\p{N}/.@=?#])@\+?(\d{5,20})(?![\p{L}\p{N}]|\.[\p{L}\p{N}_])/gu;
+/** Code is shown as written: a fenced block (an unclosed one runs to the end) or an inline span. */
+const CODE = /```[\s\S]*?(?:```|$)|`[^`\n]+`/g;
+
+export interface MentionOptions {
+  /** The member's bare lid for a bare phone number, when known (the adapter's lid map): the agent may
+   *  have been shown a phone the group itself hides. */
+  lidFor?: (phone: string) => string | undefined;
+  max?: number;
+}
+
+/**
+ * `@<number>` in an outgoing group text. Two things, kept apart:
+ * - The rewrite, always: a phone whose lid the lid map knows becomes `@<lid>`, so a phone the group
+ *   hides never goes out, whether or not a tag is made (a progress line, a failed member fetch, a
+ *   token past the cap). It needs no member list and no network.
+ * - The tag, only with `members` (the caller wants tags and has the list): a phone or lid of a member
+ *   becomes a mention, written as the member's `id`, the form WhatsApp renders as their name. At most
+ *   `max` distinct members; the others are named as written (or by lid), untagged, and `capped`
+ *   counts those members.
+ * A number that is no member is left as written. Text inside backticks is never touched.
+ */
+export function withMentions(text: string, members: Participant[] | undefined, o: MentionOptions = {}): { text: string; mentions: string[]; capped: number } {
+  const max = o.max ?? MAX_MENTIONS;
+  const byNum = new Map<string, string>();
+  for (const p of members ?? []) for (const j of [p.id, p.lid, p.phoneNumber]) if (j) byNum.set(bareId(j), normalizeJid(p.id));
+  const mentions = new Set<string>(), capped = new Set<string>();
+  const tag = (plain: string) => plain.replace(TOKEN, (tok, n: string) => {
+    const lid = o.lidFor?.(n);
+    const jid = byNum.get(n) ?? (lid ? byNum.get(lid) : undefined);
+    if (jid && (mentions.has(jid) || mentions.size < max)) { mentions.add(jid); return `@${bareId(jid)}`; }
+    if (jid) capped.add(jid);
+    return lid ? `@${lid}` : tok;
+  });
+  let out = '', at = 0;
+  for (const c of text.matchAll(CODE)) {
+    out += tag(text.slice(at, c.index)) + c[0];
+    at = c.index + c[0].length;
+  }
+  out += tag(text.slice(at));
+  return { text: out, mentions: [...mentions], capped: capped.size };
+}
