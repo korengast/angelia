@@ -51,9 +51,10 @@ export const COMMANDS: Record<string, Spec> = {
   profiles: { line: L.config, flags: { '--json': false } },
   profile: { line: L.profile },
   compile: { line: L.compile, flags: { '--write': false, '--check': false, '--config': true } },
-  // --hash: what a timer passes, so a changed job refuses to run from an old timer.
+  // --hash: what a timer passes, so a changed job refuses to run from an old timer; --once, a one-time
+  // job's date, so its timer knows it is one whatever the file says by then.
   accept: { line: L.accept, flags: { '--check': false, '--expect': true, '--config': true } },
-  jobs: { line: L.jobs, flags: { '--config': true, '--hash': true } },
+  jobs: { line: L.jobs, flags: { '--config': true, '--hash': true, '--once': true } },
   workspace: { line: L.workspace, usage: 'usage: angelia workspace sync [--quiet]\n       angelia workspace commit -m <message> [path...] [--no-push]', flags: { '--quiet': false, '-m': true, '--message': true, '--no-push': false } },
   send: { line: L.send, text: true },
   'send-media': { line: L.media, flags: { '--name': true, '--caption': true, '--no-voice': false } },

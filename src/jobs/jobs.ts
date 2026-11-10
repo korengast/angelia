@@ -33,13 +33,15 @@ import { tmuxSocketPath } from '../brain/tmux.js';
 export const JOBS_FILE = 'angelia-jobs.yaml';
 export const JOB_PREFIX = 'angelia.job.';
 
-const NAME = /^[A-Za-z0-9_-]{1,40}$/;
+const NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,39}$/;
 
 export const Job = z.object({
   /** Five-field cron: minute hour day-of-month month day-of-week. Lists, ranges and steps work. */
   schedule: z.string().optional(),
   /** Or a fixed interval: 30m, 2h, 1d. */
   every: z.string().regex(/^\d+[mhd]$/, 'every: a number and m, h or d (30m, 2h, 1d)').optional(),
+  /** Or once, at a local date and time: "2026-11-12 09:00". The timer removes itself after it runs. */
+  at: z.string().optional(),
   /** Where the result goes. Defaults to the profile's one routed chat. */
   chat: z.string().optional(),
   /** Exactly one of these three. */
@@ -50,8 +52,9 @@ export const Job = z.object({
   timeout_seconds: z.number().positive().default(600),
   enabled: z.boolean().default(true),
 }).strict().superRefine((j, ctx) => {
-  if (!!j.schedule === !!j.every) ctx.addIssue({ code: 'custom', message: 'give schedule or every, not both and not neither' });
+  if ([j.schedule, j.every, j.at].filter(Boolean).length !== 1) ctx.addIssue({ code: 'custom', message: 'give one of schedule, every or at' });
   if ([j.turn, j.send, j.run].filter(Boolean).length !== 1) ctx.addIssue({ code: 'custom', message: 'give exactly one of turn, send or run' });
+  if (j.at) { try { atDate(j.at); } catch (e) { ctx.addIssue({ code: 'custom', message: (e as Error).message }); } }
   if (j.schedule) { try { cronCalendar(j.schedule); } catch (e) { ctx.addIssue({ code: 'custom', message: (e as Error).message }); } }
 });
 export type Job = z.infer<typeof Job>;
@@ -169,6 +172,90 @@ export function cronCalendar(expr: string): Cal[] {
   return out;
 }
 
+/** A one-time job's date and time as written: "YYYY-MM-DD HH:MM", local time. */
+function atParts(at: string): { Year: number; Month: number; Day: number; Hour: number; Minute: number } {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec(at.trim());
+  if (!m) throw new Error(`at: "${at}" is not YYYY-MM-DD HH:MM`);
+  const [Year, Month, Day, Hour, Minute] = m.slice(1).map(Number);
+  // Feb 30 or 24:00 is no date on any clock; checked in UTC, which has no clock changes.
+  const u = new Date(Date.UTC(Year, Month - 1, Day, Hour, Minute));
+  if (u.getUTCFullYear() !== Year || u.getUTCMonth() !== Month - 1 || u.getUTCDate() !== Day || u.getUTCHours() !== Hour || u.getUTCMinutes() !== Minute) throw new Error(`at: "${at}" is not a real date and time`);
+  return { Year, Month, Day, Hour, Minute };
+}
+
+/** A one-time job's moment, in local time: "YYYY-MM-DD HH:MM". */
+export function atDate(at: string): Date {
+  const { Year, Month, Day, Hour, Minute } = atParts(at);
+  const date = new Date(Year, Month - 1, Day, Hour, Minute);
+  if (date.getFullYear() !== Year || date.getMonth() !== Month - 1 || date.getDate() !== Day || date.getHours() !== Hour || date.getMinutes() !== Minute) {
+    throw new Error(`at: "${at}" falls in a clock change in ${Intl.DateTimeFormat().resolvedOptions().timeZone}, the time zone used here, so that local time does not happen; pick another`);
+  }
+  return date;
+}
+
+/** How early a timer may fire and still run: the clock may be a little off from launchd's. */
+export const AT_EARLY_MS = 60_000;
+/** How late a one-time job's timer still runs it. launchd makes up a time missed in sleep at the
+ *  wake, so a night asleep still delivers; a weekend with the lid shut is a reminder whose moment is
+ *  gone. A time missed while the Mac was off or logged out is not made up: the timer would fire a
+ *  year later, and is refused then. */
+export const AT_GRACE_MS = 12 * 3600_000;
+
+/** A one-time job whose moment has passed: its timer has fired (or will on wake) and is not installed again. */
+export const jobPast = (j: Job, now = new Date()): boolean => !!j.at && atDate(j.at) <= now;
+
+/** A timer that fired before its job's date (launchd has no year, so a date over a year out fires
+ *  a year early): refused, and its timer kept for the real date. */
+export class JobEarly extends Error {}
+/** A one-time job whose timer fired more than AT_GRACE_MS after its moment: refused. */
+export class JobMissed extends Error {}
+
+/** What `runJob` returns for a job that ran (a command that failed included), as jobs.log keeps it. */
+export const JOB_RAN = /^(sent to |turn queued in |ran, |failed )/;
+
+/** A one-time job after its moment: `done` when it ran for that date (its record, or failing that a
+ *  run in jobs.log since then), else `passed`. Nothing for any other job. */
+export function onceState(j: Job, runs: { at: string; result: string }[], now = new Date(), ran?: { at?: unknown }): 'done' | 'passed' | undefined {
+  if (!j.enabled || !jobPast(j, now)) return undefined;
+  if (typeof ran?.at === 'string' && sameMoment(ran.at, j.at!)) return 'done';
+  const from = atDate(j.at!).getTime() - AT_EARLY_MS;
+  return runs.some((r) => Date.parse(r.at) >= from && JOB_RAN.test(r.result)) ? 'done' : 'passed';
+}
+
+/** Two at: strings name the same moment ("2026-11-10 09:00" and "2026-11-10T09:00"). */
+function sameMoment(a: string, b: string): boolean {
+  try { return atDate(a).getTime() === atDate(b).getTime(); } catch { return a === b; }
+}
+
+const ONCE_FILE = 'jobs-once.jsonl';
+
+/** The one-time jobs that ran, by `profile/job`: the date each ran for, and when. jobs.log is read
+ *  from its end only, so a run there drops out of sight as the log grows; this keeps it. One JSON
+ *  line per run, appended; a later line for the same job wins. */
+export function onceRan(stateDir: string): Record<string, { at?: unknown; ran?: unknown }> {
+  const out: Record<string, { at?: unknown; ran?: unknown }> = {};
+  let text = '';
+  try { text = readFileSync(join(stateDir, ONCE_FILE), 'utf8'); } catch { return out; }
+  for (const line of text.split('\n')) {
+    try {
+      const v: unknown = JSON.parse(line);
+      if (v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { key?: unknown }).key === 'string') {
+        const { key, at, ran } = v as { key: string; at?: unknown; ran?: unknown };
+        out[key] = { at, ran };
+      }
+    } catch { /* a torn or foreign line */ }
+  }
+  return out;
+}
+
+/** Notes that a one-time job ran for its date. One short line appended with O_APPEND, so two jobs
+ *  finishing at once cannot lose each other's line (a read-modify-write file could). */
+export function recordOnce(stateDir: string, key: string, at: string, now = new Date()): void {
+  try {
+    appendFileSync(join(stateDir, ONCE_FILE), `${JSON.stringify({ key, at, ran: now.toISOString() })}\n`, { mode: 0o600 });
+  } catch { /* jobs.log still has the run */ }
+}
+
 export function everySeconds(every: string): number {
   const n = Number(every.slice(0, -1));
   return n * ({ m: 60, h: 3600, d: 86400 } as const)[every.slice(-1) as 'm' | 'h' | 'd'];
@@ -190,9 +277,13 @@ export interface JobPlistInput { label: string; node: string; entry: string; pro
 
 export function buildJobPlist(i: JobPlistInput): string {
   const env: Record<string, string> = { PATH: i.path, HOME: i.home, ANGELIA_STATE_DIR: i.stateDir, ANGELIA_CONFIG: i.config };
+  // launchd calendars have no year: an `at` timer would fire every year, so it removes itself after its
+  // run. Its date goes in its arguments (--once), so it knows that even when the file has changed.
+  const at = i.j.at ? atParts(i.j.at) : undefined;
+  const cal: Cal[] = at ? [{ Month: at.Month, Day: at.Day, Hour: at.Hour, Minute: at.Minute }] : i.j.schedule ? cronCalendar(i.j.schedule) : [];
   const when = i.j.every
     ? `  <key>StartInterval</key><integer>${everySeconds(i.j.every)}</integer>`
-    : `  <key>StartCalendarInterval</key>\n  <array>\n${cronCalendar(i.j.schedule!).map((c) => `    <dict>${Object.entries(c).map(([k, v]) => `<key>${k}</key><integer>${v}</integer>`).join('')}</dict>`).join('\n')}\n  </array>`;
+    : `  <key>StartCalendarInterval</key>\n  <array>\n${cal.map((c) => `    <dict>${Object.entries(c).map(([k, v]) => `<key>${k}</key><integer>${v}</integer>`).join('')}</dict>`).join('\n')}\n  </array>`;
   const out = join(i.stateDir, 'jobs.out');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -202,7 +293,7 @@ export function buildJobPlist(i: JobPlistInput): string {
   <key>Label</key><string>${esc(i.label)}</string>
   <key>ProgramArguments</key>
   <array>
-${[i.node, i.entry, 'jobs', 'run', i.profile, i.job, '--hash', i.hash].map((a) => `    <string>${esc(a)}</string>`).join('\n')}
+${[i.node, i.entry, 'jobs', 'run', i.profile, i.job, '--hash', i.hash, ...(i.j.at ? ['--once', i.j.at] : [])].map((a) => `    <string>${esc(a)}</string>`).join('\n')}
   </array>
   <key>WorkingDirectory</key><string>${esc(i.cwd)}</string>
   <key>EnvironmentVariables</key>
@@ -292,7 +383,7 @@ const SILENT = '[SILENT]';
 /** One run of a job: what the timer calls, and `angelia jobs run` by hand. Returns a log line.
  *  `chatToken`: the job's chat token, put in the command's environment so a script can `angelia send`
  *  to its own chat (inside the sandbox the owner's token file is closed). */
-export async function runJob(cfg: Config, profile: string, name: string, deliver: Deliver, opts: { hash?: string; env?: NodeJS.ProcessEnv; secrets?: Record<string, string>; stateDir?: string; chatToken?: (key: string) => string } = {}): Promise<string> {
+export async function runJob(cfg: Config, profile: string, name: string, deliver: Deliver, opts: { hash?: string; env?: NodeJS.ProcessEnv; secrets?: Record<string, string>; stateDir?: string; chatToken?: (key: string) => string; now?: Date } = {}): Promise<string> {
   const { jobs } = readJobs(cfg, profile);
   const j = jobs[name];
   if (!j) throw new Error(`profile ${profile} has no job "${name}"`);
@@ -301,6 +392,12 @@ export async function runJob(cfg: Config, profile: string, name: string, deliver
   // fails it.
   if (opts.hash && opts.hash !== jobPin(j, cfg.profiles[profile]) && opts.hash !== jobHash(j)) {
     throw new Error(`job ${profile}/${name}, or a script it runs, changed since it was installed; if that change was yours, run angelia jobs install ${profile}`);
+  }
+  if (j.at) {
+    const late = (opts.now ?? new Date()).getTime() - atDate(j.at).getTime();
+    if (late < -AT_EARLY_MS) throw new JobEarly(`job ${profile}/${name} is due at ${j.at}, not before`);
+    // Only a timer is held to the grace: a run by hand is the owner asking for it now.
+    if (opts.hash && late > AT_GRACE_MS) throw new JobMissed(`job ${profile}/${name} was due at ${j.at}; its timer fired more than ${AT_GRACE_MS / 3600_000} h after that (the Mac was asleep, off or logged out then), so it does not run`);
   }
   const chat = jobChat(cfg, profile, name, j);
   if (j.send) { await deliver('send', chat, j.send); return `sent to ${chat}`; }
@@ -346,8 +443,10 @@ function runCommand(cmd: string, cwd: string, ms: number, env: NodeJS.ProcessEnv
   });
 }
 
+/** One line in jobs.log. A line break in the text (an error quoting what a job printed) becomes a
+ *  space, so the text cannot add a line of its own, such as a run that never happened. */
 export function logJob(stateDir: string, line: string): void {
-  try { mkdirSync(stateDir, { recursive: true }); appendFileSync(join(stateDir, 'jobs.log'), `${new Date().toISOString()} ${line}\n`, { mode: 0o600 }); } catch {}
+  try { mkdirSync(stateDir, { recursive: true }); appendFileSync(join(stateDir, 'jobs.log'), `${new Date().toISOString()} ${line.replace(/[\r\n]+/g, ' ')}\n`, { mode: 0o600 }); } catch {}
 }
 
 // ---- launchd -----------------------------------------------------------------------------------
@@ -362,9 +461,14 @@ export function loadJob(label: string, home = homedir()): void {
   const r = launchctl(['bootstrap', domain(), jobPlistPath(label, home)]);
   if (r.code !== 0) throw new Error(`launchctl bootstrap ${label} failed: ${r.out || `exit ${r.code}`}`);
 }
+/** The plist goes first: a job that unloads itself is stopped by its own bootout, and must not leave
+ *  a file behind for launchd to load at the next login. */
 export function unloadJob(label: string, home = homedir()): void {
-  launchctl(['bootout', `${domain()}/${label}`]);
-  if (existsSync(jobPlistPath(label, home))) unlinkSync(jobPlistPath(label, home));
+  try {
+    if (existsSync(jobPlistPath(label, home))) unlinkSync(jobPlistPath(label, home));
+  } finally {
+    launchctl(['bootout', `${domain()}/${label}`]);
+  }
 }
 export function jobLoaded(label: string): boolean {
   return launchctl(['print', `${domain()}/${label}`]).code === 0;

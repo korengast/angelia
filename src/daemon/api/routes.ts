@@ -112,6 +112,7 @@ const JobsSchema = z.object({
   jobs: z.array(z.object({
     name: z.string(), when: z.string(), kind: z.enum(['turn', 'send', 'run']), what: z.string(), chat: z.string().nullable(),
     enabled: z.boolean(), installed: z.boolean(), runs: z.array(z.object({ at: z.string(), result: z.string() })),
+    state: z.enum(['done', 'passed']).optional().describe('A one-time (at) job after its moment: done when it ran since, passed when it did not.'),
   })),
   error: z.string().optional(),
 });
