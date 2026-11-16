@@ -71,3 +71,11 @@ test('filePath honours XDG_CONFIG_HOME', () => {
     assert.equal(systemd.filePath('/h'), '/h/.config/systemd/user/angelia.service');
   } finally { if (was === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = was; }
 });
+
+test('$ is doubled in ExecStart words only; Environment keeps it literal', () => {
+  const u = systemd.render({ node: '/n', entry: '/e', config: '/c/$y.yaml', stateDir: '/a/$x/state', path: '/p', home: '/h' });
+  assert.match(u, /^ExecStart=.*"\/c\/\$\$y\.yaml"$/m);
+  const env = /^Environment=.*$/m.exec(u)![0];
+  assert.ok(env.includes('"ANGELIA_STATE_DIR=/a/$x/state"'));
+  assert.ok(!env.includes('$$'));
+});

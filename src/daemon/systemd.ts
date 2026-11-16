@@ -25,8 +25,12 @@ export function escapeSpecifiers(s: string): string {
   return s.replace(/%/g, '%%');
 }
 
-/** One word of ExecStart or Environment: quoted, with backslash and quote escaped, `%` and `$` doubled. */
-const word = (s: string): string => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%').replace(/\$/g, '$$$$')}"`;
+/** One quoted word: backslash and quote escaped, `%` doubled. ExecStart also expands `$VAR`, so there `$` is doubled
+ *  too (`exec`); Environment= does not, so a `$` stays literal there. */
+const word = (s: string, exec = false): string => {
+  const q = s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%');
+  return `"${exec ? q.replace(/\$/g, '$$$$') : q}"`;
+};
 
 export function buildUnit(i: ServiceInput): string {
   for (const v of [i.node, i.entry, i.config, i.stateDir, i.path, i.home, i.lang ?? '']) {
@@ -41,9 +45,9 @@ Description=Angelia daemon
 After=network-online.target
 
 [Service]
-ExecStart=${[i.node, i.entry, 'daemon', i.config].map(word).join(' ')}
+ExecStart=${[i.node, i.entry, 'daemon', i.config].map((a) => word(a, true)).join(' ')}
 WorkingDirectory=${escapeSpecifiers(i.stateDir)}
-Environment=${env.map(word).join(' ')}
+Environment=${env.map((a) => word(a)).join(' ')}
 Restart=on-failure
 RestartSec=10
 StandardOutput=${out}
