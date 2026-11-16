@@ -16,7 +16,7 @@ curl -fsSL https://useangelia.com/install | sh
 <p align="center">
   <a href="https://useangelia.com"><img src="https://img.shields.io/badge/Website-useangelia.com-D06B6B?style=for-the-badge" alt="Website"></a>
   <a href="https://github.com/korengast/angelia/releases/latest"><img src="https://img.shields.io/github/v/release/korengast/angelia?style=for-the-badge&label=Release%20(signed)&color=1A120D" alt="Latest release, signed"></a>
-  <a href="#backends"><img src="https://img.shields.io/badge/Platform-macOS-A8474B?style=for-the-badge&logo=apple&logoColor=white" alt="macOS"></a>
+  <a href="#backends"><img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-A8474B?style=for-the-badge&logo=apple&logoColor=white" alt="macOS and Linux"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
 
@@ -75,7 +75,7 @@ angelia service install   # keep it running: starts at login, comes back after a
 
 Then send *"what is in this folder?"* to your bot. The agent answers from the profile's folder.
 
-> **Linux and Windows:** not yet. The daemon is plain Node, but the service, the timers and the built-in voice use macOS today. Linux with a systemd unit is next.
+> **Linux** is supported for the daemon: `angelia service install` writes a systemd user unit (systemd 248 or newer: Ubuntu 22.04+, Debian 12+). Still macOS only until their sub-projects land: `angelia jobs`, voice replies, sandboxed profiles and the pi backend. **Windows:** not yet.
 
 ---
 
@@ -232,7 +232,7 @@ Each chat keeps one warm process, so a message never waits for a CLI to start. P
 
 Angelia is not an agent and will not become one. No second model, no skills system, no memory framework, no scheduler in the daemon, no plugin marketplace. Knowledge belongs in the profile's instruction file; scheduled work belongs to the operating system, which `angelia jobs` only sets up. No payments: the agent sends you a checkout link and you pay on your phone.
 
-**Next:** an OpenCode backend. Linux with a systemd unit. `/profile` to switch which assistant answers a chat.
+**Next:** an OpenCode backend. `/profile` to switch which assistant answers a chat.
 
 ---
 

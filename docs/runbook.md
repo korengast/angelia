@@ -42,7 +42,7 @@ first and refuses a broken one.
 | ids, counts, turn failures, restarts | `~/.angelia/daemon.log`, then `daemon.log.1` (no message text except a dying CLI's last error line) |
 | the screen of a tmux pane that never reached a prompt | `~/.angelia/tui/<pane>/screen.txt` |
 | the daemon's own stdout and stderr | `~/.angelia/daemon.out` |
-| what the service does | `angelia service status`; `launchctl print gui/$(id -u)/angelia.daemon` |
+| what the service does | `angelia service status`; `launchctl print gui/$(id -u)/angelia.daemon` (macOS), `systemctl --user status angelia` (Linux) |
 | a job timer's output | `~/.angelia/jobs.log`, `~/.angelia/jobs.out` |
 | a tui pane that will not answer | `tmux -L angelia ls`, then `tmux -L angelia attach -t <name>` (detach with `C-b d`) |
 | the agent's own transcript | `~/.claude/projects/<cwd with non-alphanumerics as ->/<session>.jsonl` |
@@ -113,6 +113,16 @@ file is stale: `rm ~/.angelia/daemon.pid`, then start again.
 
 **Usage limit.** The chat hears the CLI's own limit line plus how to switch: `/model sonnet` for
 this session only; `/model default` once the limit resets.
+
+## Linux server over Tailscale
+
+Run these once on a fresh Ubuntu 22.04+ VPS before a release, reaching it with `tailscale ssh`. Angelia needs no inbound port; Tailscale is only your way in.
+
+1. **Install the service.** `angelia service install`, then `systemctl --user is-active angelia`. Success: `active`, and `angelia service status` says "loaded yes". If it printed a `sudo loginctl enable-linger $USER` line, run it, then check `loginctl show-user $USER -p Linger` says `Linger=yes`.
+2. **Reboot with nobody logged in.** `sudo reboot`, wait, then from a new `tailscale ssh` session: `angelia service status` and `tail ~/.angelia/daemon.log`. Success: the daemon is up with a start time after the boot, and a chat message gets an answer.
+3. **`/restart` from a chat.** Open a TUI pane first (`tmux -L angelia ls`), send `/restart`. Success: the same panes are still listed afterwards, and the chat hears "back up".
+4. **`angelia update`, then `/restart`.** Success: `angelia --version` shows the new version, and after the restart the chat hears "back up" with the new version in `daemon.log`.
+5. **A link as `.inbox` is refused.** In a profile folder, `rm -rf .inbox && ln -s /etc .inbox`, then send the chat a file. Success: the file is not saved, nothing lands in `/etc`, and the agent never sees it. Remove the link afterwards.
 
 ## Backup and move
 
