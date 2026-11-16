@@ -37,10 +37,14 @@ export const STATE_PRIVATE = {
  *  from them (media.ts), with a few more folders of its own. */
 export const HOME_PRIVATE = {
   dirs: ['.ssh', '.aws', '.gnupg', '.config/gh', '.config/gcloud', '.docker', '.kube', '.password-store',
-    'Library/Keychains', 'Library/Cookies', 'Library/Messages', 'Library/Mail'],
+    'Library/Keychains', 'Library/Cookies', 'Library/Messages', 'Library/Mail',
+    '.local/share/keyrings', // Linux's Library/Keychains
+    '.config/google-chrome', '.config/chromium', '.mozilla', // Linux's Library/Cookies: the browsers' logins and cookies
+    '.config/systemd/user', 'Library/LaunchAgents'], // a unit or LaunchAgent written here outlives every sandbox
   files: ['.netrc', '.git-credentials', '.npmrc', '.pypirc', '.pgpass', '.vault-token', '.zsh_history', '.bash_history',
     // The logins pi, grok and Codex keep in plain text: an agent that reads one holds the owner's model account.
-    '.pi/agent/auth.json', '.grok/auth.json', '.codex/auth.json'],
+    '.pi/agent/auth.json', '.grok/auth.json', '.codex/auth.json',
+    '.claude/.credentials.json'], // Claude Code's login on Linux is this plain file
 };
 
 /** The daemon's API socket in the state folder (daemon/api/server.ts). */
