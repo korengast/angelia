@@ -45,7 +45,7 @@ test('a table this version cannot load stops nothing: the check runs in the new 
 });
 
 test('the table checked is the one the new daemon starts with: under launchd the plist\'s, else the given one, made absolute', () => {
-  const plist = '<key>ProgramArguments</key><array><string>/usr/local/bin/node</string><string>/x/cli.js</string><string>daemon</string><string>/srv/new.yaml</string></array>';
+  const plist = { node: '/usr/local/bin/node', entry: '/x/cli.js', config: '/srv/new.yaml', stateDir: '/s' };
   // After `angelia service install new.yaml`, /restart still passes the running daemon's old table.
   assert.equal(startTable('/srv/old.yaml', plist, '/srv/old.yaml'), '/srv/new.yaml');
   assert.equal(startTable(undefined, undefined, '/srv/last.yaml'), '/srv/last.yaml');

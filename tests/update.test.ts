@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { changesText, chooseTarget, defaultSource, newCommits, readBuild, refusal, releaseTags, serviceMismatch, serviceNodeProblem, verifyTag } from '../src/daemon/update.js';
-import { buildPlist } from '../src/daemon/service.js';
+import { buildPlist, launchd } from '../src/daemon/launchd.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-upd-'));
 
@@ -129,13 +129,13 @@ test('update says when the copy it updated is not the one the service runs', () 
   };
   const runs = copy('brew'), other = copy('nvm');
   const plist = buildPlist({ node: join(base, 'brew', 'bin', 'node'), entry: join(base, 'brew', 'bin', 'angelia'), config: '/t/routing.yaml', stateDir: '/s', path: '/usr/bin', home: '/h' });
-  assert.equal(serviceMismatch(runs, plist), undefined, 'the service runs the updated copy');
-  const said = serviceMismatch(other, plist);
+  assert.equal(serviceMismatch(runs, launchd.read(plist)), undefined, 'the service runs the updated copy');
+  const said = serviceMismatch(other, launchd.read(plist));
   assert.ok(said?.includes(`PATH=${join(base, 'brew', 'bin')}:$PATH angelia update`), said);
-  assert.equal(serviceMismatch(other, '<plist/>'), undefined, 'a plist it cannot read is not a mismatch');
+  assert.equal(serviceMismatch(other, launchd.read('<plist/>')), undefined, 'a plist it cannot read is not a mismatch');
   // The other copy was removed and its bin link dangles: the service runs nothing at all.
   const gone = buildPlist({ node: '/n/node', entry: join(base, 'removed', 'bin', 'angelia'), config: '/t/r.yaml', stateDir: '/s', path: '/usr/bin', home: '/h' });
-  assert.match(serviceMismatch(runs, gone) ?? '', /no longer exists.*angelia service install/);
+  assert.match(serviceMismatch(runs, launchd.read(gone)) ?? '', /no longer exists.*angelia service install/);
 });
 
 test('update asks the Node the service starts for its version, not the one it runs on', () => {
@@ -149,12 +149,12 @@ test('update asks the Node the service starts for its version, not the one it ru
     return p;
   };
   const plist = (node: string) => buildPlist({ node, entry: '/e/angelia', config: '/t/routing.yaml', stateDir: '/s', path: '/usr/bin', home: '/h' });
-  assert.equal(serviceNodeProblem(plist(fakeNode('bin/node', '24.22.1'))), undefined, 'a fixed Node says nothing');
+  assert.equal(serviceNodeProblem(launchd.read(plist(fakeNode('bin/node', '24.22.1')))), undefined, 'a fixed Node says nothing');
   const link = fakeNode('opt/bin/node', '24.22.0');
-  assert.equal(serviceNodeProblem(plist(link)), `The service's Node 24.22.0 at ${link} is open to CVE-2026-111497 (Node2Shell, remote code execution through the Brotli decoder); Node 22.23.4+, 24.22.1+ or 26.12.1+ has the fix: install a fixed Node, then angelia restart`);
+  assert.equal(serviceNodeProblem(launchd.read(plist(link))), `The service's Node 24.22.0 at ${link} is open to CVE-2026-111497 (Node2Shell, remote code execution through the Brotli decoder); Node 22.23.4+, 24.22.1+ or 26.12.1+ has the fix: install a fixed Node, then angelia restart`);
   // nvm's folder stays on its version: the plist has to name the new one.
   const nvm = fakeNode('.nvm/versions/node/v25.1.0/bin/node', '25.1.0');
-  assert.match(serviceNodeProblem(plist(nvm)) ?? '', /Node 25\.1\.0 .*then angelia service install <routing\.yaml> so the service starts it/);
-  assert.match(serviceNodeProblem(plist(join(dir, 'gone', 'node'))) ?? '', /^The service starts the Node .*gone\/node, which did not run .*angelia service install <routing\.yaml>$/);
-  assert.equal(serviceNodeProblem('<plist/>'), undefined, 'a plist it cannot read');
+  assert.match(serviceNodeProblem(launchd.read(plist(nvm))) ?? '', /Node 25\.1\.0 .*then angelia service install <routing\.yaml> so the service starts it/);
+  assert.match(serviceNodeProblem(launchd.read(plist(join(dir, 'gone', 'node')))) ?? '', /^The service starts the Node .*gone\/node, which did not run .*angelia service install <routing\.yaml>$/);
+  assert.equal(serviceNodeProblem(launchd.read('<plist/>')), undefined, 'a plist it cannot read');
 });

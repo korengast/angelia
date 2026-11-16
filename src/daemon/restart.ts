@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { STATE_DIR } from './daemon.js';
 import { SESSION_ENV } from '../core/env.js';
-import { entry, plistConfig, plistPath, serviceInstalled, serviceLoaded, serviceStart, serviceStop, tableMismatch } from './service.js';
+import { backend, entry, readService, serviceInstalled, serviceLoaded, serviceStart, serviceStop, tableMismatch, type ServiceProgram } from './service.js';
 import { configPath } from '../instance/instance.js';
 import { loadConfig } from '../instance/config/load.js';
 import { effectiveTable } from '../instance/accepted.js';
@@ -57,12 +57,12 @@ async function restart(argv: string[]): Promise<void> {
     }
   }
 
-  const plist = serviceInstalled() ? readFileSync(plistPath(), 'utf8') : undefined;
-  if (plist !== undefined) {
-    const mismatch = tableMismatch(rest[0], plist, fromDaemon);
+  const prog = serviceInstalled() ? readService() : undefined;
+  if (prog !== undefined) {
+    const mismatch = tableMismatch(rest[0], prog, fromDaemon);
     if (mismatch) throw new Error(mismatch);
   }
-  const config = startTable(rest[0], plist, lastConfig());
+  const config = startTable(rest[0], prog, lastConfig());
   // Loaded here, by the code the new daemon will run, before anything is stopped. The check behind
   // /restart runs in the old daemon, with the old code: after `angelia update` a table that one
   // accepts can fail in the new one, and the daemon would be stopped for a start that cannot work.
@@ -81,7 +81,7 @@ async function restart(argv: string[]): Promise<void> {
   // Under launchd the service owns the daemon: stop the job, then load it again from the plist on
   // disk, so a rewritten plist takes effect. A daemon still started by hand is stopped first, which
   // is how `angelia service install` hands over to the service.
-  if (plist !== undefined) {
+  if (prog !== undefined) {
     serviceStop();
     if (running) signal(running);
     for (let i = 0; i < 80 && running && pidAlive(running); i++) await wait(250);
@@ -90,7 +90,7 @@ async function restart(argv: string[]): Promise<void> {
     serviceStart();
     for (let i = 0; i < 60; i++) {
       const now = readPid(pidFile);
-      if (now && now !== old && pidAlive(now) && serviceLoaded()) { console.log(`angelia is up under launchd, pid ${now}`); return; }
+      if (now && now !== old && pidAlive(now) && serviceLoaded()) { console.log(`angelia is up under ${backend()!.name}, pid ${now}`); return; }
       await wait(250);
     }
     throw new Error(`the service did not bring the daemon up within 15s. Last lines are in ${join(STATE_DIR, 'daemon.out')}`);
@@ -187,8 +187,8 @@ function readPid(path: string): number {
  * daemon started by hand gets the table given, else the one the running daemon uses; it is spawned
  * in the state folder, so a relative path is resolved here, once.
  */
-export function startTable(given: string | undefined, plist: string | undefined, last: string | undefined): string {
-  return resolve(configPath((plist !== undefined ? plistConfig(plist) : undefined) ?? given ?? last));
+export function startTable(given: string | undefined, prog: ServiceProgram | undefined, last: string | undefined): string {
+  return resolve(configPath(prog?.config ?? given ?? last));
 }
 
 function lastConfig(): string | undefined {
