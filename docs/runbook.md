@@ -120,7 +120,7 @@ Run these once on a fresh Ubuntu 22.04+ VPS before a release, reaching it with `
 
 1. **Install the service.** `angelia service install`, then `systemctl --user is-active angelia`. Success: `active`, and `angelia service status` says "loaded yes". If it printed a `sudo loginctl enable-linger $USER` line, run it, then check `loginctl show-user $USER -p Linger` says `Linger=yes`.
 2. **Reboot with nobody logged in.** `sudo reboot`, wait, then from a new `tailscale ssh` session: `angelia service status` and `tail ~/.angelia/daemon.log`. Success: the daemon is up with a start time after the boot, and a chat message gets an answer.
-3. **`/restart` from a chat.** Open a TUI pane first (`tmux -L angelia ls`), send `/restart`. Success: the same panes are still listed afterwards, and the chat hears "back up".
+3. **`/restart` from a chat.** Open a TUI pane first (`tmux -L angelia ls`), send `/restart`. Success: the same panes are still listed afterwards, and the chat hears "back up". Ubuntu's apt tmux is older than 3.7, so `angelia check-config` and `daemon.log` show a tmux version warning: expected, not a failure.
 4. **`angelia update`, then `/restart`.** Success: `angelia --version` shows the new version, and after the restart the chat hears "back up" with the new version in `daemon.log`.
 5. **A link as `.inbox` is refused.** In a profile folder, `rm -rf .inbox && ln -s /etc .inbox`, then send the chat a file. Success: the file is not saved, nothing lands in `/etc`, and the agent never sees it. Remove the link afterwards.
 

@@ -65,6 +65,7 @@ You need:
 - **Node 22.23.4+, 24.22.1+ or 26.12.1+** and **git** (it comes with the Xcode command line tools).
 - **A supported coding agent CLI**, installed and signed in to your own account. See [Backends](#backends).
 - **A Telegram bot.** Open [@BotFather](https://t.me/BotFather), send `/newbot` and keep the token ready. It is stored on your disk, never in a chat.
+- **On Linux:** Node 22.23.4+ from nodejs.org or nvm (distro Node is usually older), and `git`. `tmux` from apt is fine, but below 3.7 Angelia prints a warning; the `brew` advice above and below is for macOS.
 - Optional: `brew install openai-whisper ffmpeg` for voice notes, and `brew install tmux` (3.7+) to run a Claude Code profile in its full screen, so the chat also shows up in the Claude app.
 
 After installation:
@@ -75,7 +76,7 @@ angelia service install   # keep it running: starts at login, comes back after a
 
 Then send *"what is in this folder?"* to your bot. The agent answers from the profile's folder.
 
-> **Linux** is supported for the daemon: `angelia service install` writes a systemd user unit (systemd 248 or newer: Ubuntu 22.04+, Debian 12+). Still macOS only until their sub-projects land: `angelia jobs`, voice replies, sandboxed profiles and the pi backend. **Windows:** not yet.
+> **Linux** is supported for the daemon: `angelia service install` writes a systemd user unit. Still macOS only until their sub-projects land: `angelia jobs`, voice replies, sandboxed profiles and the pi backend. **Windows:** not yet.
 
 ---
 
