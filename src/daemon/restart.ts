@@ -9,7 +9,7 @@ import { backend, entry, readService, serviceInstalled, serviceLoaded, serviceSt
 import { configPath } from '../instance/instance.js';
 import { loadConfig } from '../instance/config/load.js';
 import { effectiveTable } from '../instance/accepted.js';
-import { escapeSpecifiers, underSystemd } from './systemd.js';
+import { underSystemd } from './systemd.js';
 
 /**
  * Stop the running daemon and start a new one in its OWN session.
@@ -151,7 +151,7 @@ export function launchChatRestart(key: string, configPath: string, onFail: (why:
     child.unref();
     return child;
   };
-  if (!underSystemd()) { detached(); return; }
+  if (!restartsViaSystemd()) { detached(); return; }
   // Under systemd the service's KillMode kills every process it started, setsid or not, so the
   // restarter is a transient unit of its own. --wait: the client exits with the restart's own code,
   // so a failed restart still reaches the chat; a successful one kills the client with the daemon.
@@ -161,15 +161,21 @@ export function launchChatRestart(key: string, configPath: string, onFail: (why:
     console.log('systemd-run not found: restarting detached; tmux panes may not survive');
     detached();
   });
-  watchChatRestart(child, onFail, stateDir);
+  watchChatRestart(child, onFail, stateDir, { signalIsSuccess: true });
+}
+
+/** Only the service's own daemon: one started by hand from an agent's shell inherits INVOCATION_ID, and
+ *  a restarter unit would kill the detached daemon it starts when that shell's unit ends. */
+export function restartsViaSystemd(env: NodeJS.ProcessEnv = process.env, pid = process.pid): boolean {
+  return underSystemd(env) && env.SYSTEMD_EXEC_PID === String(pid);
 }
 
 /** The `systemd-run` argv that runs `angelia restart --from-daemon` as its own transient unit, outside
- *  the daemon's cgroup. Output goes to daemon.out as the service's does (`%` doubled: systemd expands
- *  specifiers in property values), and only the variables the restarter needs are carried: the new
+ *  the daemon's cgroup. Output goes to daemon.out as the service's does (verbatim: `systemd-run -p` stores it
+ *  as given, so `%` is not doubled as in the unit file), and only the variables the restarter needs are carried: the new
  *  daemon reads ~/.angelia/env itself, and nothing secret belongs on a command line. */
 export function restartUnitArgv(o: { node: string; entry: string; config: string; stateDir: string; env: NodeJS.ProcessEnv; now?: number }): string[] {
-  const log = `append:${escapeSpecifiers(o.stateDir)}/daemon.out`;
+  const log = `append:${o.stateDir}/daemon.out`;
   const setenv = ['PATH', 'HOME', 'LANG', 'ANGELIA_STATE_DIR', 'XDG_RUNTIME_DIR'].flatMap((k) => (o.env[k] ? [`--setenv=${k}=${o.env[k]}`] : []));
   return ['--user', '--wait', '--collect', '--quiet', `--unit=angelia-restart-${o.now ?? Date.now()}`,
     '-p', `StandardOutput=${log}`, '-p', `StandardError=${log}`, `--working-directory=${o.stateDir}`, ...setenv,
@@ -182,9 +188,11 @@ export function restartUnitArgv(o: { node: string; entry: string; config: string
  * still the one running and the chat that asked must hear it, not wait for a "back up" that never
  * comes. The note is dropped too, so a later start does not announce a restart nobody finished.
  */
-export function watchChatRestart(child: Pick<ChildProcess, 'once'>, onFail: (why: string) => void, stateDir = STATE_DIR): void {
+export function watchChatRestart(child: Pick<ChildProcess, 'once'>, onFail: (why: string) => void, stateDir = STATE_DIR, o: { signalIsSuccess?: boolean } = {}): void {
   child.once('exit', (code: number | null, signal: string | null) => {
-    if (code === 0) return;
+    // Under systemd the `systemd-run --wait` client is in this daemon's cgroup: a good restart stops the
+    // service and the client dies by signal, while a failed one leaves the daemon up and exits non-zero.
+    if (code === 0 || (o.signalIsSuccess && code === null)) return;
     let why = '';
     try { why = readFileSync(join(stateDir, RESTART_ERROR), 'utf8').trim(); unlinkSync(join(stateDir, RESTART_ERROR)); } catch {}
     try { unlinkSync(join(stateDir, RESTART_NOTE)); } catch {}

@@ -9,7 +9,7 @@ import { spawn, execFileSync } from 'node:child_process';
 // before the dynamic import below. A temp dir keeps the test away from a real daemon.
 const dir = mkdtempSync(join(tmpdir(), 'angelia-restart-'));
 process.env.ANGELIA_STATE_DIR = dir;
-const { restartCommand, startTable, restartUnitArgv } = await import('../src/daemon/restart.js');
+const { restartCommand, startTable, restartUnitArgv, restartsViaSystemd, watchChatRestart } = await import('../src/daemon/restart.js');
 const { scopedArgv, tmux } = await import('../src/brain/tmux.js');
 const tmuxPath = (() => { try { return execFileSync('which', ['tmux'], { encoding: 'utf8' }).trim(); } catch { return ''; } })();
 
@@ -57,8 +57,8 @@ test('the table checked is the one the new daemon starts with: under launchd the
 test('under systemd the restarter is its own unit: waits for it, logs to daemon.out, carries only the five variables', () => {
   const a = restartUnitArgv({ node: '/n', entry: '/e', config: '/c.yaml', stateDir: '/s/50%', env: { PATH: '/p', HOME: '/h', LANG: 'C', ANGELIA_STATE_DIR: '/s/50%', XDG_RUNTIME_DIR: '/run/user/1', TELEGRAM_BOT_TOKEN: 'x', ANGELIA_SESSION_KEY: 'k' }, now: 7 });
   assert.deepEqual(a.slice(0, 5), ['--user', '--wait', '--collect', '--quiet', '--unit=angelia-restart-7']);
-  assert.ok(a.includes('StandardOutput=append:/s/50%%/daemon.out'));
-  assert.ok(a.includes('StandardError=append:/s/50%%/daemon.out'));
+  assert.ok(a.includes('StandardOutput=append:/s/50%/daemon.out'));
+  assert.ok(a.includes('StandardError=append:/s/50%/daemon.out'));
   assert.ok(a.includes('--working-directory=/s/50%'));
   assert.ok(a.includes('--setenv=XDG_RUNTIME_DIR=/run/user/1'));
   assert.deepEqual(a.slice(-5), ['/n', '/e', 'restart', '--from-daemon', '/c.yaml']);
@@ -74,4 +74,24 @@ test('a scoped tmux call without systemd-run falls back to plain tmux', { skip: 
   symlinkSync(tmuxPath, join(bin, 'tmux'));
   const r = await tmux(['-V'], { scope: true, env: { ...process.env, INVOCATION_ID: 'x', PATH: bin } });
   assert.equal(r.code, 0);
+});
+
+test('under systemd a restarter killed by a signal is a good restart, a non-zero exit is not', () => {
+  for (const [code, sig, fails] of [[null, 'SIGTERM', false], [1, null, true]] as const) {
+    writeFileSync(join(dir, 'restart-note.json'), '{}');
+    const fired: string[] = [];
+    let cb: (c: number | null, s: string | null) => void = () => {};
+    watchChatRestart({ once: (_e: string, f: never) => { cb = f; } } as never, (w) => fired.push(w), dir, { signalIsSuccess: true });
+    cb(code, sig);
+    assert.equal(fired.length, fails ? 1 : 0);
+    assert.equal(existsSync(join(dir, 'restart-note.json')), !fails);
+  }
+});
+
+test('only the service\'s own daemon restarts through systemd-run, not a hand-started one that inherited INVOCATION_ID', () => {
+  const env = { INVOCATION_ID: 'x', SYSTEMD_EXEC_PID: '42' };
+  const on = process.platform === 'linux';
+  assert.equal(restartsViaSystemd(env, 42), on);
+  assert.equal(restartsViaSystemd(env, 43), false);
+  assert.equal(restartsViaSystemd({ INVOCATION_ID: 'x' }, 42), false);
 });
