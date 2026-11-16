@@ -9,6 +9,7 @@ import { loadConfig } from '../instance/config/load.js';
 import { STATE_DIR } from './daemon.js';
 import { configPath } from '../instance/instance.js';
 import { launchd } from './launchd.js';
+import { systemd } from './systemd.js';
 
 export { LABEL } from './launchd.js';
 
@@ -31,9 +32,9 @@ export interface ServiceBackend {
   startedByService(): boolean;
 }
 
-/** The backend of this platform: launchd on macOS; systemd on Linux (not yet), else none. */
+/** The backend of this platform: launchd on macOS, systemd on Linux, else none. */
 export function backend(platform: NodeJS.Platform = process.platform): ServiceBackend | undefined {
-  return platform === 'darwin' ? launchd : undefined;
+  return platform === 'darwin' ? launchd : platform === 'linux' ? systemd : undefined;
 }
 
 export function serviceFile(home = homedir()): string | undefined {
