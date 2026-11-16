@@ -194,7 +194,7 @@ export function initRepo(workspace: string, run = git): string {
   try {
     run(['init', '-q', '-b', 'main'], workspace);
     run(['add', '-A'], workspace);
-    run(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'Angelia workspace: initial skeleton'], workspace);
+    run([...commitFlags(workspace), 'commit', '-q', '-m', 'Angelia workspace: initial skeleton'], workspace);
     return 'git repo created, one commit';
   } catch (e) {
     return `not version controlled: ${(e as Error).message}`;
@@ -223,7 +223,7 @@ export function syncWorkspace(workspace = workspaceDir(), now = new Date(), run 
     if (still.length) { run(['reset', '-q'], workspace); throw new Error(`secret-shaped content still staged after the reset, nothing committed: ${still.join('; ')}`); }
   }
   const files = run(['diff', '--cached', '--name-only'], workspace).split('\n').filter(Boolean);
-  if (files.length) run(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', `Workspace sync ${now.toISOString().slice(0, 10)}: ${files.length} file${files.length > 1 ? 's' : ''}`], workspace);
+  if (files.length) run([...commitFlags(workspace), 'commit', '-q', '-m', `Workspace sync ${now.toISOString().slice(0, 10)}: ${files.length} file${files.length > 1 ? 's' : ''}`], workspace);
   const saved = files.length ? `saved ${files.length} file${files.length > 1 ? 's' : ''}` : '';
   const pushed = pushWorkspace(workspace, run);
   const said = pushed === 'no remote' ? saved && `${saved}, no remote to push to` : [saved, pushed].filter(Boolean).join(', ');
@@ -239,6 +239,16 @@ export function pushWorkspace(workspace: string, run = git): string {
   if (ahead === '0') return '';
   run(['push', '-q', '-u', 'origin', 'HEAD'], workspace);
   return 'pushed';
+}
+
+/** The flags every commit Angelia makes starts with. Git will not commit without a name and an email, and a fresh Linux
+ *  account has neither (no git config, an empty GECOS field: "empty ident name"), where macOS falls back to the account's.
+ *  So Angelia names itself then, and only then: an identity the owner set always wins. */
+export function commitFlags(cwd: string): string[] {
+  const set = (key: string): boolean => {
+    try { return execFileSync('git', ['config', key], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== ''; } catch { return false; }
+  };
+  return ['-c', 'commit.gpgsign=false', ...(set('user.name') ? [] : ['-c', 'user.name=Angelia']), ...(set('user.email') ? [] : ['-c', 'user.email=angelia@localhost'])];
 }
 
 export function git(args: string[], cwd: string): string {
