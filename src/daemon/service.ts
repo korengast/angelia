@@ -9,7 +9,7 @@ import { loadConfig } from '../instance/config/load.js';
 import { STATE_DIR } from './daemon.js';
 import { configPath } from '../instance/instance.js';
 import { launchd } from './launchd.js';
-import { linger, systemd, systemdAvailable } from './systemd.js';
+import { linger, systemd, systemdAvailable, systemdEnable } from './systemd.js';
 
 export { LABEL } from './launchd.js';
 
@@ -160,6 +160,8 @@ export async function serviceCommand(argv: string[]): Promise<void> {
           ? 'The service is already loaded. The new unit takes effect at the next angelia restart (or /restart from a chat).'
           : 'The service is already loaded. The new plist takes effect at the next angelia restart (or /restart from a chat).');
       } else if (isDaemonPid(pid)) {
+        // Enabled now, started at the handover: a unit never enabled would not start at boot.
+        if (svc.name === 'systemd') systemdEnable();
         console.log(`A daemon started by hand is running (pid ${pid}). angelia restart, or /restart from a chat, moves it onto the service.`);
       } else {
         serviceStart();

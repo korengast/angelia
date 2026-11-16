@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { underSystemd } from '../daemon/systemd.js';
+import { inServiceCgroup } from '../daemon/systemd.js';
 
 /** Angelia's own tmux server. Sessions on this socket outlive the daemon, so a restart — or the
  *  crash the launchd unit is meant to catch — leaves every agent exactly where it was, and nothing
@@ -21,12 +21,13 @@ export interface TmuxResult { code: number; out: string; err: string }
 /** The call run in a transient scope of its own: under systemd the service's KillMode kills every
  *  process in its cgroup, and the tmux server must outlive the daemon. */
 export function scopedArgv(bin: string, args: string[]): [string, string[]] {
-  return ['systemd-run', ['--user', '--scope', '--collect', '--quiet', bin, ...args]];
+  return ['systemd-run', ['--user', '--scope', '--collect', '--quiet', '--description=angelia tmux', bin, ...args]];
 }
 
-/** `scope`: the call may start the server, so under systemd it goes through `systemd-run --scope`
- *  (plain tmux when that is missing). */
-export function tmux(args: string[], opts: { bin?: string; socket?: string; env?: NodeJS.ProcessEnv; scope?: boolean } = {}): Promise<TmuxResult> {
+/** `scope`: the call may start the server, so in angelia.service it goes through `systemd-run --scope`.
+ *  When systemd-run is missing or fails (no user bus, a daemon in some other unit), the plain call
+ *  runs once instead: tmux's own errors never start with "Failed to". `inService` overrides the cgroup check (tests). */
+export function tmux(args: string[], opts: { bin?: string; socket?: string; env?: NodeJS.ProcessEnv; scope?: boolean; inService?: boolean } = {}): Promise<TmuxResult> {
   const full = ['-L', opts.socket ?? TMUX_SOCKET, ...args];
   const run = (bin: string, argv: string[]): Promise<TmuxResult & { missing?: boolean }> => new Promise((resolve) => {
     execFile(bin, argv, { env: opts.env, maxBuffer: 8 << 20 }, (err, stdout, stderr) => {
@@ -35,8 +36,8 @@ export function tmux(args: string[], opts: { bin?: string; socket?: string; env?
     });
   });
   const plain = (): Promise<TmuxResult> => run(opts.bin ?? 'tmux', full);
-  if (!(opts.scope && underSystemd(process.env))) return plain();
-  return run(...scopedArgv(opts.bin ?? 'tmux', full)).then((r) => (r.missing ? plain() : r));
+  if (!(opts.scope && (opts.inService ?? inServiceCgroup()))) return plain();
+  return run(...scopedArgv(opts.bin ?? 'tmux', full)).then((r) => (r.missing || (r.code !== 0 && r.err.startsWith('Failed to')) ? plain() : r));
 }
 
 /** Put `text` in the named paste buffer. Through a file, never on the command line: tmux refuses a

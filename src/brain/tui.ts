@@ -75,13 +75,13 @@ export function tmuxVersion(): string | null {
  * rest into the CLI. Angelia strips control characters from every message (cleanText), so this is a
  * warning and not a refusal; the upgrade closes whatever tmux itself might still let through.
  */
-export function tmuxWarnings(profiles: Record<string, Profile>, version: string | null = tmuxVersion()): string[] {
+export function tmuxWarnings(profiles: Record<string, Profile>, version: string | null = tmuxVersion(), platform: NodeJS.Platform = process.platform): string[] {
   const tui = Object.entries(profiles).filter(([, p]) => p.tui && p.backend === 'claude-code').map(([n]) => n);
   if (!tui.length) return [];
   if (version === null) return [`tui: true in ${tui.join(', ')}, and tmux is not installed: those chats cannot start. brew install tmux`];
   const m = /(\d+)\.(\d+)/.exec(version);
   if (!m || Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2]) >= 7)) return [];
-  return [`tui: true in ${tui.join(', ')}, and ${version} is older than 3.7, which is the first to clean pasted text. Angelia strips control characters from messages, but upgrade: brew upgrade tmux, then tmux -L angelia kill-server when the chats are quiet (every pane resumes on its next message)`];
+  return [`tui: true in ${tui.join(', ')}, and ${version} is older than 3.7, which is the first to clean pasted text. Angelia strips control characters from messages, but upgrade: ${platform === 'darwin' ? 'brew upgrade tmux' : 'upgrade tmux to 3.7+'}, then tmux -L angelia kill-server when the chats are quiet (every pane resumes on its next message)`];
 }
 
 /** The start of the reason a pane gives when it died before its first prompt. */

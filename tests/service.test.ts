@@ -62,13 +62,11 @@ test('systemdLoaded means running: is-active, not is-enabled', () => {
   assert.deepEqual(asked[0][0], 'is-active');
 });
 
-test('startedByService: only the process systemd itself started', () => {
+test('startedByService: keyed on the cgroup, not on SYSTEMD_EXEC_PID (absent before systemd 248) or INVOCATION_ID', () => {
   const was = { p: process.env.SYSTEMD_EXEC_PID, i: process.env.INVOCATION_ID };
   try {
-    process.env.SYSTEMD_EXEC_PID = String(process.pid);
-    assert.equal(systemd.startedByService(), true);
-    process.env.SYSTEMD_EXEC_PID = String(process.pid + 1); process.env.INVOCATION_ID = 'x';
-    assert.equal(systemd.startedByService(), false);
+    process.env.SYSTEMD_EXEC_PID = String(process.pid); process.env.INVOCATION_ID = 'x';
+    assert.equal(systemd.startedByService(), false, 'this test process is not in angelia.service');
   } finally {
     for (const [k, v] of [['SYSTEMD_EXEC_PID', was.p], ['INVOCATION_ID', was.i]] as const) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;

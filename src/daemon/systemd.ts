@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ServiceBackend, ServiceInput, ServiceProgram } from './service.js';
@@ -15,9 +15,9 @@ export const UNIT = 'angelia.service';
 /** systemctl --user, with the args after it. */
 export type Run = (args: string[]) => { code: number; out: string };
 
+/** Always ~/.config, never $XDG_CONFIG_HOME: the user manager's search path, the restarter and the deny floor all look there. */
 export function unitPath(home = homedir()): string {
-  const base = process.env.XDG_CONFIG_HOME || join(home, '.config');
-  return join(base, 'systemd', 'user', UNIT);
+  return join(home, '.config', 'systemd', 'user', UNIT);
 }
 
 /** systemd expands `%x` specifiers in unit values and in `append:` paths; `%%` is a literal percent. */
@@ -42,6 +42,8 @@ export function buildUnit(i: ServiceInput): string {
 # angelia: ${JSON.stringify({ config: i.config, node: i.node, entry: i.entry, stateDir: i.stateDir })}
 [Unit]
 Description=Angelia daemon
+# No effect in a user unit (the user manager cannot order on system targets); a start before the
+# network is up fails and Restart=on-failure tries again.
 After=network-online.target
 
 [Service]
@@ -50,6 +52,7 @@ WorkingDirectory=${escapeSpecifiers(i.stateDir)}
 Environment=${env.map((a) => word(a)).join(' ')}
 Restart=on-failure
 RestartSec=10
+TimeoutStopSec=20
 StandardOutput=${out}
 StandardError=${out}
 
@@ -82,9 +85,11 @@ export function systemdAvailable(run: Run = systemctl): boolean {
   return run(['show-environment']).code === 0;
 }
 
-/** This process runs inside a systemd unit (any, not necessarily ours: see startedByService). */
-export function underSystemd(env: NodeJS.ProcessEnv = process.env): boolean {
-  return process.platform === 'linux' && !!env.INVOCATION_ID;
+/** This process is in angelia.service's own cgroup, on cgroup v2 (`0::…/angelia.service`) or v1
+ *  (`1:name=systemd:…/angelia.service`). Works on every systemd version (SYSTEMD_EXEC_PID needs 248), and a
+ *  daemon started by hand from an agent's shell (a tmux scope) or any other unit is not in it. False without /proc. */
+export function inServiceCgroup(read: () => string = () => readFileSync('/proc/self/cgroup', 'utf8')): boolean {
+  try { return read().split('\n').some((l) => l.endsWith(`/${UNIT}`)); } catch { return false; }
 }
 
 /** Stop the service's daemon, then wait until the unit is no longer active: up to 25 s, as launchd's. */
@@ -97,12 +102,21 @@ export function systemdStop(run: Run = systemctl, sleep: (ms: number) => void = 
   throw new Error(`systemd still holds ${UNIT} 25s after stop, so a start now could fail. Try again in a moment.`);
 }
 
-/** Load the unit from the file on disk (so a rewritten unit takes effect), enable it, and start the daemon. */
-export function systemdStart(run: Run = systemctl): void {
-  for (const args of [['daemon-reload'], ['enable', UNIT], ['start', UNIT]]) {
+function steps(run: Run, list: string[][]): void {
+  for (const args of list) {
     const r = run(args);
     if (r.code !== 0) throw new Error(`systemctl --user ${args[0]} failed: ${r.out || `exit ${r.code}`}`);
   }
+}
+
+/** Load the unit from the file on disk and enable it, without starting: a daemon started by hand still runs. */
+export function systemdEnable(run: Run = systemctl): void {
+  steps(run, [['daemon-reload'], ['enable', UNIT]]);
+}
+
+/** Load the unit from the file on disk (so a rewritten unit takes effect), enable it, and start the daemon. */
+export function systemdStart(run: Run = systemctl): void {
+  steps(run, [['daemon-reload'], ['enable', UNIT], ['start', UNIT]]);
 }
 
 /** Running under the manager (is-active), not merely enabled: an enabled but stopped unit must still be started by install. */
@@ -137,5 +151,5 @@ export const systemd: ServiceBackend = {
     if (existsSync(f)) unlinkSync(f);
     systemctl(['daemon-reload']);
   },
-  startedByService: () => process.env.SYSTEMD_EXEC_PID === String(process.pid),
+  startedByService: () => inServiceCgroup(),
 };

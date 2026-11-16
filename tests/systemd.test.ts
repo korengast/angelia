@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { systemd, systemdStart, systemdStop, systemdAvailable, underSystemd, escapeSpecifiers, UNIT, type Run } from '../src/daemon/systemd.js';
+import { systemd, systemdStart, systemdEnable, systemdStop, systemdAvailable, inServiceCgroup, escapeSpecifiers, UNIT, type Run } from '../src/daemon/systemd.js';
 import { backend } from '../src/daemon/service.js';
 
 test('render → read round-trips every path exactly', () => {
@@ -14,6 +14,7 @@ test('the unit: quoted ExecStart, escaped %, $ and quotes, restart policy, outpu
   const u = systemd.render({ node: '/n', entry: '/e', config: '/c/50%/r.yaml', stateDir: '/s', path: '/usr/bin', home: '/h' });
   assert.match(u, /^ExecStart="\/n" "\/e" "daemon" "\/c\/50%%\/r\.yaml"$/m);
   assert.match(u, /^Restart=on-failure$/m); assert.match(u, /^RestartSec=10$/m);
+  assert.match(u, /^TimeoutStopSec=20$/m, 'as launchd\'s ExitTimeOut: a stop never blocks for 90 s');
   assert.match(u, /^StandardOutput=append:\/s\/daemon\.out$/m); assert.match(u, /^WantedBy=default\.target$/m);
   assert.doesNotMatch(u, /TOKEN/);
   const q = systemd.render({ node: '/n', entry: '/a/$HOME/"q"/b\\c', config: '/c', stateDir: '/s', path: '/p', home: '/h' });
@@ -54,19 +55,35 @@ test('stop waits until the unit is no longer active, and fails loudly after 25 s
   assert.equal(total, 25000);
 });
 
-test('availability, underSystemd, escapeSpecifiers, and the linux backend', () => {
+test('enable reloads and enables without starting: a unit written beside a hand-started daemon still starts at boot', () => {
+  const f = fake();
+  systemdEnable(f.run);
+  assert.deepEqual(f.calls, [['daemon-reload'], ['enable', UNIT]]);
+  assert.throws(() => systemdEnable(fake({ enable: [1] }, 'nope').run), /systemctl --user enable failed: nope/);
+});
+
+test('inServiceCgroup: only a process in angelia.service itself, on cgroup v2 and v1 alike', () => {
+  const unit = '/user.slice/user-1000.slice/user@1000.service/app.slice/angelia.service';
+  assert.equal(inServiceCgroup(() => `0::${unit}\n`), true);
+  assert.equal(inServiceCgroup(() => `12:pids:/user.slice\n1:name=systemd:${unit}\n0::/\n`), true);
+  assert.equal(inServiceCgroup(() => '0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r1234.scope\n'), false, 'a tmux scope or an agent shell started by hand');
+  assert.equal(inServiceCgroup(() => '0::/user.slice/user-1000.slice/user@1000.service/app.slice/angelia-restart-7.service\n'), false);
+  assert.equal(inServiceCgroup(() => '0::/user.slice/user-1000.slice/session-3.scope\n'), false);
+  assert.equal(inServiceCgroup(() => { throw Object.assign(new Error('no'), { code: 'ENOENT' }); }), false, 'no /proc: macOS');
+});
+
+test('availability, escapeSpecifiers, and the linux backend', () => {
   assert.equal(systemdAvailable(fake().run), true);
   assert.equal(systemdAvailable(fake({ 'show-environment': [1] }).run), false);
-  assert.equal(underSystemd({}), false);
   assert.equal(escapeSpecifiers('50%'), '50%%');
   assert.equal(backend('linux'), systemd);
 });
 
-test('filePath honours XDG_CONFIG_HOME', () => {
+test('filePath is always ~/.config, whatever XDG_CONFIG_HOME says: the restarter, the user manager and the deny floor all look there', () => {
   const was = process.env.XDG_CONFIG_HOME;
   try {
     process.env.XDG_CONFIG_HOME = '/x/cfg';
-    assert.equal(systemd.filePath('/h'), '/x/cfg/systemd/user/angelia.service');
+    assert.equal(systemd.filePath('/h'), '/h/.config/systemd/user/angelia.service');
     delete process.env.XDG_CONFIG_HOME;
     assert.equal(systemd.filePath('/h'), '/h/.config/systemd/user/angelia.service');
   } finally { if (was === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = was; }

@@ -302,8 +302,8 @@ export async function runDaemon(configPath: string): Promise<void> {
   // WhatsApp paired and not connected for two windows, its own reopen included (adapter.ts, check()).
   // Under launchd: the same stop a restart does (orch.shutdown ends every running print turn, on every
   // platform, as SIGTERM does), then a non-zero exit, which the service's KeepAlive answers with a fresh
-  // process (service.ts). Started by hand, or on Linux, nothing would start a fresh one: the line says
-  // so, and the adapter goes on opening again by itself.
+  // process (service.ts); under the systemd unit, Restart=on-failure does the same. Started by hand,
+  // nothing would start a fresh one: the line says so, and the adapter goes on opening again by itself.
   waAdapter?.on('dead', () => {
     const service = backend()?.startedByService() ?? false;
     if (service) { logLine('whatsapp: still not connected; exiting so the service starts a fresh process'); void shutdown('whatsapp dead', 1); }
