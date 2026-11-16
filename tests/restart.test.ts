@@ -1,15 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 
 // STATE_DIR is read from the environment when daemon.js is first imported, so this must be set
 // before the dynamic import below. A temp dir keeps the test away from a real daemon.
 const dir = mkdtempSync(join(tmpdir(), 'angelia-restart-'));
 process.env.ANGELIA_STATE_DIR = dir;
-const { restartCommand, startTable } = await import('../src/daemon/restart.js');
+const { restartCommand, startTable, restartUnitArgv } = await import('../src/daemon/restart.js');
+const { scopedArgv, tmux } = await import('../src/brain/tmux.js');
+const tmuxPath = (() => { try { return execFileSync('which', ['tmux'], { encoding: 'utf8' }).trim(); } catch { return ''; } })();
 
 test('restart refuses to run as the daemon\'s own agent, in print mode and in tmux alike', async () => {
   const before = process.env.ANGELIA_SESSION_KEY;
@@ -50,4 +52,26 @@ test('the table checked is the one the new daemon starts with: under launchd the
   assert.equal(startTable('/srv/old.yaml', plist, '/srv/old.yaml'), '/srv/new.yaml');
   assert.equal(startTable(undefined, undefined, '/srv/last.yaml'), '/srv/last.yaml');
   assert.equal(startTable('rel.yaml', undefined, '/srv/last.yaml'), join(process.cwd(), 'rel.yaml'), 'resolved once, here: the daemon is spawned in the state folder');
+});
+
+test('under systemd the restarter is its own unit: waits for it, logs to daemon.out, carries only the five variables', () => {
+  const a = restartUnitArgv({ node: '/n', entry: '/e', config: '/c.yaml', stateDir: '/s/50%', env: { PATH: '/p', HOME: '/h', LANG: 'C', ANGELIA_STATE_DIR: '/s/50%', XDG_RUNTIME_DIR: '/run/user/1', TELEGRAM_BOT_TOKEN: 'x', ANGELIA_SESSION_KEY: 'k' }, now: 7 });
+  assert.deepEqual(a.slice(0, 5), ['--user', '--wait', '--collect', '--quiet', '--unit=angelia-restart-7']);
+  assert.ok(a.includes('StandardOutput=append:/s/50%%/daemon.out'));
+  assert.ok(a.includes('StandardError=append:/s/50%%/daemon.out'));
+  assert.ok(a.includes('--working-directory=/s/50%'));
+  assert.ok(a.includes('--setenv=XDG_RUNTIME_DIR=/run/user/1'));
+  assert.deepEqual(a.slice(-5), ['/n', '/e', 'restart', '--from-daemon', '/c.yaml']);
+  assert.ok(!a.some((x) => /TOKEN|SESSION_KEY/.test(x)));
+});
+
+test('scopedArgv wraps tmux in a transient scope', () => {
+  assert.deepEqual(scopedArgv('tmux', ['-L', 'a', 'new-session']), ['systemd-run', ['--user', '--scope', '--collect', '--quiet', 'tmux', '-L', 'a', 'new-session']]);
+});
+
+test('a scoped tmux call without systemd-run falls back to plain tmux', { skip: (!tmuxPath && 'no tmux') || (process.platform !== 'linux' && 'linux only') }, async () => {
+  const bin = mkdtempSync(join(tmpdir(), 'angelia-tmuxonly-'));
+  symlinkSync(tmuxPath, join(bin, 'tmux'));
+  const r = await tmux(['-V'], { scope: true, env: { ...process.env, INVOCATION_ID: 'x', PATH: bin } });
+  assert.equal(r.code, 0);
 });

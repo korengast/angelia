@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { underSystemd } from '../daemon/systemd.js';
 
 /** Angelia's own tmux server. Sessions on this socket outlive the daemon, so a restart — or the
  *  crash the launchd unit is meant to catch — leaves every agent exactly where it was, and nothing
@@ -17,13 +18,25 @@ export function tmuxSocketPath(env: NodeJS.ProcessEnv = process.env): string {
 
 export interface TmuxResult { code: number; out: string; err: string }
 
-export function tmux(args: string[], opts: { bin?: string; socket?: string; env?: NodeJS.ProcessEnv } = {}): Promise<TmuxResult> {
-  return new Promise((resolve) => {
-    execFile(opts.bin ?? 'tmux', ['-L', opts.socket ?? TMUX_SOCKET, ...args], { env: opts.env, maxBuffer: 8 << 20 }, (err, stdout, stderr) => {
-      const code = err ? Number((err as NodeJS.ErrnoException & { code?: number }).code ?? 1) : 0;
-      resolve({ code, out: stdout ?? '', err: stderr ?? '' });
+/** The call run in a transient scope of its own: under systemd the service's KillMode kills every
+ *  process in its cgroup, and the tmux server must outlive the daemon. */
+export function scopedArgv(bin: string, args: string[]): [string, string[]] {
+  return ['systemd-run', ['--user', '--scope', '--collect', '--quiet', bin, ...args]];
+}
+
+/** `scope`: the call may start the server, so under systemd it goes through `systemd-run --scope`
+ *  (plain tmux when that is missing). */
+export function tmux(args: string[], opts: { bin?: string; socket?: string; env?: NodeJS.ProcessEnv; scope?: boolean } = {}): Promise<TmuxResult> {
+  const full = ['-L', opts.socket ?? TMUX_SOCKET, ...args];
+  const run = (bin: string, argv: string[]): Promise<TmuxResult & { missing?: boolean }> => new Promise((resolve) => {
+    execFile(bin, argv, { env: opts.env, maxBuffer: 8 << 20 }, (err, stdout, stderr) => {
+      const e = err as (NodeJS.ErrnoException & { code?: number | string }) | null;
+      resolve({ code: e ? Number(e.code ?? 1) : 0, out: stdout ?? '', err: stderr ?? '', missing: e?.code === 'ENOENT' });
     });
   });
+  const plain = (): Promise<TmuxResult> => run(opts.bin ?? 'tmux', full);
+  if (!(opts.scope && underSystemd(process.env))) return plain();
+  return run(...scopedArgv(opts.bin ?? 'tmux', full)).then((r) => (r.missing ? plain() : r));
 }
 
 /** Put `text` in the named paste buffer. Through a file, never on the command line: tmux refuses a

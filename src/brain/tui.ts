@@ -217,8 +217,8 @@ export class TuiBrain extends EventEmitter implements Brain {
 
   /** Every tmux call runs with the server's environment, never the agent's: the first call starts the
    *  server, and every profile's panes inherit what it started with. */
-  private tm(args: string[]) {
-    return tmux(args, { env: this.opts.hostEnv ?? childEnv(process.env) });
+  private tm(args: string[], o: { scope?: boolean } = {}) {
+    return tmux(args, { env: this.opts.hostEnv ?? childEnv(process.env), ...o });
   }
 
   /** The launch, plus what decides the agent's environment and permissions: a change in any of them
@@ -290,7 +290,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const argv = this.argv(resume);
     // remain-on-exit off in the same call: the server reads the user's ~/.tmux.conf, and a dead pane
     // left on screen would pass for a live session, so a turn would wait on it for ever.
-    const r = await this.tm(['new-session', '-d', '-s', this.name, '-c', this.profile.cwd, '-x', '220', '-y', '50', ...pinned, ...wrap, 'env', ...unset, ...argv, ';', 'set-option', '-w', '-t', this.name, 'remain-on-exit', 'off']);
+    const r = await this.tm(['new-session', '-d', '-s', this.name, '-c', this.profile.cwd, '-x', '220', '-y', '50', ...pinned, ...wrap, 'env', ...unset, ...argv, ';', 'set-option', '-w', '-t', this.name, 'remain-on-exit', 'off'], { scope: true });
     if (r.code !== 0) { rmSync(this.envPath, { force: true }); return `tmux could not start the session: ${r.err.trim() || 'new-session failed'}`; }
     writeFileSync(this.launchPath, this.fingerprint(resume));
     this.up = true;

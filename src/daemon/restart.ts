@@ -9,6 +9,7 @@ import { backend, entry, readService, serviceInstalled, serviceLoaded, serviceSt
 import { configPath } from '../instance/instance.js';
 import { loadConfig } from '../instance/config/load.js';
 import { effectiveTable } from '../instance/accepted.js';
+import { escapeSpecifiers, underSystemd } from './systemd.js';
 
 /**
  * Stop the running daemon and start a new one in its OWN session.
@@ -142,11 +143,37 @@ export function launchChatRestart(key: string, configPath: string, onFail: (why:
   const out = openSync(join(stateDir, 'daemon.out'), 'a');
   const env = { ...process.env };
   for (const k of SESSION_ENV) delete env[k];
-  const child = spawn(process.execPath, [entry(), 'restart', '--from-daemon', configPath], {
-    cwd: stateDir, env, detached: true, stdio: ['ignore', out, out],
+  const detached = (): ChildProcess => {
+    const child = spawn(process.execPath, [entry(), 'restart', '--from-daemon', configPath], {
+      cwd: stateDir, env, detached: true, stdio: ['ignore', out, out],
+    });
+    watchChatRestart(child, onFail, stateDir);
+    child.unref();
+    return child;
+  };
+  if (!underSystemd()) { detached(); return; }
+  // Under systemd the service's KillMode kills every process it started, setsid or not, so the
+  // restarter is a transient unit of its own. --wait: the client exits with the restart's own code,
+  // so a failed restart still reaches the chat; a successful one kills the client with the daemon.
+  const child = spawn('systemd-run', restartUnitArgv({ node: process.execPath, entry: entry(), config: configPath, stateDir, env }), { stdio: 'ignore' });
+  child.once('error', (e: NodeJS.ErrnoException) => {
+    if (e.code !== 'ENOENT') return onFail(`could not start the restart: ${e.message}`);
+    console.log('systemd-run not found: restarting detached; tmux panes may not survive');
+    detached();
   });
   watchChatRestart(child, onFail, stateDir);
-  child.unref();
+}
+
+/** The `systemd-run` argv that runs `angelia restart --from-daemon` as its own transient unit, outside
+ *  the daemon's cgroup. Output goes to daemon.out as the service's does (`%` doubled: systemd expands
+ *  specifiers in property values), and only the variables the restarter needs are carried: the new
+ *  daemon reads ~/.angelia/env itself, and nothing secret belongs on a command line. */
+export function restartUnitArgv(o: { node: string; entry: string; config: string; stateDir: string; env: NodeJS.ProcessEnv; now?: number }): string[] {
+  const log = `append:${escapeSpecifiers(o.stateDir)}/daemon.out`;
+  const setenv = ['PATH', 'HOME', 'LANG', 'ANGELIA_STATE_DIR', 'XDG_RUNTIME_DIR'].flatMap((k) => (o.env[k] ? [`--setenv=${k}=${o.env[k]}`] : []));
+  return ['--user', '--wait', '--collect', '--quiet', `--unit=angelia-restart-${o.now ?? Date.now()}`,
+    '-p', `StandardOutput=${log}`, '-p', `StandardError=${log}`, `--working-directory=${o.stateDir}`, ...setenv,
+    o.node, o.entry, 'restart', '--from-daemon', o.config];
 }
 
 /**
