@@ -37,10 +37,6 @@ export function backend(platform: NodeJS.Platform = process.platform): ServiceBa
   return platform === 'darwin' ? launchd : platform === 'linux' ? systemd : undefined;
 }
 
-export function serviceFile(home = homedir()): string | undefined {
-  return backend()?.filePath(home);
-}
-
 /** The program the installed service file starts, or undefined when there is no backend, file, or a file it cannot read. */
 export function readService(home = homedir()): ServiceProgram | undefined {
   const svc = backend();
@@ -51,7 +47,7 @@ export function readService(home = homedir()): ServiceProgram | undefined {
 /** Why this command must not touch the installed service: it belongs to another instance. One label
  *  and one plist serve the whole user, so a test instance (ANGELIA_STATE_DIR) would otherwise
  *  overwrite or remove the real one. */
-export function otherInstance(stateDir = STATE_DIR, file = serviceFile(), svc = backend()): string | undefined {
+export function otherInstance(stateDir = STATE_DIR, svc = backend(), file = svc?.filePath()): string | undefined {
   if (!file || !svc) return undefined;
   let text: string;
   try { text = readFileSync(file, 'utf8'); } catch { return undefined; }

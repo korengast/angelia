@@ -1,7 +1,7 @@
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { exec, sleepSync } from './launchd.js';
 import type { ServiceBackend, ServiceInput, ServiceProgram } from './service.js';
 
 /**
@@ -21,9 +21,7 @@ export function unitPath(home = homedir()): string {
 }
 
 /** systemd expands `%x` specifiers in unit values and in `append:` paths; `%%` is a literal percent. */
-export function escapeSpecifiers(s: string): string {
-  return s.replace(/%/g, '%%');
-}
+const escapeSpecifiers = (s: string): string => s.replace(/%/g, '%%');
 
 /** One quoted word: backslash and quote escaped, `%` doubled. ExecStart also expands `$VAR`, so there `$` is doubled
  *  too (`exec`); Environment= does not, so a `$` stays literal there. */
@@ -42,9 +40,6 @@ export function buildUnit(i: ServiceInput): string {
 # angelia: ${JSON.stringify({ config: i.config, node: i.node, entry: i.entry, stateDir: i.stateDir })}
 [Unit]
 Description=Angelia daemon
-# No effect in a user unit (the user manager cannot order on system targets); a start before the
-# network is up fails and Restart=on-failure tries again.
-After=network-online.target
 
 [Service]
 ExecStart=${[i.node, i.entry, 'daemon', i.config].map((a) => word(a, true)).join(' ')}
@@ -71,14 +66,7 @@ export function readUnit(text: string): ServiceProgram | undefined {
   } catch { return undefined; }
 }
 
-function systemctl(args: string[]): { code: number; out: string } {
-  const r = spawnSync('systemctl', ['--user', ...args], { encoding: 'utf8' });
-  return { code: r.status ?? 1, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() };
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
+const systemctl: Run = (args) => exec('systemctl', ['--user', ...args]);
 
 /** A user manager answers: `show-environment` exits 0. False in a container or over ssh without one. */
 export function systemdAvailable(run: Run = systemctl): boolean {
@@ -127,10 +115,7 @@ export function systemdLoaded(run: Run = systemctl): boolean {
 /** Without linger the user manager, and our daemon with it, stops at logout. undefined when it is on or was just turned on, else the line to show. */
 export function linger(
   user: string,
-  run: (cmd: string, args: string[]) => { code: number; out: string } = (cmd, args) => {
-    const r = spawnSync(cmd, args, { encoding: 'utf8' });
-    return { code: r.status ?? 1, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() };
-  },
+  run: (cmd: string, args: string[]) => { code: number; out: string } = exec,
 ): string | undefined {
   if (run('loginctl', ['show-user', user, '-p', 'Linger']).out.includes('Linger=yes')) return undefined;
   if (run('loginctl', ['enable-linger', user]).code === 0) return undefined;

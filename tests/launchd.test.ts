@@ -43,9 +43,9 @@ test('a plist belongs to the instance whose state folder it names', () => {
   // install and uninstall refuse a plist another instance wrote: one label serves the whole user.
   const file = join(mkdtempSync(join(tmpdir(), 'angelia-plist-')), 'x.plist');
   writeFileSync(file, p);
-  assert.equal(otherInstance('/Users/example/.angelia', file, launchd), undefined);
-  assert.match(otherInstance('/tmp/test-instance', file, launchd) ?? '', /runs the instance in \/Users\/example\/\.angelia, not this one.*--force/);
-  assert.equal(otherInstance('/tmp/test-instance', join(tmpdir(), 'no-such.plist'), launchd), undefined, 'no plist, nothing to protect');
+  assert.equal(otherInstance('/Users/example/.angelia', launchd, file), undefined);
+  assert.match(otherInstance('/tmp/test-instance', launchd, file) ?? '', /runs the instance in \/Users\/example\/\.angelia, not this one.*--force/);
+  assert.equal(otherInstance('/tmp/test-instance', launchd, join(tmpdir(), 'no-such.plist')), undefined, 'no plist, nothing to protect');
 });
 
 test('service restart: stop waits until launchd has dropped the job, start kickstarts what bootstrap leaves pended', () => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { systemd, systemdStart, systemdEnable, systemdStop, systemdAvailable, inServiceCgroup, escapeSpecifiers, UNIT, type Run } from '../src/daemon/systemd.js';
+import { systemd, systemdStart, systemdEnable, systemdStop, systemdAvailable, inServiceCgroup, UNIT, type Run } from '../src/daemon/systemd.js';
 import { backend } from '../src/daemon/service.js';
 
 test('render → read round-trips every path exactly', () => {
@@ -72,10 +72,9 @@ test('inServiceCgroup: only a process in angelia.service itself, on cgroup v2 an
   assert.equal(inServiceCgroup(() => { throw Object.assign(new Error('no'), { code: 'ENOENT' }); }), false, 'no /proc: macOS');
 });
 
-test('availability, escapeSpecifiers, and the linux backend', () => {
+test('availability, and the linux backend', () => {
   assert.equal(systemdAvailable(fake().run), true);
   assert.equal(systemdAvailable(fake({ 'show-environment': [1] }).run), false);
-  assert.equal(escapeSpecifiers('50%'), '50%%');
   assert.equal(backend('linux'), systemd);
 });
 

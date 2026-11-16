@@ -56,10 +56,13 @@ ${Object.entries(env).map(([k, v]) => `    <key>${k}</key><string>${esc(v)}</str
 
 const domain = (): string => `gui/${userInfo().uid}`;
 
-function launchctl(args: string[]): { code: number; out: string } {
-  const r = spawnSync('launchctl', args, { encoding: 'utf8' });
+/** Run a command, its output and errors as one trimmed string; a missing command is exit 1. */
+export function exec(cmd: string, args: string[]): { code: number; out: string } {
+  const r = spawnSync(cmd, args, { encoding: 'utf8' });
   return { code: r.status ?? 1, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() };
 }
+
+const launchctl = (args: string[]): { code: number; out: string } => exec('launchctl', args);
 
 /** The routing table a written plist runs: the last argument after `daemon`. */
 export function plistConfig(plist: string): string | undefined {
@@ -85,7 +88,7 @@ export function plistStateDir(plist: string): string | undefined {
   return m ? unesc(m[1]) : undefined;
 }
 
-function sleepSync(ms: number): void {
+export function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
