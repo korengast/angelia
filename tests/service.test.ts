@@ -44,3 +44,38 @@ test('entry: a daemon whose own file moved away under it still restarts through 
   assert.equal(entry(other, link), other, 'this file, when it exists and the link points elsewhere');
   assert.equal(entry(other, undefined), other);
 });
+
+const { linger, systemd, systemdLoaded, systemdAvailable } = await import('../src/daemon/systemd.js');
+
+test('linger: already on says nothing; turned on says nothing; refused gives the sudo line', () => {
+  const run = (enable: number) => (cmd: string, args: string[]) =>
+    args[0] === 'show-user' ? { code: 0, out: enable < 0 ? 'Linger=yes' : 'Linger=no' } : { code: enable, out: `${cmd} ${args.join(' ')}` };
+  assert.equal(linger('u', run(-1)), undefined);
+  assert.equal(linger('u', run(0)), undefined);
+  assert.equal(linger('u', run(1)), 'Run sudo loginctl enable-linger u once, or the daemon stops when you log out.');
+});
+
+test('systemdLoaded means running: is-active, not is-enabled', () => {
+  const asked: string[][] = [];
+  assert.equal(systemdLoaded((a) => { asked.push(a); return { code: 0, out: '' }; }), true);
+  assert.equal(systemdLoaded(() => ({ code: 3, out: 'inactive' })), false);
+  assert.deepEqual(asked[0][0], 'is-active');
+});
+
+test('startedByService: only the process systemd itself started', () => {
+  const was = { p: process.env.SYSTEMD_EXEC_PID, i: process.env.INVOCATION_ID };
+  try {
+    process.env.SYSTEMD_EXEC_PID = String(process.pid);
+    assert.equal(systemd.startedByService(), true);
+    process.env.SYSTEMD_EXEC_PID = String(process.pid + 1); process.env.INVOCATION_ID = 'x';
+    assert.equal(systemd.startedByService(), false);
+  } finally {
+    for (const [k, v] of [['SYSTEMD_EXEC_PID', was.p], ['INVOCATION_ID', was.i]] as const) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+});
+
+test('service install without a systemd user session says how to run it instead', { skip: process.platform !== 'linux' || systemdAvailable() }, async () => {
+  await assert.rejects(serviceCommand(['install']), /needs systemd --user.*angelia daemon/);
+});

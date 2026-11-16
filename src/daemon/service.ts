@@ -1,6 +1,6 @@
 import { isDaemonPid } from './pid.js';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fallbackDirs, locateBin, pathWithBins } from '../brain/locate.js';
@@ -9,7 +9,7 @@ import { loadConfig } from '../instance/config/load.js';
 import { STATE_DIR } from './daemon.js';
 import { configPath } from '../instance/instance.js';
 import { launchd } from './launchd.js';
-import { systemd } from './systemd.js';
+import { linger, systemd, systemdAvailable } from './systemd.js';
 
 export { LABEL } from './launchd.js';
 
@@ -136,6 +136,9 @@ export async function serviceCommand(argv: string[]): Promise<void> {
   const args = rest.filter((a) => a !== '--force');
   switch (sub) {
     case 'install': {
+      if (svc.name === 'systemd' && !systemdAvailable()) {
+        throw new Error('angelia service needs systemd --user here (systemctl --user does not answer). Run angelia daemon under your own supervisor.');
+      }
       const other = force ? undefined : otherInstance();
       if (other) throw new Error(other);
       const config = resolve(configPath(args[0]));
@@ -153,12 +156,18 @@ export async function serviceCommand(argv: string[]): Promise<void> {
       console.log(`wrote ${svc.filePath()}`);
       const pid = readPid();
       if (serviceLoaded()) {
-        console.log('The service is already loaded. The new plist takes effect at the next angelia restart (or /restart from a chat).');
+        console.log(svc.name === 'systemd'
+          ? 'The service is already loaded. The new unit takes effect at the next angelia restart (or /restart from a chat).'
+          : 'The service is already loaded. The new plist takes effect at the next angelia restart (or /restart from a chat).');
       } else if (isDaemonPid(pid)) {
         console.log(`A daemon started by hand is running (pid ${pid}). angelia restart, or /restart from a chat, moves it onto the service.`);
       } else {
         serviceStart();
-        console.log('Service loaded: the daemon starts now and at every login.');
+        console.log(`Service loaded: the daemon starts now and at every ${svc.name === 'systemd' ? 'boot' : 'login'}.`);
+      }
+      if (svc.name === 'systemd') {
+        const advice = linger(userInfo().username);
+        if (advice) console.log(advice);
       }
       break;
     }

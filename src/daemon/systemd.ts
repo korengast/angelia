@@ -105,12 +105,30 @@ export function systemdStart(run: Run = systemctl): void {
   }
 }
 
+/** Running under the manager (is-active), not merely enabled: an enabled but stopped unit must still be started by install. */
+export function systemdLoaded(run: Run = systemctl): boolean {
+  return run(['is-active', UNIT]).code === 0;
+}
+
+/** Without linger the user manager, and our daemon with it, stops at logout. undefined when it is on or was just turned on, else the line to show. */
+export function linger(
+  user: string,
+  run: (cmd: string, args: string[]) => { code: number; out: string } = (cmd, args) => {
+    const r = spawnSync(cmd, args, { encoding: 'utf8' });
+    return { code: r.status ?? 1, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() };
+  },
+): string | undefined {
+  if (run('loginctl', ['show-user', user, '-p', 'Linger']).out.includes('Linger=yes')) return undefined;
+  if (run('loginctl', ['enable-linger', user]).code === 0) return undefined;
+  return `Run sudo loginctl enable-linger ${user} once, or the daemon stops when you log out.`;
+}
+
 export const systemd: ServiceBackend = {
   name: 'systemd',
   filePath: unitPath,
   render: buildUnit,
   read: readUnit,
-  loaded: () => systemctl(['is-enabled', UNIT]).code === 0,
+  loaded: () => systemdLoaded(),
   start: () => systemdStart(),
   stop: () => systemdStop(),
   remove(home) {
