@@ -1,11 +1,11 @@
-import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Capability, Config, Profile } from '../instance/config/schema.js';
 import { resolveProfile } from './resolve.js';
 import { SELF_END, SELF_START, openAgentFile, rewriteAgentFile, upsertSelfBlock } from '../daemon/self.js';
 import { API_SOCKET, HOME_PRIVATE, INSTANCE_DIR, STATE_PRIVATE, commonDir, workspaceDir } from '../instance/instance.js';
-import { O_NOFOLLOW_ANY, isInside } from '../core/paths.js';
+import { isInside, openNoFollow } from '../core/paths.js';
 import { codexUserMcpServers } from '../brain/codex-config.js';
 import { fileURLToPath } from 'node:url';
 
@@ -404,8 +404,7 @@ function linkedFolders(cwd: string, paths: string[][]): string[] {
 }
 
 /**
- * Write a whole file in a profile's folder without following a link anywhere on the way (O_NOFOLLOW_ANY
- * on macOS, which refuses to be combined with O_NOFOLLOW; O_NOFOLLOW for the file itself elsewhere), and only into a plain file with no other name
+ * Write a whole file in a profile's folder without following a link anywhere on the way (`openNoFollow`), and only into a plain file with no other name
  * (a hard link would carry the write out of the folder). One descriptor from the check to the write.
  * O_NONBLOCK: a FIFO in the file's place must not hold the daemon (which compiles for /backend); the
  * plain-file check then refuses it.
@@ -413,7 +412,7 @@ function linkedFolders(cwd: string, paths: string[][]): string[] {
 export function writePlain(cwd: string, file: string, text: string): void {
   const path = join(realpathSync(cwd), relative(cwd, file));
   let fd: number;
-  try { fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_NONBLOCK | (O_NOFOLLOW_ANY || constants.O_NOFOLLOW), 0o644); }
+  try { fd = openNoFollow(path, constants.O_WRONLY | constants.O_CREAT | constants.O_NONBLOCK, 0o644); }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ELOOP') throw new Error(`${file} is reached through a link; compile writes no file through one`);
     if ((e as NodeJS.ErrnoException).code === 'ENXIO') throw new Error(`${file} is not a plain file with one name; compile writes only those`);

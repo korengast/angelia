@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { constants, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openNoFollow } from '../src/core/paths.js';
 import { ChatChains, SenderQuota, inboxDir as inboxDirForTest, pruneInbox, saveInbound } from '../src/adapters/inbox.js';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'angelia-inbox-'));
@@ -55,7 +55,7 @@ test('a .inbox that is a link is refused: the daemon never writes where an agent
   assert.equal(readdirSync(join(real, '.inbox')).length, 1);
 });
 
-test('on macOS the write itself refuses a link anywhere in the path (the swap after the check)', { skip: process.platform !== 'darwin' }, async () => {
+test('the write itself refuses a link anywhere in the path (the swap after the check)', () => {
   const dir = realpathSync(tmp());
   const elsewhere = tmp();
   mkdirSync(join(dir, '.inbox'));
@@ -63,7 +63,7 @@ test('on macOS the write itself refuses a link anywhere in the path (the swap af
   const orig = inboxDirForTest(dir);
   rmSync(join(dir, '.inbox'), { recursive: true });
   symlinkSync(elsewhere, join(dir, '.inbox'));
-  await assert.rejects(open(join(orig, 'x.plist'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | 0x20000000, 0o600), /ELOOP/);
+  assert.throws(() => openNoFollow(join(orig, 'x.plist'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600), { code: 'ELOOP' });
   assert.deepEqual(readdirSync(elsewhere), []);
 });
 

@@ -1,10 +1,9 @@
-import { constants, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { constants, createWriteStream, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { O_NOFOLLOW_ANY } from '../core/paths.js';
+import { openNoFollow } from '../core/paths.js';
 
 /** A file from a chat is downloaded up to this size, on both platforms (Telegram's Bot API serves no more). */
 export const MAX_INBOUND = 20 * 1024 * 1024;
@@ -23,8 +22,8 @@ class TooBig extends Error {}
  *
  * The daemon runs outside every sandbox, and `.inbox` sits in the one folder every agent may write. An
  * agent talked into `ln -s ~/Library/LaunchAgents .inbox` would otherwise have the daemon write a
- * sender's file there. So `.inbox` must be a plain folder, and on macOS the file is opened with
- * O_NOFOLLOW_ANY, which refuses a link anywhere in the path, so swapping `.inbox` for a link between the
+ * sender's file there. So `.inbox` must be a plain folder, and on every platform the file is opened with
+ * `openNoFollow`, which refuses a link anywhere in the path, so swapping `.inbox` for a link between the
  * check and the write does not work either.
  */
 export async function saveInbound(profileDir: string, ext: string, source: AsyncIterable<Uint8Array>, max = MAX_INBOUND, limit = INBOX_LIMIT): Promise<string | undefined> {
@@ -35,9 +34,11 @@ export async function saveInbound(profileDir: string, ext: string, source: Async
   async function* capped() {
     for await (const c of source) { n += c.length; if (n > max) throw new TooBig(); yield c; }
   }
-  const file = await open(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW_ANY, 0o600);
-  try { await pipeline(Readable.from(capped()), file.createWriteStream()); }
-  catch (e) { await file.close().catch(() => {}); rmSync(dest, { force: true }); if (e instanceof TooBig) return undefined; throw e; }
+  const fd = openNoFollow(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  // The stream owns the descriptor from here (the path is ignored when an fd is given) and closes it on finish or error; destroy() covers a failure before it started.
+  const out = createWriteStream('', { fd });
+  try { await pipeline(Readable.from(capped()), out); }
+  catch (e) { out.destroy(); rmSync(dest, { force: true }); if (e instanceof TooBig) return undefined; throw e; }
   pruneInbox(dir, limit, dest);
   // The path as the profile is configured (the agent's own cwd), not the resolved one it was written by.
   return join(profileDir, '.inbox', name);
