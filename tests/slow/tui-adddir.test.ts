@@ -5,10 +5,12 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Config } from '../src/instance/config/schema.js';
+import { Config } from '../../src/instance/config/schema.js';
 
+// In the slow suite: each case starts a fake claude in tmux and waits the real 1.5 s settle per
+// dialog, which passed the fast suite's 20 s file limit on a loaded runner (release 0.3.26 check).
 const here = dirname(fileURLToPath(import.meta.url));
-const FAKE = join(here, 'fake-tui-adddir.mjs');
+const FAKE = join(here, '..', 'fake-tui-adddir.mjs');
 const hasTmux = (() => { try { execFileSync('tmux', ['-V']); return true; } catch { return false; } })();
 
 // claude 2.1.326 asks about each --add-dir folder it has not worked in (2026-11-16): every new
@@ -18,7 +20,7 @@ test('a new session answers each add-dir dialog yes for a listed folder, once it
   const socket = `angelia-test-ad-${process.pid}`;
   process.env.ANGELIA_TMUX_SOCKET = socket;
   process.env.ANGELIA_STATE_DIR = mkdtempSync(join(tmpdir(), 'angelia-tuiad-'));
-  const { TuiBrain } = await import('../src/brain/tui.js');
+  const { TuiBrain } = await import('../../src/brain/tui.js');
   const tmux = (...a: string[]) => execFileSync('tmux', ['-L', socket, ...a], { encoding: 'utf8' }).trim();
   t.after(() => { try { tmux('kill-server'); } catch { /* already gone */ } });
 
@@ -75,9 +77,9 @@ test('a new session answers each add-dir dialog yes for a listed folder, once it
 
 test('a dialog that closes while it is being answered gets no more keys: the next folder\'s dialog is not answered for it', async () => {
   process.env.ANGELIA_STATE_DIR ??= mkdtempSync(join(tmpdir(), 'angelia-tuiad-'));
-  const { TuiBrain } = await import('../src/brain/tui.js');
-  const { addDirAccepted, addDirDialog } = await import('../src/brain/tmux.js');
-  const frame = (name: string) => readFileSync(join(here, 'fixtures', `pane-${name}.txt`), 'utf8');
+  const { TuiBrain } = await import('../../src/brain/tui.js');
+  const { addDirAccepted, addDirDialog } = await import('../../src/brain/tmux.js');
+  const frame = (name: string) => readFileSync(join(here, '..', 'fixtures', `pane-${name}.txt`), 'utf8');
   const listed = '/Users/example/.angelia/projects';
   const other = (name: string) => frame(name).replace(listed, '/Users/example/.ssh');
   const profile = Config.parse({ profiles: { x: { cwd: tmpdir(), tui: true, add_dirs: [listed] } }, routes: [] }).profiles.x;
