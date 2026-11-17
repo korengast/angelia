@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { importsAccepted, importsDialogOpen, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
-import { hookSettings, transcriptEvents, transcriptPath } from '../src/brain/tui.js';
+import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
+import { addDirListed, hookSettings, transcriptEvents, transcriptPath } from '../src/brain/tui.js';
 
 const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`./fixtures/pane-${name}.txt`, import.meta.url)), 'utf8');
 
@@ -35,6 +35,12 @@ test('the trust dialog is recognised and only accepted once the cursor is on yes
   assert.equal(trustAccepted(fixture('trust')), false); // cursor starts on "No, exit"
   assert.equal(trustAccepted(fixture('trust-selected')), true);
   assert.equal(trustDialogOpen(fixture('idle')), false);
+  // A trust frame already answered stays in the history: the dialog below it is the open one.
+  assert.equal(trustDialogOpen(fixture('trust-selected') + fixture('adddir')), false, 'a stale trust frame above the add-dir dialog');
+  assert.equal(trustAccepted(fixture('trust-selected') + fixture('adddir')), false);
+  assert.equal(addDirDialog(fixture('trust-selected') + fixture('adddir')), '/Users/example/.angelia/projects');
+  assert.equal(trustDialogOpen(fixture('trust-selected') + fixture('idle')), false, 'nor above the prompt');
+  assert.equal(trustDialogOpen(fixture('adddir') + fixture('trust')), true, 'the last dialog is the open one');
 });
 
 test('the external-imports dialog (a new profile folder importing _shared) is recognised and accepted only on yes', () => {
@@ -44,6 +50,51 @@ test('the external-imports dialog (a new profile folder importing _shared) is re
   assert.equal(importsAccepted(fixture('imports-selected')), true);
   assert.equal(importsDialogOpen(fixture('trust')), false);
   assert.equal(importsDialogOpen(fixture('idle')), false);
+  assert.equal(importsDialogOpen(fixture('imports-selected') + fixture('idle')), false, 'a stale imports frame above the prompt');
+  assert.equal(importsAccepted(fixture('imports-selected') + fixture('adddir')), false, 'nor above the add-dir dialog');
+  assert.equal(trustDialogOpen(fixture('trust-selected') + fixture('imports')), false);
+  assert.equal(importsDialogOpen(fixture('trust-selected') + fixture('imports')), true);
+});
+
+// The add-dir fixtures are not raw captures: they were written after a real claude 2.1.326 frame, at
+// 120 columns (the rule's width), where the panes run at 220, and the folder is a placeholder. In
+// pane-adddir-wrapped.txt the folder fills the 120th column and goes on at the start of the next
+// line, as a tmux capture without -J shows a wrapped line.
+test('the add-dir dialog (claude 2.1.326) names its folder and is accepted only on yes, for a listed folder only', () => {
+  assert.equal(paneIdle(fixture('adddir')), false);
+  assert.equal(addDirDialog(fixture('adddir')), '/Users/example/.angelia/projects');
+  assert.equal(addDirAccepted(fixture('adddir')), false); // cursor starts on "No, exit"
+  assert.equal(addDirAccepted(fixture('adddir-selected')), true);
+  assert.equal(addDirDialog(fixture('trust')), null);
+  assert.equal(addDirDialog(fixture('imports')), null);
+  assert.equal(addDirDialog(fixture('idle')), null);
+  assert.equal(trustDialogOpen(fixture('adddir')), false, 'not taken for the folder-trust dialog');
+  assert.equal(addDirDialog(' Adding a new directory: /tmp/x\n ❯ No, exit\n   Yes, add it\n'), '/tmp/x', 'the folder on the same line');
+  assert.equal(addDirDialog(' Adding a new directory:\n /tmp/y\n ❯ No, exit\n   Yes, add it\n'), '/tmp/y', 'the folder on the next line');
+  assert.equal(addDirDialog('│ Adding a new directory:  │\n│                         │\n│ /tmp/z                  │\n│ ❯ No, exit │\n│   Yes, add it │\n'), '/tmp/z', 'a bordered frame');
+  // Only the dialog at the foot counts: a resumed conversation can quote the dialog for a listed folder.
+  const quoted = ' Adding a new directory: /Users/example/.angelia/projects\n   No, exit\n ❯ Yes, add it\n\n';
+  assert.equal(addDirDialog(quoted + fixture('adddir')), '/Users/example/.angelia/projects');
+  assert.equal(addDirDialog(fixture('adddir').replace('/Users/example/.angelia/projects', '/Users/example/.ssh').replace(/^/, quoted)), '/Users/example/.ssh', 'the real dialog below a quoted one');
+  assert.equal(addDirAccepted(quoted + fixture('adddir')), false, 'the quoted yes is not the live cursor');
+  assert.equal(addDirDialog(quoted + fixture('idle')), null, 'a quote above the input box is no dialog');
+  assert.equal(addDirAccepted(quoted + fixture('idle')), false);
+  assert.equal(addDirDialog(' Adding a new directory: /tmp/x\n'), null, 'the title alone, without both answers below it');
+  // A folder longer than the pane wraps at its edge (here 120 columns) with no character added.
+  const head = `/Users/example/${'x'.repeat(104)}`;
+  assert.equal(addDirDialog(fixture('adddir-wrapped')), `${head}bar/secret`, 'the wrapped lines join into one folder');
+  assert.equal(addDirListed(addDirDialog(fixture('adddir-wrapped'))!, [`${head}bar/secret`]), true, 'a wrapped listed folder is yes');
+  assert.equal(addDirListed(addDirDialog(fixture('adddir-wrapped'))!, [head]), false, 'a listed folder that is only the first line is no');
+  const dirs = ['/Users/example/.angelia/projects/', '~/code'];
+  assert.equal(addDirListed('/Users/example/.angelia/projects', dirs, '/Users/example'), true);
+  assert.equal(addDirListed('/Users/example/code', dirs, '/Users/example'), true);
+  assert.equal(addDirListed('/Users/example/.ssh', dirs, '/Users/example'), false);
+  assert.equal(addDirListed('/Users/example/.angelia', dirs, '/Users/example'), false, 'a parent of a listed folder is not listed');
+  assert.equal(addDirListed('', dirs, '/Users/example'), false, 'no folder read is never yes');
+  assert.equal(addDirListed(realpathSync(tmpdir()), [tmpdir()]), true, 'the resolved path of a symlinked folder');
+  assert.equal(addDirListed('/Users/example/profile/notes', ['notes', '../shared'], '/Users/example', '/Users/example/profile'), true, 'a relative entry is under the profile cwd');
+  assert.equal(addDirListed('/Users/example/shared', ['notes', '../shared'], '/Users/example', '/Users/example/profile'), true);
+  assert.equal(addDirListed(join(process.cwd(), 'notes'), ['notes'], '/Users/example', '/Users/example/profile'), false, 'not under the daemon cwd');
 });
 
 test('a paste is only submitted once it is visible in the box', () => {

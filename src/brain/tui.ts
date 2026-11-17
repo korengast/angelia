@@ -1,15 +1,15 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent } from '../core/types.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession } from './brain.js';
-import { importsAccepted, importsDialogOpen, loadBuffer, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadBuffer, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { paneVerdict, PermissionRelay, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { readRecord } from '../capabilities/compile.js';
@@ -22,6 +22,8 @@ const PERMISSION_HOOK = fileURLToPath(new URL('../../scripts/tui-permission-hook
  *  daemon's ten-minute deny. */
 const PERMISSION_HOOK_TIMEOUT_S = 900;
 const POLL_MS = 700;
+/** How long claude's add-dir dialog must stand before keys reach it (it drops them for ~1 s, 2.1.326). */
+const ADD_DIR_SETTLE_MS = 1500;
 const START_TIMEOUT_MS = 90_000;
 const PROMPT_TIMEOUT_MS = 10 * 60_000;
 /** A turn has no end time: a long build or a run of subagents may take hours, and `/stop` ends a
@@ -295,12 +297,39 @@ export class TuiBrain extends EventEmitter implements Brain {
     writeFileSync(this.launchPath, this.fingerprint(resume));
     this.up = true;
     const deadline = Date.now() + START_TIMEOUT_MS;
+    let asked: { dir: string; at: number; answered: number } | undefined;
+    const answered = new Set<string>();
+    let unlisted: string | undefined;
     while (Date.now() < deadline) {
       // The pane is gone with its output, so say what was run and where: that is the one way to see why.
       if (!(await this.sessionAlive())) { this.up = false; return `${START_EXIT} (${argv[0]} in ${this.profile.cwd}; run it there by hand to see why)`; }
       const pane = await this.capture(40);
-      if (trustDialogOpen(pane)) { await this.acceptDialog(trustAccepted); continue; }
-      if (importsDialogOpen(pane)) { await this.acceptDialog(importsAccepted); continue; }
+      // Dialogs before the prompt: each counts only as the last dialog on screen with no input box
+      // below it, so a resumed conversation that quotes one is the prompt. Idle first would let a
+      // stale frame in the history (between two rules) pass for a box while a dialog is open.
+      if (trustDialogOpen(pane)) { await this.acceptDialog(trustDialogOpen, trustAccepted); continue; }
+      if (importsDialogOpen(pane)) { await this.acceptDialog(importsDialogOpen, importsAccepted); continue; }
+      const dir = addDirDialog(pane);
+      if (dir !== null) {
+        // Yes only for a folder the owner listed in add_dirs: that line was the answer. Anything else
+        // stays unanswered, and the start fails with the folder named.
+        if (!addDirListed(dir, this.profile.add_dirs, homedir(), this.profile.cwd)) { this.emit('log', `pane ${this.name} asks to add ${dir}, which is not in add_dirs`); unlisted = dir; break; }
+        // claude 2.1.326 drops keys for about a second after it draws this dialog (measured: Down and
+        // Enter at once leave it on "No"), and a profile with two new folders gets one dialog each.
+        // So wait until a folder's dialog has stood ADD_DIR_SETTLE_MS, and give an answer time to land
+        // before the same folder is answered again.
+        if (asked?.dir !== dir) asked = { dir, at: Date.now(), answered: 0 };
+        if (Date.now() - asked.at < ADD_DIR_SETTLE_MS || Date.now() - asked.answered < ADD_DIR_SETTLE_MS * 2) { await sleep(250); continue; }
+        // Bound to this folder: when its dialog closes and the next folder's opens, that one waits for
+        // its own listed check and settle time, and gets no Down or Enter meant for this one.
+        // The same folder can be answered more than once (an Enter dropped while the dialog was new).
+        if (await this.acceptDialog((p) => addDirDialog(p) === dir, addDirAccepted) && !answered.has(dir)) {
+          answered.add(dir);
+          this.emit('log', `pane ${this.name} answered add-dir ${dir}`);
+        }
+        asked.answered = Date.now();
+        continue;
+      }
       if (paneIdle(pane)) return null;
       await sleep(500);
     }
@@ -313,6 +342,8 @@ export class TuiBrain extends EventEmitter implements Brain {
       writeFileSync(screen, `${new Date().toISOString()}\n${await this.capture(40)}\n`, { mode: 0o600 });
       this.emit('log', `pane ${this.name} never reached a prompt; its screen is in ${screen}`);
     } catch { this.emit('log', `pane ${this.name} never reached a prompt`); }
+    // Named, so the owner sees which folder to list (or why claude asks about it) without the log.
+    if (unlisted !== undefined) return `the session did not start: claude asks to add the folder ${unlisted}, which is not in this profile's add_dirs`;
     return `the session never reached a prompt (look with: tmux -L angelia attach -t ${this.name})`;
   }
 
@@ -329,10 +360,14 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  routing.yaml already names this directory as the profile's home and the permission mode it
    *  runs under, and the imports are the owner's own shared doctrine, so the answer was given when
    *  that line was written; press it instead of hanging. `accepted` says the cursor is on the yes
-   *  row; it is checked before Enter, so a redraw can never turn this into "No". */
-  private async acceptDialog(accepted: (pane: string) => boolean): Promise<boolean> {
+   *  row; it is checked before Enter, so a redraw can never turn this into "No". `open` says the
+   *  same dialog is still the one on screen; once it is not, no key is sent, since a key meant for
+   *  this dialog would answer the next one. */
+  private async acceptDialog(open: (pane: string) => boolean, accepted: (pane: string) => boolean): Promise<boolean> {
     for (let i = 0; i < 8; i++) {
-      if (accepted(await this.capture(40))) { await this.tm(['send-keys', '-t', this.name, 'Enter']); return true; }
+      const pane = await this.capture(40);
+      if (!open(pane)) return false;
+      if (accepted(pane)) { await this.tm(['send-keys', '-t', this.name, 'Enter']); return true; }
       await this.tm(['send-keys', '-t', this.name, 'Down']);
       await sleep(300);
     }
@@ -688,6 +723,20 @@ export class DialogWatch {
     this.id = randomUUID().slice(0, 8); this.asked = asked; this.answeredAt = 0;
     return { announce: this.id };
   }
+}
+
+/** True when `dir`, as Claude Code's add-dir dialog shows it, is one of the profile's add_dirs
+ *  (a leading ~ is the home folder; a trailing slash does not count). A relative entry is resolved
+ *  against `base`, the profile's cwd, where claude runs and resolves it too. */
+export function addDirListed(dir: string, addDirs: string[], home = homedir(), base = process.cwd()): boolean {
+  if (!dir) return false;
+  // Claude shows the folder as it resolved it (/tmp is /private/tmp on macOS), so the real path counts too.
+  const forms = (d: string) => {
+    const p = resolve(base, d.replace(/^~(?=$|\/)/, home)).replace(/(.)\/+$/, '$1');
+    try { return [p, realpathSync(p)]; } catch { return [p]; }
+  };
+  const want = forms(dir);
+  return addDirs.some((d) => forms(d).some((f) => want.includes(f)));
 }
 
 export type TranscriptEvent = { kind: 'text'; text: string } | { kind: 'tool' };

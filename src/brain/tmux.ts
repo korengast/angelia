@@ -120,13 +120,18 @@ export function permissionDialog(pane: string): { tool: string; preview: string 
  *  prompt, with "No, exit" preselected. Print mode never shows it. */
 export const TRUST_MARKER = 'trust this folder';
 
+/** The trust dialog is the open start dialog (see startDialog): its yes row is the last anchor on
+ *  screen, with "No, exit" next to it. A trust frame left in the history above a later dialog is not
+ *  open, so Enter goes to neither by mistake. */
 export function trustDialogOpen(pane: string): boolean {
-  return pane.includes(TRUST_MARKER) && pane.includes('No, exit');
+  const d = startDialog(pane, TRUST_MARKER);
+  return !!d && d.lines.slice(Math.max(0, d.at - 3), d.at + 4).some((l) => l.includes('No, exit'));
 }
 
-/** The trust dialog's cursor is on the "yes" row, so Enter accepts and nothing else. */
+/** The open trust dialog's cursor is on the "yes" row, so Enter accepts and nothing else. */
 export function trustAccepted(pane: string): boolean {
-  return pane.split('\n').some((l) => l.includes('❯') && l.includes(TRUST_MARKER));
+  const d = startDialog(pane, TRUST_MARKER);
+  return !!d && d.lines[d.at].includes('❯');
 }
 
 /** A folder whose CLAUDE.md imports a file outside it (every profile does: the shared doctrine in
@@ -136,12 +141,69 @@ export function trustAccepted(pane: string): boolean {
 export const IMPORTS_MARKER = 'Allow external CLAUDE.md file imports?';
 
 export function importsDialogOpen(pane: string): boolean {
-  return pane.includes(IMPORTS_MARKER) && pane.includes('disable external imports');
+  const d = startDialog(pane, IMPORTS_MARKER);
+  return !!d && d.lines.slice(d.at + 1).some((l) => l.includes('disable external imports'));
 }
 
-/** The cursor is on "Yes, allow external imports", so Enter accepts and nothing else. */
+/** The cursor is on "Yes, allow external imports" of the open dialog, so Enter accepts and nothing else. */
 export function importsAccepted(pane: string): boolean {
-  return pane.split('\n').some((l) => l.includes('❯') && l.includes('allow external imports'));
+  const d = startDialog(pane, IMPORTS_MARKER);
+  return !!d && d.lines.slice(d.at + 1).some((l) => l.includes('❯') && l.includes('allow external imports'));
+}
+
+/** A folder passed with `--add-dir` that Claude Code has not worked in opens its own dialog before
+ *  the first prompt, "Adding a new directory:" with the folder on the next line and "No, exit"
+ *  preselected. New in claude 2.1.326 (2026-11-16): every new session of a profile with add_dirs sat
+ *  on it until the start timed out, so those chats got no answer. */
+export const ADD_DIR_MARKER = 'Adding a new directory:';
+
+/** The lines that find each start dialog: the add-dir and imports titles, and the trust dialog's yes
+ *  row (its title has changed between versions: "Accessing workspace:" on 2.1.326). */
+const START_ANCHORS = [TRUST_MARKER, IMPORTS_MARKER, ADD_DIR_MARKER];
+
+/** The open start dialog found by `marker`: its lines and the anchor's index, or null when another
+ *  start dialog, or none, is the one open. The dialog is drawn at the foot of the screen, so the last
+ *  anchor of any start dialog is the live one; an earlier one is history (a resumed conversation that
+ *  quotes the dialog, or the frame of a dialog already answered). A screen with an input box below
+ *  the anchor is past every dialog: the quote is in the conversation above the prompt. */
+function startDialog(pane: string, marker: string): { lines: string[]; at: number } | null {
+  const lines = pane.replace(/\n+$/, '').split('\n');
+  let at = -1;
+  for (let i = lines.length - 1; i >= 0 && at < 0; i--) if (START_ANCHORS.some((m) => lines[i].includes(m))) at = i;
+  if (at < 0 || !lines[at].includes(marker)) return null;
+  if (inputBoxStrict(lines.slice(at + 1).join('\n')) !== null) return null;
+  return { lines, at };
+}
+
+/** The folder the add-dir dialog asks about, or null when that dialog is not open. Both answers must
+ *  be drawn below its title: one line that merely names the dialog is not the dialog. */
+export function addDirDialog(pane: string): string | null {
+  const d = startDialog(pane, ADD_DIR_MARKER);
+  if (!d) return null;
+  const { lines, at } = d;
+  const below = lines.slice(at + 1);
+  if (!below.some((l) => l.includes('No, exit')) || !below.some((l) => l.includes('Yes, add it'))) return null;
+  // The folder is on the title's line or on the first line below it that has text: the real frame
+  // puts a blank line between (2.1.326), and a bordered frame draws │ on each side.
+  const text = (l: string) => l.replace(/[│┃║]/g, '').trim();
+  const inline = text(lines[at].slice(lines[at].indexOf(ADD_DIR_MARKER) + ADD_DIR_MARKER.length));
+  let first = at;
+  if (!inline) { first = lines.findIndex((l, i) => i > at && i < at + 4 && text(l)); if (first < 0) return ''; }
+  // A folder longer than the pane wraps onto the next lines, and the wrap adds no character: read on
+  // to the next blank line (or the answers), or a listed folder would match the head of a longer one.
+  let dir = inline || text(lines[first]);
+  for (let i = first + 1; i < lines.length; i++) {
+    const more = lines[i].replace(/[│┃║]/g, '').trimEnd();
+    if (!more.trim() || more.includes('No, exit') || more.includes('Yes, add it')) break;
+    dir += lines[i].trimStart().startsWith('│') ? more.trim() : more;
+  }
+  return dir;
+}
+
+/** The cursor is on "Yes, add it" of the open add-dir dialog, so Enter accepts and nothing else. */
+export function addDirAccepted(pane: string): boolean {
+  const d = startDialog(pane, ADD_DIR_MARKER);
+  return !!d && d.lines.slice(d.at + 1).some((l) => l.includes('❯') && l.includes('Yes, add it'));
 }
 
 /** The pasted text (or its collapsed chip) is in the input box, so Enter submits that and
