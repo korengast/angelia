@@ -1,27 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const dir = mkdtempSync(join(tmpdir(), 'angelia-svc-'));
 process.env.ANGELIA_STATE_DIR = dir;
-const { buildPlist, entry, servicePath, LABEL, serviceCommand, plistConfig, tableMismatch, plistStateDir, otherInstance, serviceStart, serviceStop } = await import('../src/daemon/service.js');
+const { entry, servicePath, serviceCommand } = await import('../src/daemon/service.js');
 const { envFile } = await import('../src/daemon/daemon.js');
-
-test('plist: runs the daemon on the given table, carries PATH, never a secret, and is valid XML', () => {
-  const p = buildPlist({ node: '/usr/local/bin/node', entry: '/lib/angelia/dist/cli.js', config: '/a&b/routing.yaml', stateDir: dir, path: '/Users/example/.local/bin:/usr/bin', home: '/Users/example', lang: 'en_US.UTF-8' });
-  assert.match(p, new RegExp(`<key>Label</key><string>${LABEL}</string>`));
-  assert.match(p, /<string>\/usr\/local\/bin\/node<\/string>\n {4}<string>\/lib\/angelia\/dist\/cli\.js<\/string>\n {4}<string>daemon<\/string>\n {4}<string>\/a&amp;b\/routing\.yaml<\/string>/);
-  assert.match(p, /<key>PATH<\/key><string>\/Users\/example\/\.local\/bin:\/usr\/bin<\/string>/);
-  assert.match(p, /<key>SuccessfulExit<\/key><false\/>/);
-  assert.doesNotMatch(p, /TOKEN/);
-  if (process.platform === 'darwin') {
-    const f = join(dir, 't.plist'); writeFileSync(f, p);
-    execFileSync('plutil', ['-lint', f]);
-  }
-});
 
 test('service PATH: keeps order, drops duplicates and folders that do not exist, always has the system ones', () => {
   const extra = mkdtempSync(join(tmpdir(), 'angelia-bin-'));
@@ -45,31 +31,6 @@ test('uninstall refuses to run as the daemon\'s own agent: nothing would start i
   finally { if (before === undefined) delete process.env.ANGELIA_SESSION_KEY; else process.env.ANGELIA_SESSION_KEY = before; }
 });
 
-test('a restart that names the plist\'s own table goes through; another table is refused', () => {
-  // /restart from a chat always passes the table the daemon runs. Refusing that one left the
-  // hand-started daemon in place on 2026-09-21 instead of moving it onto the service.
-  const p = buildPlist({ node: '/n', entry: '/e', config: '/Users/example/.angelia/routing.yaml', stateDir: dir, path: '/usr/bin', home: '/Users/example' });
-  assert.equal(plistConfig(p), '/Users/example/.angelia/routing.yaml');
-  assert.equal(tableMismatch(undefined, p), undefined);
-  assert.equal(tableMismatch('/Users/example/.angelia/routing.yaml', p), undefined);
-  assert.match(tableMismatch('/Users/example/other.yaml', p) ?? '', /runs \/Users\/example\/\.angelia\/routing\.yaml, not \/Users\/example\/other\.yaml/);
-  // The daemon names the table it was started with; after the plist was rewritten for a moved table
-  // that is the old path, and refusing it would leave the old table running for good.
-  assert.equal(tableMismatch('/Users/example/other.yaml', p, true), undefined);
-});
-
-test('a plist belongs to the instance whose state folder it names', () => {
-  const p = buildPlist({ node: '/n', entry: '/e', config: '/c', stateDir: '/Users/example/.angelia', path: '/usr/bin', home: '/Users/example' });
-  assert.equal(plistStateDir(p), '/Users/example/.angelia');
-  assert.equal(plistStateDir(buildPlist({ node: '/n', entry: '/e', config: '/c', stateDir: '/tmp/a<b>&c', path: '/usr/bin', home: '/h' })), '/tmp/a<b>&c');
-  // install and uninstall refuse a plist another instance wrote: one label serves the whole user.
-  const file = join(mkdtempSync(join(tmpdir(), 'angelia-plist-')), 'x.plist');
-  writeFileSync(file, p);
-  assert.equal(otherInstance('/Users/example/.angelia', file), undefined);
-  assert.match(otherInstance('/tmp/test-instance', file) ?? '', /runs the instance in \/Users\/example\/\.angelia, not this one.*--force/);
-  assert.equal(otherInstance('/tmp/test-instance', join(tmpdir(), 'no-such.plist')), undefined, 'no plist, nothing to protect');
-});
-
 test('entry: a daemon whose own file moved away under it still restarts through the angelia link', () => {
   const dir = mkdtempSync(join(tmpdir(), 'angelia-entry-'));
   const real = join(dir, 'cli.js');
@@ -84,32 +45,35 @@ test('entry: a daemon whose own file moved away under it still restarts through 
   assert.equal(entry(other, undefined), other);
 });
 
-test('service restart: stop waits until launchd has dropped the job, start kickstarts what bootstrap leaves pended', () => {
-  // A fake launchd: the job stays listed for two prints after bootout, as a daemon still shutting down does.
-  const calls: string[] = [];
-  let loaded = true, lingering = 0;
-  const run = (args: string[]): { code: number; out: string } => {
-    calls.push(args[0]);
-    if (args[0] === 'print') { if (!loaded && lingering) { lingering--; return { code: 0, out: '' }; } return { code: loaded ? 0 : 113, out: '' }; }
-    if (args[0] === 'bootout') { loaded = false; lingering = 2; }
-    if (args[0] === 'bootstrap') { if (lingering) return { code: 5, out: 'Bootstrap failed: 5: Input/output error' }; loaded = true; }
-    return { code: 0, out: '' };
-  };
-  serviceStop(run, () => {});
-  assert.equal(lingering, 0, 'serviceStop returned while the job was still listed');
-  serviceStart('/no/home', run);
-  assert.deepEqual(calls.slice(-2), ['bootstrap', 'kickstart']);
-  assert.ok(loaded);
+const { linger, systemd, systemdLoaded, systemdAvailable } = await import('../src/daemon/systemd.js');
+
+test('linger: already on says nothing; turned on says nothing; refused gives the sudo line', () => {
+  const run = (enable: number) => (cmd: string, args: string[]) =>
+    args[0] === 'show-user' ? { code: 0, out: enable < 0 ? 'Linger=yes' : 'Linger=no' } : { code: enable, out: `${cmd} ${args.join(' ')}` };
+  assert.equal(linger('u', run(-1)), undefined);
+  assert.equal(linger('u', run(0)), undefined);
+  assert.equal(linger('u', run(1)), 'Run sudo loginctl enable-linger u once, or the daemon stops when you log out.');
 });
 
-test('service stop: a job launchd never drops fails loudly instead of a start that cannot work', () => {
-  let sleeps = 0;
-  const run = (args: string[]): { code: number; out: string } => ({ code: 0, out: args[0] === 'print' ? 'state = running' : '' });
-  assert.throws(() => serviceStop(run, () => { sleeps++; }), /still holds .* after bootout/);
-  assert.equal(sleeps * 250, 25_000, 'waits past launchd\'s 20 s ExitTimeOut');
+test('systemdLoaded means running: is-active, not is-enabled', () => {
+  const asked: string[][] = [];
+  assert.equal(systemdLoaded((a) => { asked.push(a); return { code: 0, out: '' }; }), true);
+  assert.equal(systemdLoaded(() => ({ code: 3, out: 'inactive' })), false);
+  assert.deepEqual(asked[0][0], 'is-active');
 });
 
-test('service start: a failed kickstart is an error, with launchctl\'s own words', () => {
-  const run = (args: string[]): { code: number; out: string } => (args[0] === 'kickstart' ? { code: 113, out: 'Could not find service' } : { code: 0, out: '' });
-  assert.throws(() => serviceStart('/no/home', run), /kickstart failed: Could not find service/);
+test('startedByService: keyed on the cgroup, not on SYSTEMD_EXEC_PID (absent before systemd 248) or INVOCATION_ID', () => {
+  const was = { p: process.env.SYSTEMD_EXEC_PID, i: process.env.INVOCATION_ID };
+  try {
+    process.env.SYSTEMD_EXEC_PID = String(process.pid); process.env.INVOCATION_ID = 'x';
+    assert.equal(systemd.startedByService(), false, 'this test process is not in angelia.service');
+  } finally {
+    for (const [k, v] of [['SYSTEMD_EXEC_PID', was.p], ['INVOCATION_ID', was.i]] as const) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+});
+
+test('service install without a systemd user session says how to run it instead', { skip: process.platform !== 'linux' || systemdAvailable() }, async () => {
+  await assert.rejects(serviceCommand(['install']), /needs systemd --user.*angelia daemon/);
 });

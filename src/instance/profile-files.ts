@@ -1,6 +1,6 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { O_NOFOLLOW_ANY } from '../core/paths.js';
+import { openNoFollow } from '../core/paths.js';
 
 /**
  * What a client of the owner's API (Angelia Desk, the phone app) may see of a profile's folder: its
@@ -70,7 +70,7 @@ function inside(folder: string, rel: string, hidden: Hidden): string {
 
 /**
  * Open a checked, resolved path for reading, and keep it the file that was checked. The open follows no
- * link anywhere on the path (O_NOFOLLOW_ANY on macOS; elsewhere the last name), and the file must be the
+ * link anywhere on the path (`openNoFollow`, on every platform), and the file must be the
  * one stat saw before the checks (same device and inode), so swapping a folder for a link between the
  * check and the open fails. Non-blocking, so a named pipe cannot hold the daemon; only a regular file
  * of this user with one name: a hard link can give a credential file a plain name in a plain folder.
@@ -81,9 +81,7 @@ export function openChecked(real: string, uid: number | undefined = process.getu
   try { before = statSync(real, { bigint: true }); } catch { throw new FileError('no such file', 404); }
   if (!before.isFile()) throw new FileError('not a file');
   let fd: number;
-  // macOS refuses O_NOFOLLOW together with O_NOFOLLOW_ANY (EINVAL): the latter covers the last name too.
-  const noFollow = O_NOFOLLOW_ANY || constants.O_NOFOLLOW;
-  try { fd = openSync(real, constants.O_RDONLY | constants.O_NONBLOCK | noFollow); }
+  try { fd = openNoFollow(real, constants.O_RDONLY | constants.O_NONBLOCK); }
   catch { throw new FileError('that file could not be opened'); }
   try {
     const st = fstatSync(fd, { bigint: true });

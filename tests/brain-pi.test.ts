@@ -59,7 +59,7 @@ test('pi: a turn, progress before a tool call, the session id is ours, argv carr
   assert.equal(b.alive, false);
 });
 
-test('pi: the gate asks the chat through a confirm dialog, both ways, and a timeout denies', async () => {
+test('pi: the gate asks the chat through a confirm dialog, both ways, and a timeout denies', { skip: process.platform !== 'darwin' && 'the pi backend is macOS only: its gate runs commands in sandbox-exec and refuses where there is none' }, async () => {
   const b = make();
   const ev = await collect(b, 'PERM', true);
   assert.equal(ev[0].kind, 'permission');
@@ -75,7 +75,7 @@ test('pi: the gate asks the chat through a confirm dialog, both ways, and a time
   await b.stop();
 });
 
-test('pi: bypass never asks; plan refuses the command; a denied path is refused without asking', async () => {
+test('pi: bypass never asks; plan refuses the command; a denied path is refused without asking', { skip: process.platform !== 'darwin' && 'the pi backend is macOS only: its gate runs commands in sandbox-exec and refuses where there is none' }, async () => {
   const y = make('bypassPermissions');
   assert.deepEqual(await collect(y, 'PERM'), [{ kind: 'result', text: 'tool allowed', isError: false }]);
   await y.stop();
@@ -213,7 +213,7 @@ test('pi gate: paths read the way pi reads them, through symlinks and without ca
   assert.equal(v('acceptEdits', 'bash', { command: 'head -n 5 src/a.ts' }), 'allow');
 });
 
-test('pi: an extension command that starts no run ends the turn with what it said; a late dialog is dismissed; bash gets a timeout', async () => {
+test('pi: an extension command that starts no run ends the turn with what it said; a late dialog is dismissed; bash gets a timeout', { skip: process.platform !== 'darwin' && 'the pi backend is macOS only: its gate runs commands in sandbox-exec and refuses where there is none' }, async () => {
   const b = make('bypassPermissions');
   assert.deepEqual(await collect(b, '/hello'), [{ kind: 'result', text: 'hi from hello', isError: false }]);
   assert.deepEqual(await collect(b, 'LATE'), [{ kind: 'result', text: 'late dialog sent', isError: false }]);
@@ -245,7 +245,7 @@ test('pi: the policy also carries settings.local.json; compile protects .pi/ and
   assert.equal(decide(gate, 'read', { path: `${h}/.pi/agent/sessions/--w--/s.jsonl` }, h).action, 'block');
 });
 
-test('pi gate: links read against the real folder, spellings APFS treats as one name, the read tool\'s fallbacks', () => {
+test('pi gate: links read against the real folder, spellings APFS treats as one name, the read tool\'s fallbacks', { skip: process.platform !== 'darwin' && 'the pi gate folds names the way APFS does, and only on macOS' }, () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'angelia-gate2-')));
   const home = join(root, 'h'), work = join(home, 'work'), ssh = join(home, '.ssh'), denied = join(root, 'denied');
   mkdirSync(work, { recursive: true }); mkdirSync(ssh); mkdirSync(denied); mkdirSync(join(root, 'pub'));
@@ -324,7 +324,7 @@ test('pi gate: acceptEdits never runs unasked a value glued to an option or an `
   assert.equal(glob('{a..z}x'), 'any');
 });
 
-test('pi gate: without a policy nothing runs; bash never runs longer than the ceiling and runs in the sandbox unless the table says not', async () => {
+test('pi gate: without a policy nothing runs; bash never runs longer than the ceiling and runs in the sandbox unless the table says not', { skip: process.platform !== 'darwin' && 'the pi gate rewrites bash into a sandbox-exec command, and only on macOS' }, async () => {
   const saved = process.env.ANGELIA_PI_POLICY;
   const handlers: Record<string, (e: any, c: any) => any> = {};
   const fakePi = { on: (ev: string, fn: any) => { handlers[ev] = fn; }, getActiveTools: () => [], setActiveTools: () => {} };

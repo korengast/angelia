@@ -11,9 +11,18 @@ const GIT_GLOBAL = join(mkdtempSync(join(tmpdir(), 'angelia-gitconfig-')), 'gitc
 writeFileSync(GIT_GLOBAL, '');
 process.env.GIT_CONFIG_GLOBAL = GIT_GLOBAL;
 process.env.GIT_CONFIG_NOSYSTEM = '1';
-import { GITIGNORE, buildSkeleton, configPath, defaultConfigPath, describeInstance, initRepo, isRepo, profileDir, syncWorkspace, workspaceDir } from '../src/instance/instance.js';
+import { GITIGNORE, buildSkeleton, commitFlags, configPath, defaultConfigPath, describeInstance, initRepo, isRepo, profileDir, syncWorkspace, workspaceDir } from '../src/instance/instance.js';
 
 const fresh = () => mkdtempSync(join(tmpdir(), 'angelia-inst-'));
+
+test('a commit names Angelia only when git has no identity: a fresh Linux account has none, an owner\'s own wins', () => {
+  const repo = fresh();
+  execFileSync('git', ['init', '-q', repo]);
+  assert.deepEqual(commitFlags(repo), ['-c', 'commit.gpgsign=false', '-c', 'user.name=Angelia', '-c', 'user.email=angelia@localhost']);
+  execFileSync('git', ['config', 'user.name', 'Example Owner'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 'owner@example.com'], { cwd: repo });
+  assert.deepEqual(commitFlags(repo), ['-c', 'commit.gpgsign=false']);
+});
 
 test('the skeleton is one folder with one boundary inside it', () => {
   const dir = fresh();

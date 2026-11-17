@@ -1,6 +1,5 @@
 import { isDaemonPid } from './pid.js';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,68 +8,52 @@ import { effectiveTable } from '../instance/accepted.js';
 import { loadConfig } from '../instance/config/load.js';
 import { STATE_DIR } from './daemon.js';
 import { configPath } from '../instance/instance.js';
+import { launchd } from './launchd.js';
+import { linger, systemd, systemdAvailable, systemdEnable } from './systemd.js';
 
-/**
- * The daemon as a macOS LaunchAgent: it starts at login, comes back after a crash, and no longer
- * lives and dies with the terminal that started it. A LaunchAgent, not a system daemon, because the
- * agents need the user's session: the keychain, tmux, the everyday Chrome.
- *
- * The plist carries the PATH, worked out when it is written, so the daemon never again depends on
- * the shell that happened to start it. It carries no secret: the token stays in the state folder's
- * `env` file, which the daemon reads itself.
- */
-export const LABEL = 'angelia.daemon';
+export { LABEL } from './launchd.js';
 
-export function plistPath(home = homedir()): string {
-  return join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`);
+export interface ServiceInput { node: string; entry: string; config: string; stateDir: string; path: string; home: string; lang?: string }
+
+/** What a written service file starts: the routing table, the node and script, and the instance it belongs to. */
+export interface ServiceProgram { config: string; node: string; entry: string; stateDir: string }
+
+/** One service manager's way to run the daemon: launchd's plist today, systemd's unit next. */
+export interface ServiceBackend {
+  name: 'launchd' | 'systemd';
+  filePath(home?: string): string;
+  render(i: ServiceInput): string;
+  read(text: string): ServiceProgram | undefined;
+  loaded(): boolean;
+  start(home?: string): void;
+  stop(): void;
+  remove(home?: string): void;
+  /** This process is the one the service manager started. */
+  startedByService(): boolean;
 }
 
-const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** The backend of this platform: launchd on macOS, systemd on Linux, else none. */
+export function backend(platform: NodeJS.Platform = process.platform): ServiceBackend | undefined {
+  return platform === 'darwin' ? launchd : platform === 'linux' ? systemd : undefined;
+}
 
-const unesc = (s: string): string => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+/** The program the installed service file starts, or undefined when there is no backend, file, or a file it cannot read. */
+export function readService(home = homedir()): ServiceProgram | undefined {
+  const svc = backend();
+  if (!svc) return undefined;
+  try { return svc.read(readFileSync(svc.filePath(home), 'utf8')); } catch { return undefined; }
+}
 
 /** Why this command must not touch the installed service: it belongs to another instance. One label
  *  and one plist serve the whole user, so a test instance (ANGELIA_STATE_DIR) would otherwise
  *  overwrite or remove the real one. */
-export function otherInstance(stateDir = STATE_DIR, plist = plistPath()): string | undefined {
+export function otherInstance(stateDir = STATE_DIR, svc = backend(), file = svc?.filePath()): string | undefined {
+  if (!file || !svc) return undefined;
   let text: string;
-  try { text = readFileSync(plist, 'utf8'); } catch { return undefined; }
-  const theirs = plistStateDir(text);
+  try { text = readFileSync(file, 'utf8'); } catch { return undefined; }
+  const theirs = svc.read(text)?.stateDir;
   if (!theirs || resolve(theirs) === resolve(stateDir)) return undefined;
   return `the installed service runs the instance in ${theirs}, not this one (${stateDir}). Uninstall it from that instance first, or add --force to replace it.`;
-}
-
-export interface PlistInput { node: string; entry: string; config: string; stateDir: string; path: string; home: string; lang?: string }
-
-export function buildPlist(i: PlistInput): string {
-  const env: Record<string, string> = { PATH: i.path, HOME: i.home, ANGELIA_STATE_DIR: i.stateDir };
-  if (i.lang) env.LANG = i.lang;
-  const out = join(i.stateDir, 'daemon.out');
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Written by angelia service install. Rewrite it with the same command, not by hand. -->
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>${LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-${[i.node, i.entry, 'daemon', i.config].map((a) => `    <string>${esc(a)}</string>`).join('\n')}
-  </array>
-  <key>WorkingDirectory</key><string>${esc(i.stateDir)}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-${Object.entries(env).map(([k, v]) => `    <key>${k}</key><string>${esc(v)}</string>`).join('\n')}
-  </dict>
-  <key>RunAtLoad</key><true/>
-  <!-- Back after a crash; a clean stop (SIGTERM, exit 0) stays stopped. -->
-  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>ThrottleInterval</key><integer>10</integer>
-  <key>ProcessType</key><string>Interactive</string>
-  <key>StandardOutPath</key><string>${esc(out)}</string>
-  <key>StandardErrorPath</key><string>${esc(out)}</string>
-</dict>
-</plist>
-`;
 }
 
 /** The PATH written into the plist: the one we have, the install folders that exist, the folder of
@@ -102,90 +85,38 @@ export function entry(self = fileURLToPath(new URL('../cli/cli.js', import.meta.
   return self;
 }
 
-const domain = (): string => `gui/${userInfo().uid}`;
-
-function launchctl(args: string[]): { code: number; out: string } {
-  const r = spawnSync('launchctl', args, { encoding: 'utf8' });
-  return { code: r.status ?? 1, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() };
-}
-
-/** The routing table a written plist runs: the last argument after `daemon`. */
-export function plistConfig(plist: string): string | undefined {
-  const args = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(plist)?.[1];
-  if (!args) return undefined;
-  const items = [...args.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => unesc(m[1]));
-  const i = items.indexOf('daemon');
-  return i === -1 ? undefined : items[i + 1];
-}
-
 /** Why a restart that names a table cannot go through the service, or undefined when it can.
  *  A person naming a table the service does not run is told so. The daemon (`fromDaemon`, for
  *  /restart) is not: under the service the plist is the authority, and after `angelia service
  *  install <new table>` the running daemon still carries the old path - which is exactly the restart
  *  that has to go through. */
-export function tableMismatch(given: string | undefined, plist: string, fromDaemon = false): string | undefined {
+export function tableMismatch(given: string | undefined, prog: ServiceProgram | undefined, fromDaemon = false, file = backend()?.name === 'systemd' ? 'unit' : 'plist'): string | undefined {
   if (!given || fromDaemon) return undefined;
-  const runs = plistConfig(plist);
+  const runs = prog?.config;
   if (runs && resolve(given) === resolve(runs)) return undefined;
-  return `the service runs ${runs ?? 'the table in its plist'}, not ${resolve(given)}. To change it: angelia service install <routing.yaml>`;
-}
-
-/** The node and the script a written plist starts the daemon with. */
-export function plistProgram(plist: string): { node: string; entry: string } | undefined {
-  const args = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(plist)?.[1];
-  if (!args) return undefined;
-  const items = [...args.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => unesc(m[1]));
-  const i = items.indexOf('daemon');
-  return i >= 2 ? { node: items[i - 2], entry: items[i - 1] } : undefined;
-}
-
-/** The instance a written plist belongs to. */
-export function plistStateDir(plist: string): string | undefined {
-  const m = /<key>ANGELIA_STATE_DIR<\/key><string>([^<]*)<\/string>/.exec(plist);
-  return m ? unesc(m[1]) : undefined;
+  return `the service runs ${runs ?? `the table in its ${file}`}, not ${resolve(given)}. To change it: angelia service install <routing.yaml>`;
 }
 
 /** A service exists for this instance. One plist per user, so it belongs to the instance whose
  *  state folder it names; another instance on the same account (a test, a second setup) must never
  *  stop or start it. */
 export function serviceInstalled(home = homedir(), stateDir = STATE_DIR): boolean {
-  if (process.platform !== 'darwin') return false;
-  try { return plistStateDir(readFileSync(plistPath(home), 'utf8')) === resolve(stateDir); } catch { return false; }
+  const theirs = readService(home)?.stateDir;
+  return theirs !== undefined && theirs === resolve(stateDir);
 }
 
 export function serviceLoaded(): boolean {
-  return process.platform === 'darwin' && launchctl(['print', `${domain()}/${LABEL}`]).code === 0;
+  return backend()?.loaded() ?? false;
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** Stop the service's daemon and forget the job; it comes back only with serviceStart. */
+export function serviceStop(): void {
+  backend()?.stop();
 }
 
-/** Stop the service's daemon and forget the job; it comes back only with serviceStart.
- *  bootout returns while launchd is still removing a job whose daemon runs, and a bootstrap in that
- *  window fails (5: Input/output error), so wait until the job is gone: up to 25 s, past launchd's
- *  20 s ExitTimeOut, after which it has killed the daemon. */
-export function serviceStop(run = launchctl, sleep = sleepSync): void {
-  const job = `${domain()}/${LABEL}`;
-  if (run(['print', job]).code !== 0) return;
-  run(['bootout', job]);
-  for (let i = 0; i < 100; i++) {
-    if (run(['print', job]).code !== 0) return;
-    sleep(250);
-  }
-  throw new Error(`launchd still holds ${LABEL} 25s after bootout, so a start now would fail. Try again in a moment.`);
-}
-
-/** Load the job from the plist on disk (so a rewritten plist takes effect), and start the daemon.
- *  RunAtLoad alone does not start it: measured on macOS 26.5, a job bootstrapped into a running
- *  login session is left "pended nondemand spawn = speculative" and runs only at the next login.
- *  kickstart starts it now; on a daemon already running it does nothing. */
-export function serviceStart(home = homedir(), run = launchctl): void {
-  const job = `${domain()}/${LABEL}`;
-  const r = run(['bootstrap', domain(), plistPath(home)]);
-  if (r.code !== 0 && run(['print', job]).code !== 0) throw new Error(`launchctl bootstrap failed: ${r.out || `exit ${r.code}`}`);
-  const k = run(['kickstart', job]);
-  if (k.code !== 0) throw new Error(`launchctl kickstart failed: ${k.out || `exit ${k.code}`}`);
+/** Load the service from the file on disk (so a rewritten file takes effect), and start the daemon. */
+export function serviceStart(home = homedir()): void {
+  backend()?.start(home);
 }
 
 function readPid(): number {
@@ -195,11 +126,15 @@ function readPid(): number {
 
 export async function serviceCommand(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
-  if (process.platform !== 'darwin') throw new Error('angelia service is macOS only for now (launchd). On Linux, run angelia daemon under systemd or your own supervisor.');
+  const svc = backend();
+  if (!svc) throw new Error('angelia service supports macOS (launchd) and Linux (systemd --user). Here, run angelia daemon under your own supervisor.');
   const force = rest.includes('--force');
   const args = rest.filter((a) => a !== '--force');
   switch (sub) {
     case 'install': {
+      if (svc.name === 'systemd' && !systemdAvailable()) {
+        throw new Error('angelia service needs systemd --user here (systemctl --user does not answer). Run angelia daemon under your own supervisor.');
+      }
       const other = force ? undefined : otherInstance();
       if (other) throw new Error(other);
       const config = resolve(configPath(args[0]));
@@ -208,21 +143,29 @@ export async function serviceCommand(argv: string[]): Promise<void> {
       const cfg = effectiveTable(loadConfig(config), STATE_DIR).cfg;
       const bins = pathWithBins(cfg);
       const extra = [...bins.path.split(delimiter), dirname(process.execPath)];
-      const plist = buildPlist({
+      const text = svc.render({
         node: stableNode(), entry: entry(), config, stateDir: STATE_DIR,
         path: servicePath(process.env, extra), home: homedir(), lang: process.env.LANG,
       });
-      mkdirSync(dirname(plistPath()), { recursive: true });
-      writeFileSync(plistPath(), plist, { mode: 0o644 });
-      console.log(`wrote ${plistPath()}`);
+      mkdirSync(dirname(svc.filePath()), { recursive: true });
+      writeFileSync(svc.filePath(), text, { mode: 0o644 });
+      console.log(`wrote ${svc.filePath()}`);
       const pid = readPid();
       if (serviceLoaded()) {
-        console.log('The service is already loaded. The new plist takes effect at the next angelia restart (or /restart from a chat).');
+        console.log(svc.name === 'systemd'
+          ? 'The service is already loaded. The new unit takes effect at the next angelia restart (or /restart from a chat).'
+          : 'The service is already loaded. The new plist takes effect at the next angelia restart (or /restart from a chat).');
       } else if (isDaemonPid(pid)) {
+        // Enabled now, started at the handover: a unit never enabled would not start at boot.
+        if (svc.name === 'systemd') systemdEnable();
         console.log(`A daemon started by hand is running (pid ${pid}). angelia restart, or /restart from a chat, moves it onto the service.`);
       } else {
         serviceStart();
-        console.log('Service loaded: the daemon starts now and at every login.');
+        console.log(`Service loaded: the daemon starts now and at every ${svc.name === 'systemd' ? 'boot' : 'login'}.`);
+      }
+      if (svc.name === 'systemd') {
+        const advice = linger(userInfo().username);
+        if (advice) console.log(advice);
       }
       break;
     }
@@ -233,13 +176,14 @@ export async function serviceCommand(argv: string[]): Promise<void> {
       const other = force ? undefined : otherInstance();
       if (other) throw new Error(other);
       serviceStop();
-      if (existsSync(plistPath())) unlinkSync(plistPath());
+      svc.remove();
       console.log('Service removed. The daemon is stopped; start it by hand with angelia daemon, or install the service again.');
       break;
     }
     case 'status': {
       const pid = readPid();
-      console.log(`plist   ${serviceInstalled() ? plistPath() : 'not installed'}`);
+      // The first word stays `plist` on macOS, as before the systemd backend: scripts parse this output.
+      console.log(`${svc.name === 'launchd' ? 'plist ' : 'unit  '}  ${serviceInstalled() ? svc.filePath() : 'not installed'}`);
       console.log(`loaded  ${serviceLoaded() ? 'yes' : 'no'}`);
       console.log(`daemon  ${isDaemonPid(pid) ? `pid ${pid}` : 'not running'}`);
       break;

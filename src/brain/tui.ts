@@ -77,13 +77,13 @@ export function tmuxVersion(): string | null {
  * rest into the CLI. Angelia strips control characters from every message (cleanText), so this is a
  * warning and not a refusal; the upgrade closes whatever tmux itself might still let through.
  */
-export function tmuxWarnings(profiles: Record<string, Profile>, version: string | null = tmuxVersion()): string[] {
+export function tmuxWarnings(profiles: Record<string, Profile>, version: string | null = tmuxVersion(), platform: NodeJS.Platform = process.platform): string[] {
   const tui = Object.entries(profiles).filter(([, p]) => p.tui && p.backend === 'claude-code').map(([n]) => n);
   if (!tui.length) return [];
   if (version === null) return [`tui: true in ${tui.join(', ')}, and tmux is not installed: those chats cannot start. brew install tmux`];
   const m = /(\d+)\.(\d+)/.exec(version);
   if (!m || Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2]) >= 7)) return [];
-  return [`tui: true in ${tui.join(', ')}, and ${version} is older than 3.7, which is the first to clean pasted text. Angelia strips control characters from messages, but upgrade: brew upgrade tmux, then tmux -L angelia kill-server when the chats are quiet (every pane resumes on its next message)`];
+  return [`tui: true in ${tui.join(', ')}, and ${version} is older than 3.7, which is the first to clean pasted text. Angelia strips control characters from messages, but upgrade: ${platform === 'darwin' ? 'brew upgrade tmux' : 'upgrade tmux to 3.7+'}, then tmux -L angelia kill-server when the chats are quiet (every pane resumes on its next message)`];
 }
 
 /** The start of the reason a pane gives when it died before its first prompt. */
@@ -219,8 +219,8 @@ export class TuiBrain extends EventEmitter implements Brain {
 
   /** Every tmux call runs with the server's environment, never the agent's: the first call starts the
    *  server, and every profile's panes inherit what it started with. */
-  private tm(args: string[]) {
-    return tmux(args, { env: this.opts.hostEnv ?? childEnv(process.env) });
+  private tm(args: string[], o: { scope?: boolean } = {}) {
+    return tmux(args, { env: this.opts.hostEnv ?? childEnv(process.env), ...o });
   }
 
   /** The launch, plus what decides the agent's environment and permissions: a change in any of them
@@ -292,7 +292,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const argv = this.argv(resume);
     // remain-on-exit off in the same call: the server reads the user's ~/.tmux.conf, and a dead pane
     // left on screen would pass for a live session, so a turn would wait on it for ever.
-    const r = await this.tm(['new-session', '-d', '-s', this.name, '-c', this.profile.cwd, '-x', '220', '-y', '50', ...pinned, ...wrap, 'env', ...unset, ...argv, ';', 'set-option', '-w', '-t', this.name, 'remain-on-exit', 'off']);
+    const r = await this.tm(['new-session', '-d', '-s', this.name, '-c', this.profile.cwd, '-x', '220', '-y', '50', ...pinned, ...wrap, 'env', ...unset, ...argv, ';', 'set-option', '-w', '-t', this.name, 'remain-on-exit', 'off'], { scope: true });
     if (r.code !== 0) { rmSync(this.envPath, { force: true }); return `tmux could not start the session: ${r.err.trim() || 'new-session failed'}`; }
     writeFileSync(this.launchPath, this.fingerprint(resume));
     this.up = true;

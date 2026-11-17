@@ -606,3 +606,14 @@ test('_shared and _capabilities are read-only for every profile but one with sha
   assert.ok(profileFloor(cfg, 'p', state, home).some((r) => r.includes('_capabilities')), 'pi too');
   assert.deepEqual(codexFilesystem(profileFloor(cfg, 'x', state, home), [], home).skipped, [], "and Codex's sandbox");
 });
+
+test('the deny floor covers Linux credential stores and both service folders', async () => {
+  const { credentialRules } = await import('../src/capabilities/compile.js');
+  const { Config } = await import('../src/instance/config/schema.js');
+  const home = '/Users/example';
+  const cfg = Config.parse({ profiles: { plain: { cwd: join(home, 'p') } }, routes: [] });
+  const deny = credentialRules(cfg.profiles.plain, home, {});
+  assert.ok(deny.includes(pathRule('Read', join(home, '.claude/.credentials.json'), 'claude-code', home)));
+  for (const d of ['.config/systemd/user', 'Library/LaunchAgents', '.local/share/keyrings', '.config/google-chrome', '.config/chromium', '.mozilla'])
+    for (const tool of ['Read', 'Edit'] as const) assert.ok(deny.includes(pathRule(tool, `${join(home, d)}/**`, 'claude-code', home)), `${tool} ${d}`);
+});

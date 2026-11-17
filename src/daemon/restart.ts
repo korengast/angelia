@@ -1,14 +1,15 @@
 import { isDaemonPid, pidAlive } from './pid.js';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { STATE_DIR } from './daemon.js';
 import { SESSION_ENV } from '../core/env.js';
-import { entry, plistConfig, plistPath, serviceInstalled, serviceLoaded, serviceStart, serviceStop, tableMismatch } from './service.js';
+import { backend, entry, readService, serviceInstalled, serviceLoaded, serviceStart, serviceStop, tableMismatch, type ServiceProgram } from './service.js';
 import { configPath } from '../instance/instance.js';
 import { loadConfig } from '../instance/config/load.js';
 import { effectiveTable } from '../instance/accepted.js';
+import { inServiceCgroup } from './systemd.js';
 
 /**
  * Stop the running daemon and start a new one in its OWN session.
@@ -57,12 +58,12 @@ async function restart(argv: string[]): Promise<void> {
     }
   }
 
-  const plist = serviceInstalled() ? readFileSync(plistPath(), 'utf8') : undefined;
-  if (plist !== undefined) {
-    const mismatch = tableMismatch(rest[0], plist, fromDaemon);
+  const prog = serviceInstalled() ? readService() : undefined;
+  if (prog !== undefined) {
+    const mismatch = tableMismatch(rest[0], prog, fromDaemon);
     if (mismatch) throw new Error(mismatch);
   }
-  const config = startTable(rest[0], plist, lastConfig());
+  const config = startTable(rest[0], prog, lastConfig());
   // Loaded here, by the code the new daemon will run, before anything is stopped. The check behind
   // /restart runs in the old daemon, with the old code: after `angelia update` a table that one
   // accepts can fail in the new one, and the daemon would be stopped for a start that cannot work.
@@ -81,7 +82,7 @@ async function restart(argv: string[]): Promise<void> {
   // Under launchd the service owns the daemon: stop the job, then load it again from the plist on
   // disk, so a rewritten plist takes effect. A daemon still started by hand is stopped first, which
   // is how `angelia service install` hands over to the service.
-  if (plist !== undefined) {
+  if (prog !== undefined) {
     serviceStop();
     if (running) signal(running);
     for (let i = 0; i < 80 && running && pidAlive(running); i++) await wait(250);
@@ -90,7 +91,7 @@ async function restart(argv: string[]): Promise<void> {
     serviceStart();
     for (let i = 0; i < 60; i++) {
       const now = readPid(pidFile);
-      if (now && now !== old && pidAlive(now) && serviceLoaded()) { console.log(`angelia is up under launchd, pid ${now}`); return; }
+      if (now && now !== old && pidAlive(now) && serviceLoaded()) { console.log(`angelia is up under ${backend()!.name}, pid ${now}`); return; }
       await wait(250);
     }
     throw new Error(`the service did not bring the daemon up within 15s. Last lines are in ${join(STATE_DIR, 'daemon.out')}`);
@@ -136,17 +137,57 @@ const NOTE_TTL_MS = 10 * 60_000;
  * So the restart runs in its own session (detached: setsid), and survives its parent's exit. The
  * caller has already checked the routing table; a table that does not load never gets this far.
  */
-export function launchChatRestart(key: string, configPath: string, onFail: (why: string) => void, stateDir = STATE_DIR): void {
+export function launchChatRestart(key: string, configPath: string, onFail: (why: string) => void, stateDir = STATE_DIR, viaSystemd = inServiceCgroup() && serviceInstalled()): void {
   writeFileSync(join(stateDir, RESTART_NOTE), JSON.stringify({ key, at: new Date().toISOString() }));
   try { unlinkSync(join(stateDir, RESTART_ERROR)); } catch {}
-  const out = openSync(join(stateDir, 'daemon.out'), 'a');
   const env = { ...process.env };
   for (const k of SESSION_ENV) delete env[k];
-  const child = spawn(process.execPath, [entry(), 'restart', '--from-daemon', configPath], {
-    cwd: stateDir, env, detached: true, stdio: ['ignore', out, out],
+  const detached = (): ChildProcess => {
+    // Opened here and closed once the child holds its own copy: the systemd path never needs it, and every
+    // /restart must not leave one more descriptor open in the daemon.
+    const out = openSync(join(stateDir, 'daemon.out'), 'a');
+    let child: ChildProcess;
+    try {
+      child = spawn(process.execPath, [entry(), 'restart', '--from-daemon', configPath], {
+        cwd: stateDir, env, detached: true, stdio: ['ignore', out, out],
+      });
+    } finally { closeSync(out); }
+    watchChatRestart(child, onFail, stateDir);
+    child.unref();
+    return child;
+  };
+  // Only the service's own daemon: one started by hand from an agent's shell is in that shell's scope,
+  // and a restarter unit would kill the detached daemon it starts when that scope ends.
+  if (!viaSystemd) { detached(); return; }
+  // Under systemd the service's KillMode kills every process it started, setsid or not, so the
+  // restarter is a transient unit of its own. --wait: the client exits with the restart's own code,
+  // so a failed restart still reaches the chat; a successful one kills the client with the daemon.
+  const child = spawn('systemd-run', restartUnitArgv({ node: process.execPath, entry: entry(), config: configPath, stateDir, env }), { stdio: 'ignore' });
+  // No fallback to the detached spawn here: inside the service's cgroup that restarter would be killed by its own
+  // `systemctl stop`, and Restart=on-failure does not start a unit after a stop, so the daemon would stay down.
+  // Failing keeps this daemon up and tells the chat why.
+  child.once('error', (e: NodeJS.ErrnoException) => {
+    try { unlinkSync(join(stateDir, RESTART_NOTE)); } catch {}
+    onFail(e.code === 'ENOENT'
+      ? 'systemd-run not found: a restart from inside the service would stop the daemon for good, so it keeps running. Run angelia restart from your own shell'
+      : `could not start the restart: ${e.message}`);
   });
-  watchChatRestart(child, onFail, stateDir);
-  child.unref();
+  watchChatRestart(child, onFail, stateDir, { signalIsSuccess: true });
+}
+
+/** The `systemd-run` argv that runs `angelia restart --from-daemon` as its own transient unit, outside
+ *  the daemon's cgroup. Output goes to daemon.out as the service's does (verbatim: `systemd-run -p` stores it
+ *  as given, so `%` is not doubled as in the unit file), and only the variables the restarter needs are carried: the new
+ *  daemon reads ~/.angelia/env itself, and nothing secret belongs on a command line. systemd-run expands `$VAR`
+ *  in the arguments of the command it runs, so `$` is doubled in those words (not in the program path, which is never
+ *  expanded); `-p` and `--setenv` values are taken as given. */
+export function restartUnitArgv(o: { node: string; entry: string; config: string; stateDir: string; env: NodeJS.ProcessEnv; now?: number }): string[] {
+  const log = `append:${o.stateDir}/daemon.out`;
+  const setenv = ['PATH', 'HOME', 'LANG', 'ANGELIA_STATE_DIR', 'XDG_RUNTIME_DIR'].flatMap((k) => (o.env[k] ? [`--setenv=${k}=${o.env[k]}`] : []));
+  return ['--user', '--wait', '--collect', '--quiet', `--unit=angelia-restart-${o.now ?? Date.now()}`,
+    '-p', `StandardOutput=${log}`, '-p', `StandardError=${log}`, `--working-directory=${o.stateDir}`, ...setenv,
+    // argv[0] is still $-expanded at exec; only the program path is not. Cosmetic: the ps name, a journal 'unset variable' line.
+    o.node, ...[o.entry, 'restart', '--from-daemon', o.config].map((w) => w.replace(/\$/g, '$$$$'))];
 }
 
 /**
@@ -155,9 +196,11 @@ export function launchChatRestart(key: string, configPath: string, onFail: (why:
  * still the one running and the chat that asked must hear it, not wait for a "back up" that never
  * comes. The note is dropped too, so a later start does not announce a restart nobody finished.
  */
-export function watchChatRestart(child: Pick<ChildProcess, 'once'>, onFail: (why: string) => void, stateDir = STATE_DIR): void {
+export function watchChatRestart(child: Pick<ChildProcess, 'once'>, onFail: (why: string) => void, stateDir = STATE_DIR, o: { signalIsSuccess?: boolean } = {}): void {
   child.once('exit', (code: number | null, signal: string | null) => {
-    if (code === 0) return;
+    // Under systemd the `systemd-run --wait` client is in this daemon's cgroup: a good restart stops the
+    // service and the client dies by signal, while a failed one leaves the daemon up and exits non-zero.
+    if (code === 0 || (o.signalIsSuccess && code === null)) return;
     let why = '';
     try { why = readFileSync(join(stateDir, RESTART_ERROR), 'utf8').trim(); unlinkSync(join(stateDir, RESTART_ERROR)); } catch {}
     try { unlinkSync(join(stateDir, RESTART_NOTE)); } catch {}
@@ -187,8 +230,8 @@ function readPid(path: string): number {
  * daemon started by hand gets the table given, else the one the running daemon uses; it is spawned
  * in the state folder, so a relative path is resolved here, once.
  */
-export function startTable(given: string | undefined, plist: string | undefined, last: string | undefined): string {
-  return resolve(configPath((plist !== undefined ? plistConfig(plist) : undefined) ?? given ?? last));
+export function startTable(given: string | undefined, prog: ServiceProgram | undefined, last: string | undefined): string {
+  return resolve(configPath(prog?.config ?? given ?? last));
 }
 
 function lastConfig(): string | undefined {

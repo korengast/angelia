@@ -26,7 +26,7 @@ import { onboardChat } from '../instance/onboard.js';
 import { apiDeps } from './api/deps.js';
 import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
 import { nodeAdvice, nodeFixProblem } from './node-fix.js';
-import { LABEL } from './service.js';
+import { backend } from './service.js';
 import { redactLog } from './redact.js';
 import type { Inbound } from '../core/types.js';
 
@@ -302,10 +302,10 @@ export async function runDaemon(configPath: string): Promise<void> {
   // WhatsApp paired and not connected for two windows, its own reopen included (adapter.ts, check()).
   // Under launchd: the same stop a restart does (orch.shutdown ends every running print turn, on every
   // platform, as SIGTERM does), then a non-zero exit, which the service's KeepAlive answers with a fresh
-  // process (service.ts). Started by hand, or on Linux, nothing would start a fresh one: the line says
-  // so, and the adapter goes on opening again by itself.
+  // process (service.ts); under the systemd unit, Restart=on-failure does the same. Started by hand,
+  // nothing would start a fresh one: the line says so, and the adapter goes on opening again by itself.
   waAdapter?.on('dead', () => {
-    const service = process.ppid === 1 && process.env.XPC_SERVICE_NAME === LABEL;
+    const service = backend()?.startedByService() ?? false;
     if (service) { logLine('whatsapp: still not connected; exiting so the service starts a fresh process'); void shutdown('whatsapp dead', 1); }
     else logLine('whatsapp: still not connected; restart the daemon');
   });
@@ -322,7 +322,7 @@ export async function runDaemon(configPath: string): Promise<void> {
  *  plist written again. Without the service there is no plist to point anywhere, so nothing. process.execPath
  *  is no use here: it is always the real binary, a versioned folder even when the plist names a link
  *  that follows upgrades, and `angelia restart` spawns that same binary. */
-export function nodeStart(argv0 = process.argv0, service = process.ppid === 1 && process.env.XPC_SERVICE_NAME === LABEL): string | undefined {
+export function nodeStart(argv0 = process.argv0, service = backend()?.startedByService() ?? false): string | undefined {
   return service && isAbsolute(argv0) ? argv0 : undefined;
 }
 

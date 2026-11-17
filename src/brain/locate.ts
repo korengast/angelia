@@ -12,7 +12,7 @@ export const DEFAULT_BIN: Record<BackendName, string> = { 'claude-code': 'claude
  *  ~/.local/bin, every tmux pane ran `claude`, found nothing and died, and the chat heard only
  *  "the agent exited while starting". */
 export function fallbackDirs(home = homedir()): string[] {
-  return [join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', join(home, '.bun', 'bin'), join(home, '.npm-global', 'bin')];
+  return [join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', join(home, '.bun', 'bin'), join(home, '.npm-global', 'bin'), '/usr/bin'];
 }
 
 function executable(path: string): boolean {

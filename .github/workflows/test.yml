@@ -1,5 +1,4 @@
-# The suite as it runs on the developer's Mac: tmux, launchd guards and the system voice are all
-# part of it, so the job runs on macOS. Nothing here touches a real instance; every test builds its
+# The suite runs on macOS and Ubuntu; the launchd and `say` tests skip off macOS. Nothing here touches a real instance; every test builds its
 # own state directory under a temp folder.
 name: test
 on:
@@ -11,7 +10,11 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
     timeout-minutes: 20
     steps:
       # Actions pinned to a commit, not a tag that can be moved. Bump by hand.
@@ -22,9 +25,15 @@ jobs:
         with:
           node-version: 22.23.4
           cache: npm
-      - run: brew install tmux
+      - if: runner.os == 'macOS'
+        run: brew install tmux
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
       # As install.sh and update do it: no dependency runs an install script; our own build runs by name.
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run lint
+      # On ubuntu, systemd-analyze verifies a rendered unit (tests/systemd.test.ts): quoting checked by systemd itself.
       - run: npm test
+        env:
+          ANGELIA_SYSTEMD_VERIFY: ${{ runner.os == 'Linux' && '1' || '' }}

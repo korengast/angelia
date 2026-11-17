@@ -7,7 +7,7 @@ import { loadConfig, expandHome } from './config/load.js';
 import type { Config } from './config/schema.js';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { INSTANCE_DIR, buildSkeleton, initRepo, isRepo, profilesDir, workspaceDir } from './instance.js';
+import { INSTANCE_DIR, buildSkeleton, commitFlags, initRepo, isRepo, profilesDir, workspaceDir } from './instance.js';
 import { backupConfig, instructionFile } from './init.js';
 import { builtinVoiceTools } from '../voice/setup.js';
 import { planProfile } from '../capabilities/compile.js';
@@ -140,7 +140,7 @@ async function commitProfile(ws: string, name: string): Promise<string> {
   const git = async (args: string[]) => (await run('git', args, { cwd: ws, encoding: 'utf8', timeout: 20_000 })).stdout;
   try {
     await git(['add', '--', join('profiles', name)]);
-    await git(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', `Onboard ${name}`, '--', join('profiles', name)]);
+    await git([...commitFlags(ws), 'commit', '-q', '-m', `Onboard ${name}`, '--', join('profiles', name)]);
     if (!(await git(['remote'])).trim()) return 'committed';
     try { await git(['push', '-q', 'origin', 'HEAD']); return 'committed and pushed'; }
     catch (e) { return `committed, not pushed: ${firstLine(e)}`; }

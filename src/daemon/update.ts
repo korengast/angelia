@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STATE_DIR } from './daemon.js';
-import { plistPath, plistProgram, serviceInstalled } from './service.js';
+import { readService, serviceInstalled, type ServiceProgram } from './service.js';
 import { nodeAdvice, nodeFixProblem } from './node-fix.js';
 
 /**
@@ -42,8 +42,7 @@ export function packageOf(script: string): string | undefined {
  * Node installs (nvm and Homebrew, say) `npm i -g` goes to whichever npm comes first on PATH, while
  * launchd starts the one written in its plist: the update then lands where nothing runs it.
  */
-export function serviceMismatch(updated: string, plist: string): string | undefined {
-  const prog = plistProgram(plist);
+export function serviceMismatch(updated: string, prog: ServiceProgram | undefined): string | undefined {
   if (!prog) return undefined;
   if (!existsSync(prog.entry)) return `The service starts ${prog.entry}, which no longer exists, so it cannot run any copy. Write it again: angelia service install <routing.yaml>`;
   const runs = packageOf(prog.entry);
@@ -58,13 +57,12 @@ export function serviceMismatch(updated: string, plist: string): string | undefi
  * it has the fix. That one, not the Node this update runs on, is the one under the daemon: a shell
  * can have a fixed Node first on PATH while launchd still starts an older one by its own path.
  */
-export function serviceNodeProblem(plist: string): string | undefined {
-  const prog = plistProgram(plist);
+export function serviceNodeProblem(prog: ServiceProgram | undefined): string | undefined {
   if (!prog) return undefined;
   const r = spawnSync(prog.node, ['-p', 'process.versions.node'], { encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL',
     // This update's NODE_OPTIONS can carry flags an older Node does not know, and it would fail for that.
     env: { ...process.env, NODE_OPTIONS: '' } });
-  if (r.status !== 0) return `The service starts the Node ${prog.node}, which did not run (${r.error?.message ?? (r.stderr || `exit ${r.status}`).trim()}). Write the plist again: angelia service install <routing.yaml>`;
+  if (r.status !== 0) return `The service starts the Node ${prog.node}, which did not run (${r.error?.message ?? (r.stderr || `exit ${r.status}`).trim()}). Write the service file again: angelia service install <routing.yaml>`;
   const open = nodeFixProblem(r.stdout.trim(), prog.node);
   return open && `The service's ${open}: ${nodeAdvice(prog.node)}`;
 }
@@ -242,11 +240,10 @@ export async function updateCommand(argv: string[]): Promise<void> {
     console.log(`Updated to ${target.tag ? `${target.tag} (${target.commit.slice(0, 7)})` : target.commit.slice(0, 7)}. The instance (${STATE_DIR}) was not touched.`);
     console.log('The running daemon still has the old code: send /restart in a chat, or run angelia restart.');
     if (serviceInstalled()) {
-      let plist = '';
-      try { plist = readFileSync(plistPath(), 'utf8'); } catch { /* no plist to compare with */ }
-      const off = plist && serviceMismatch(join(globalRoot, name), plist);
+      const prog = readService(); // undefined: no service file to compare with
+      const off = prog && serviceMismatch(join(globalRoot, name), prog);
       if (off) console.log(`Warning: ${off}`);
-      const node = plist && serviceNodeProblem(plist);
+      const node = prog && serviceNodeProblem(prog);
       if (node) console.log(`Warning: ${node}.`);
     }
   } finally {

@@ -211,11 +211,13 @@ test('tmux older than 3.7 is a warning for tui profiles, never a refusal; missin
   const { tmuxWarnings } = await import('../src/brain/tui.js');
   const { Config } = await import('../src/instance/config/schema.js');
   const profiles = Config.parse({ profiles: { a: { cwd: '/tmp/a', tui: true }, b: { cwd: '/tmp/b' } }, routes: [] }).profiles;
-  assert.match(tmuxWarnings(profiles, 'tmux 3.6a').join(), /tui: true in a, and tmux 3\.6a is older than 3\.7.*brew upgrade tmux/);
+  assert.match(tmuxWarnings(profiles, 'tmux 3.6a', 'darwin').join(), /tui: true in a, and tmux 3\.6a is older than 3\.7.*brew upgrade tmux/);
   assert.deepEqual(tmuxWarnings(profiles, 'tmux 3.7c'), []);
   assert.deepEqual(tmuxWarnings(profiles, 'tmux next-3.8'), []);
   assert.deepEqual(tmuxWarnings(profiles, 'tmux 4.0'), []);
   assert.match(tmuxWarnings(profiles, null).join(), /tmux is not installed/);
+  const linux = tmuxWarnings(profiles, 'tmux 3.4', 'linux').join();
+  assert.match(linux, /upgrade tmux to 3\.7\+/); assert.doesNotMatch(linux, /brew/);
   assert.deepEqual(tmuxWarnings({ b: profiles.b }, 'tmux 2.9'), [], 'no tui profile, nothing to say');
 });
 

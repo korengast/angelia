@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
-import { cliWarnings, locateBin, pathWithBins } from '../src/brain/locate.js';
+import { cliWarnings, fallbackDirs, locateBin, pathWithBins } from '../src/brain/locate.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
 import type { Inbound } from '../src/core/types.js';
 
@@ -67,4 +67,8 @@ test('a chat whose CLI is missing hears so plainly, and nothing is spawned', asy
   assert.match(sent[0], /no-such-claude\) is not installed where Angelia can find it/);
   assert.ok(logs.some((l) => /turn failed key=telegram:1 reason=.*no-such-claude not found/.test(l)));
   assert.equal(o.status().filter((s) => s.alive).length, 0);
+});
+
+test('the fallback folders end with /usr/bin, where Linux packages put the CLIs', () => {
+  assert.equal(fallbackDirs('/h').at(-1), '/usr/bin');
 });

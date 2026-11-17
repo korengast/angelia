@@ -1,0 +1,130 @@
+import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import assert from 'node:assert/strict';
+import { systemd, systemdStart, systemdEnable, systemdStop, systemdAvailable, inServiceCgroup, UNIT, type Run } from '../src/daemon/systemd.js';
+import { backend, tableMismatch } from '../src/daemon/service.js';
+
+test('render → read round-trips every path exactly', () => {
+  for (const p of ['/home/example/My Files/x', '/srv/50%/a', '/a/$HOME/b', '/a/"q"/b', '/a/b\\c', '/א/ב']) {
+    const i = { node: `${p}/node`, entry: `${p}/cli.js`, config: `${p}/routing.yaml`, stateDir: `${p}/state`, path: '/usr/bin:/bin', home: '/home/example', lang: 'C.UTF-8' };
+    assert.deepEqual(systemd.read(systemd.render(i)), { node: i.node, entry: i.entry, config: i.config, stateDir: i.stateDir });
+  }
+});
+
+test('the unit: quoted ExecStart, escaped %, $ and quotes, restart policy, output to daemon.out, no secret', () => {
+  const u = systemd.render({ node: '/n', entry: '/e', config: '/c/50%/r.yaml', stateDir: '/s', path: '/usr/bin', home: '/h' });
+  assert.match(u, /^ExecStart="\/n" "\/e" "daemon" "\/c\/50%%\/r\.yaml"$/m);
+  assert.match(u, /^Restart=on-failure$/m); assert.match(u, /^RestartSec=10$/m);
+  assert.match(u, /^TimeoutStopSec=20$/m, 'as launchd\'s ExitTimeOut: a stop never blocks for 90 s');
+  assert.match(u, /^StandardOutput=append:\/s\/daemon\.out$/m); assert.match(u, /^WantedBy=default\.target$/m);
+  assert.doesNotMatch(u, /TOKEN/);
+  const q = systemd.render({ node: '/n', entry: '/a/$HOME/"q"/b\\c', config: '/c', stateDir: '/s', path: '/p', home: '/h' });
+  assert.match(q, /^ExecStart="\/n" "\/a\/\$\$HOME\/\\"q\\"\/b\\\\c" "daemon" "\/c"$/m);
+  assert.match(q, /^Environment="PATH=\/p" "HOME=\/h" "ANGELIA_STATE_DIR=\/s"$/m);
+});
+
+test('a newline in any path is refused, never rendered', () => {
+  const ok = { node: '/n', entry: '/e', config: '/c', stateDir: '/s', path: '/usr/bin', home: '/h' };
+  assert.throws(() => systemd.render({ ...ok, config: '/c\n[Service]' }), /newline/);
+  assert.throws(() => systemd.render({ ...ok, home: '/h\r' }), /newline/);
+});
+
+test('read: a unit without the angelia line, or with a broken one, is undefined', () => {
+  for (const t of ['', '# angelia: {', '# angelia: {"config":1}']) assert.equal(systemd.read(t), undefined);
+});
+
+const fake = (codes: Record<string, number[]> = {}, out = '') => {
+  const calls: string[][] = [];
+  const run: Run = (a) => { calls.push(a); const q = codes[a[0]]; return { code: q ? (q.length > 1 ? q.shift()! : q[0]) : 0, out: codes[a[0]] ? out : '' }; };
+  return { calls, run };
+};
+
+test("start reloads, enables and starts; a failure carries systemctl's words", () => {
+  const f = fake();
+  systemdStart(f.run);
+  assert.deepEqual(f.calls, [['daemon-reload'], ['enable', UNIT], ['start', UNIT]]);
+  assert.throws(() => systemdStart(fake({ start: [1] }, 'boom').run), /systemctl --user start failed: boom/);
+});
+
+test('stop waits until the unit is no longer active, and fails loudly after 25 s', () => {
+  const f = fake({ 'is-active': [0, 0, 3] });
+  const waits: number[] = [];
+  systemdStop(f.run, (ms) => waits.push(ms));
+  assert.deepEqual(f.calls[0], ['stop', UNIT]); assert.equal(waits.length, 2);
+  let total = 0;
+  assert.throws(() => systemdStop(fake({ 'is-active': [0] }).run, (ms) => { total += ms; }), /25s/);
+  assert.equal(total, 25000);
+});
+
+test('enable reloads and enables without starting: a unit written beside a hand-started daemon still starts at boot', () => {
+  const f = fake();
+  systemdEnable(f.run);
+  assert.deepEqual(f.calls, [['daemon-reload'], ['enable', UNIT]]);
+  assert.throws(() => systemdEnable(fake({ enable: [1] }, 'nope').run), /systemctl --user enable failed: nope/);
+});
+
+test('inServiceCgroup: only a process in angelia.service itself, on cgroup v2 and v1 alike', () => {
+  const unit = '/user.slice/user-1000.slice/user@1000.service/app.slice/angelia.service';
+  assert.equal(inServiceCgroup(() => `0::${unit}\n`), true);
+  assert.equal(inServiceCgroup(() => `12:pids:/user.slice\n1:name=systemd:${unit}\n0::/\n`), true);
+  assert.equal(inServiceCgroup(() => '0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r1234.scope\n'), false, 'a tmux scope or an agent shell started by hand');
+  assert.equal(inServiceCgroup(() => '0::/user.slice/user-1000.slice/user@1000.service/app.slice/angelia-restart-7.service\n'), false);
+  assert.equal(inServiceCgroup(() => '0::/user.slice/user-1000.slice/session-3.scope\n'), false);
+  assert.equal(inServiceCgroup(() => { throw Object.assign(new Error('no'), { code: 'ENOENT' }); }), false, 'no /proc: macOS');
+});
+
+test('availability, and the linux backend', () => {
+  assert.equal(systemdAvailable(fake().run), true);
+  assert.equal(systemdAvailable(fake({ 'show-environment': [1] }).run), false);
+  assert.equal(backend('linux'), systemd);
+});
+
+test('filePath is always ~/.config, whatever XDG_CONFIG_HOME says: the restarter, the user manager and the deny floor all look there', () => {
+  const was = process.env.XDG_CONFIG_HOME;
+  try {
+    process.env.XDG_CONFIG_HOME = '/x/cfg';
+    assert.equal(systemd.filePath('/h'), '/h/.config/systemd/user/angelia.service');
+    delete process.env.XDG_CONFIG_HOME;
+    assert.equal(systemd.filePath('/h'), '/h/.config/systemd/user/angelia.service');
+  } finally { if (was === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = was; }
+});
+
+test('$ is doubled in ExecStart arguments only; the program path and Environment keep it literal', () => {
+  const u = systemd.render({ node: '/n', entry: '/e', config: '/c/$y.yaml', stateDir: '/a/$x/state', path: '/p', home: '/h' });
+  assert.match(u, /^ExecStart=.*"\/c\/\$\$y\.yaml"$/m);
+  const n = systemd.render({ node: '/a/$x/node', entry: '/e/$z', config: '/c', stateDir: '/s', path: '/p', home: '/h' });
+  assert.match(n, /^ExecStart="\/a\/\$x\/node" "\/e\/\$\$z" /m, 'the program path is never expanded: no $$ there');
+  const env = /^Environment=.*$/m.exec(u)![0];
+  assert.ok(env.includes('"ANGELIA_STATE_DIR=/a/$x/state"'));
+  assert.ok(!env.includes('$$'));
+});
+
+test('tableMismatch names the unit on systemd and the plist on launchd', () => {
+  assert.match(tableMismatch('/h/other.yaml', undefined, false, 'unit') ?? '', /the table in its unit, not/);
+  assert.match(tableMismatch('/h/other.yaml', undefined, false, 'plist') ?? '', /the table in its plist, not/);
+});
+
+// The quoting is checked by systemd itself, not only by reading its sources: CI on ubuntu sets ANGELIA_SYSTEMD_VERIFY=1,
+// and there a missing systemd-analyze fails the test instead of skipping it. The folder name holds a space, `%h` and
+// `$HOME`: if either were expanded, ExecStart would name a node that does not exist and verify would say so.
+test('a rendered unit for a path with a space, % and $ passes systemd-analyze verify', { skip: process.env.ANGELIA_SYSTEMD_VERIFY ? false : 'set ANGELIA_SYSTEMD_VERIFY=1 where systemd-analyze exists (the ubuntu CI does)' }, () => {
+  const base = join(mkdtempSync(join(tmpdir(), 'angelia-unit-')), 'My Files 50%h $HOME');
+  mkdirSync(join(base, 'state'), { recursive: true });
+  symlinkSync(process.execPath, join(base, 'node'));
+  const unit = join(base, '..', UNIT);
+  writeFileSync(unit, systemd.render({ node: join(base, 'node'), entry: join(base, 'cli.js'), config: join(base, 'routing.yaml'), stateDir: join(base, 'state'), path: '/usr/bin:/bin', home: base, lang: 'C.UTF-8' }));
+  let r = spawnSync('systemd-analyze', ['--user', 'verify', unit], { encoding: 'utf8' });
+  assert.ok(!r.error, `systemd-analyze could not run: ${r.error?.message}`);
+  // --user loads the user manager's search paths and needs XDG_RUNTIME_DIR; a runner without a user session has none.
+  // The unit's own checks (quoting, specifiers, the ExecStart binary) are the same in system mode.
+  if (r.status !== 0 && /XDG_RUNTIME_DIR|user bus|Failed to (initialize|connect)/i.test(r.stderr)) {
+    console.log(`systemd-analyze --user verify unavailable here (${r.stderr.trim().split('\n')[0]}); verifying in system mode`);
+    r = spawnSync('systemd-analyze', ['verify', unit], { encoding: 'utf8' });
+  }
+  const mine = r.stderr.split('\n').filter((l) => l.includes(UNIT) || l.includes(base));
+  assert.equal(r.status, 0, `systemd-analyze verify failed:\n${r.stderr}`);
+  assert.deepEqual(mine, [], `systemd-analyze warned about the unit:\n${mine.join('\n')}`);
+});

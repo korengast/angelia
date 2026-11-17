@@ -37,10 +37,14 @@ export const STATE_PRIVATE = {
  *  from them (media.ts), with a few more folders of its own. */
 export const HOME_PRIVATE = {
   dirs: ['.ssh', '.aws', '.gnupg', '.config/gh', '.config/gcloud', '.docker', '.kube', '.password-store',
-    'Library/Keychains', 'Library/Cookies', 'Library/Messages', 'Library/Mail'],
+    'Library/Keychains', 'Library/Cookies', 'Library/Messages', 'Library/Mail',
+    '.local/share/keyrings', // Linux's Library/Keychains
+    '.config/google-chrome', '.config/chromium', '.mozilla', // Linux's Library/Cookies: the browsers' logins and cookies
+    '.config/systemd/user', 'Library/LaunchAgents'], // a unit or LaunchAgent written here outlives every sandbox
   files: ['.netrc', '.git-credentials', '.npmrc', '.pypirc', '.pgpass', '.vault-token', '.zsh_history', '.bash_history',
     // The logins pi, grok and Codex keep in plain text: an agent that reads one holds the owner's model account.
-    '.pi/agent/auth.json', '.grok/auth.json', '.codex/auth.json'],
+    '.pi/agent/auth.json', '.grok/auth.json', '.codex/auth.json',
+    '.claude/.credentials.json'], // Claude Code's login on Linux is this plain file
 };
 
 /** The daemon's API socket in the state folder (daemon/api/server.ts). */
@@ -190,7 +194,7 @@ export function initRepo(workspace: string, run = git): string {
   try {
     run(['init', '-q', '-b', 'main'], workspace);
     run(['add', '-A'], workspace);
-    run(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'Angelia workspace: initial skeleton'], workspace);
+    run([...commitFlags(workspace), 'commit', '-q', '-m', 'Angelia workspace: initial skeleton'], workspace);
     return 'git repo created, one commit';
   } catch (e) {
     return `not version controlled: ${(e as Error).message}`;
@@ -219,7 +223,7 @@ export function syncWorkspace(workspace = workspaceDir(), now = new Date(), run 
     if (still.length) { run(['reset', '-q'], workspace); throw new Error(`secret-shaped content still staged after the reset, nothing committed: ${still.join('; ')}`); }
   }
   const files = run(['diff', '--cached', '--name-only'], workspace).split('\n').filter(Boolean);
-  if (files.length) run(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', `Workspace sync ${now.toISOString().slice(0, 10)}: ${files.length} file${files.length > 1 ? 's' : ''}`], workspace);
+  if (files.length) run([...commitFlags(workspace), 'commit', '-q', '-m', `Workspace sync ${now.toISOString().slice(0, 10)}: ${files.length} file${files.length > 1 ? 's' : ''}`], workspace);
   const saved = files.length ? `saved ${files.length} file${files.length > 1 ? 's' : ''}` : '';
   const pushed = pushWorkspace(workspace, run);
   const said = pushed === 'no remote' ? saved && `${saved}, no remote to push to` : [saved, pushed].filter(Boolean).join(', ');
@@ -235,6 +239,16 @@ export function pushWorkspace(workspace: string, run = git): string {
   if (ahead === '0') return '';
   run(['push', '-q', '-u', 'origin', 'HEAD'], workspace);
   return 'pushed';
+}
+
+/** The flags every commit Angelia makes starts with. Git will not commit without a name and an email, and a fresh Linux
+ *  account has neither (no git config, an empty GECOS field: "empty ident name"), where macOS falls back to the account's.
+ *  So Angelia names itself then, and only then: an identity the owner set always wins. */
+export function commitFlags(cwd: string): string[] {
+  const set = (key: string): boolean => {
+    try { return execFileSync('git', ['config', key], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== ''; } catch { return false; }
+  };
+  return ['-c', 'commit.gpgsign=false', ...(set('user.name') ? [] : ['-c', 'user.name=Angelia']), ...(set('user.email') ? [] : ['-c', 'user.email=angelia@localhost'])];
 }
 
 export function git(args: string[], cwd: string): string {

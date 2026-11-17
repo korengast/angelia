@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { git, isRepo, pushWorkspace } from './instance.js';
+import { commitFlags, git, isRepo, pushWorkspace } from './instance.js';
 import { STAGED_DIFF, secretFindings } from './secrets.js';
 
 export { secretFindings } from './secrets.js';
@@ -58,7 +58,7 @@ export function commitWorkspace(o: CommitOptions): string {
     throw new Error(`nothing committed, the files are unstaged and unchanged.\n${failed.map((f) => `gate failed: ${f}`).join('\n')}`);
   }
 
-  run(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', o.message.trim()], ws);
+  run([...commitFlags(ws), 'commit', '-q', '-m', o.message.trim()], ws);
   const sha = run(['rev-parse', '--short', 'HEAD'], ws).trim();
   const done = `committed ${sha}: ${files.length} file${files.length > 1 ? 's' : ''}`;
   if (o.push === false) return done;
