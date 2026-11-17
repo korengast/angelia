@@ -24,82 +24,117 @@ Everything `angelia` can read, an agent with a shell can read too. On Linux ther
 
 ## 0. Create the server (Hetzner console)
 
-1. **Server.** Pick CX33 (4 vCPU, 8 GB) or CX43 (16 GB) if you will run builds. Use x86, not ARM (CAX): Chrome has no ARM build for Linux.
-   - Image: Ubuntu 24.04.
-   - Add your SSH public key at creation, so the server never has a root password.
-2. **Firewall.** Create a Hetzner firewall with one inbound rule: TCP 22 from your current IP only. You remove this rule in step 2. Leave outbound open.
-3. **Backups.** Optional. A backup or snapshot holds every secret on the box (Claude login, WhatsApp session, `gh` token), so treat it as sensitive.
+A new Hetzner account may have to pass a verification first, by credit card or ID document, before it can create a server. Turn on two-factor authentication for the account too: whoever gets into it controls the server.
+
+1. **Project.** Create a project for it (here `angelia`), so its firewall, keys and billing stay apart from anything else.
+2. **Firewall** (Firewalls → Create Firewall). One inbound rule: TCP 22 from your current IP only (`curl -s https://api.ipify.org`). You remove it in step 2. Leave outbound open.
+   - The form starts with TCP 22 and ICMP from any address. Remove both "Any" sources and the ICMP rule.
+   - In the source field, Enter confirms the address but can also submit the whole form. Check the rules on the firewall's page afterwards.
+3. **Server** (Servers → Add Server).
+   - **Type:** x86 only, not ARM: Chrome has no ARM build for Linux. Measured 2026-11-17: the cheaper Cost-Optimized (CX) line was out of stock. In the Regular Performance line, CPX22 (2 vCPU, 4 GB, 80 GB) was $19.49/mo and CPX32 (4 vCPU, 8 GB) $35.49. CPX12 (2 GB) is too small once the desktop and Chrome from step 6 run.
+   - **Size can only grow.** Rescaling to a smaller type fails once the disk is bigger, so start small.
+   - **Location:** Helsinki has no surcharge. Nuremberg and Falkenstein add $3.50 to $6.50/mo for about 10 ms less latency from the Middle East, which a chat bot does not notice.
+   - **Image:** Ubuntu 26.04 LTS (systemd 259, tmux 3.6). 24.04 works too.
+   - **The rest:** public IPv4 ($0.60/mo) and IPv6 on, your SSH public key added (then no root password is ever sent), the firewall from above selected.
+4. **Backups.** Optional. A backup or snapshot holds every secret on the box (Claude login, WhatsApp session, `gh` token), so treat it as sensitive.
 
 **Check:** `ssh root@<public-ip>` works with your key and asks for no password.
 
 ## 1. Base system (as root, once)
 
 ```bash
+export DEBIAN_FRONTEND=noninteractive
 apt update && apt full-upgrade -y
 apt install -y unattended-upgrades ufw git tmux jq curl ca-certificates
-dpkg-reconfigure -plow unattended-upgrades          # answer Yes
+echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | debconf-set-selections
+dpkg-reconfigure -f noninteractive unattended-upgrades
 timedatectl set-timezone Asia/Jerusalem             # yours; timers and logs follow it
 
-# Swap: 8 GB with several agents and an npm ci will otherwise stall the box
-fallocate -l 6G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+# Swap, the size of the RAM: several agents and an npm ci will otherwise stall the box
+fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
-# Your admin user, with your key
+# Your admin user, with your key, and sudo without a password
 adduser --disabled-password --gecos '' admin
 usermod -aG sudo admin
 install -d -m 700 -o admin -g admin ~admin/.ssh
 install -m 600 -o admin -g admin /root/.ssh/authorized_keys ~admin/.ssh/
-passwd admin                                        # sudo needs it; SSH will not accept it
+echo 'admin ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/90-admin && chmod 440 /etc/sudoers.d/90-admin && visudo -c
+```
 
+`admin` has no password at all. Getting in already takes your SSH key or your tailnet login, and nothing runs as `admin`. If you want sudo to ask for a password anyway, run `passwd admin` and drop the sudoers line.
+
+Test `admin` from a second terminal before you lock root out: `ssh admin@<public-ip> sudo -n true` must succeed. Then:
+
+```bash
 # SSH: keys only, no root
 cat > /etc/ssh/sshd_config.d/10-hardening.conf <<'EOF'
 PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 EOF
-systemctl reload ssh
+sshd -t && systemctl reload ssh
 ```
 
-**Check:** from a new terminal, `ssh admin@<public-ip>` works, `sudo -v` takes the password, and `ssh root@<public-ip>` is refused. Keep the root session open until this passes.
+**Check:**
+- `ssh admin@<public-ip> sudo -n true` works.
+- `ssh root@<public-ip>` says `Permission denied (publickey)`.
+- `sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication) '` prints `no` for both.
 
 ## 2. Tailscale, then close the door (as admin)
 
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --ssh --advertise-tags=tag:server
-```
+**On your laptop:** install Tailscale (`brew install --cask tailscale`, or the App Store) and sign in. Signing in the first time creates your tailnet.
 
-In the Tailscale admin console, before `tailscale up` (`--advertise-tags` needs the tag to exist):
-
-1. **Tag owner.** Add `tag:server` with you as its owner. A tagged node's key does not expire, so the server will not drop off the tailnet in 180 days.
-2. **Access rules.** Set them so you reach the server and the server reaches nothing. A tailnet allows everything by default, so a compromised server could open ports on your laptop:
+**In the admin console** (Access controls → JSON editor), replace the default policy. The default lets every device reach every other, so a compromised server could open ports on your laptop. Put in your laptop's Tailscale IP (`tailscale ip -4` on it):
 
 ```jsonc
-"grants": [
-  { "src": ["autogroup:member"], "dst": ["tag:server"], "ip": ["*"] }
-],
-"ssh": [
-  { "action": "check", "src": ["autogroup:member"], "dst": ["tag:server"], "users": ["admin", "angelia"] }
-]
+{
+	"tagOwners": {
+		"tag:server": ["autogroup:admin"],
+	},
+	"grants": [
+		// Your own devices, to each other (tagged servers are not part of autogroup:self).
+		{"src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"]},
+		// You, to the server. No rule has tag:server as src, so it starts no connection.
+		{"src": ["autogroup:member"], "dst": ["tag:server"], "ip": ["*"]},
+	],
+	"ssh": [
+		{"action": "check", "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["autogroup:nonroot", "root"]},
+	],
+	"tests": [
+		{"src": "tag:server", "deny": ["<laptop-tailscale-ip>:22"]},
+	],
+}
 ```
 
-No rule has `tag:server` as its `src`, so the server can start no connection to your devices.
+- **The tag must exist before the server joins.** `--advertise-tags` fails for a tag the policy does not name. A tagged node's key does not expire, so the server will not drop off the tailnet after 180 days.
+- **The `tests` block checks the policy on every save.** A policy that lets the server reach your laptop is refused.
+- **No Tailscale SSH for the server.** You reach it with plain `ssh` and your key, over its tailnet address. That keeps two locks, the tailnet and the key, and works for scripts. Tailscale SSH's `check` mode would ask for a browser login instead.
 
-Then close everything public:
+**On the server:**
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --advertise-tags=tag:server --hostname=angelia     # prints a login link: open it, Connect
+tailscale ip -4                                                       # the server's tailnet address
+```
+
+From here on, use `ssh admin@<tailnet-ip>`, or `ssh admin@angelia` with MagicDNS. Then close everything public:
 
 ```bash
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow in on tailscale0
-sudo ufw enable
+sudo ufw --force enable
 ```
 
-In the Hetzner console, delete the TCP 22 rule. The firewall now has no inbound rules.
+In the Hetzner console, delete the TCP 22 rule. The firewall now has no inbound rules; keep it attached as a second wall.
 
 **Check:**
-- `tailscale ssh admin@<server>` works from your laptop.
+- `ssh admin@<tailnet-ip>` works from your laptop.
 - `ssh admin@<public-ip>` times out.
-- On the server, `sudo ss -tulpn` lists nothing on `0.0.0.0` or `[::]` except `tailscaled` and `sshd`. `ufw` drops `sshd`'s port from outside, and Tailscale SSH does not use it.
+- On the server, `timeout 5 bash -c '</dev/tcp/<laptop-tailscale-ip>/22'` fails. `tailscale ping` still answers, since it is not a connection the policy governs.
+- `sudo ss -tulpn` shows only `tailscaled` and `sshd` on `0.0.0.0`/`[::]`. `ufw` drops `sshd`'s port from the internet.
 
 ## 3. The `angelia` user (as admin)
 
@@ -108,15 +143,15 @@ sudo adduser --disabled-password --gecos '' angelia     # no sudo, no password
 sudo chmod 700 ~angelia
 sudo loginctl enable-linger angelia                     # its units run at boot, with nobody logged in
 sudo -l -U angelia                                      # must say: not allowed to run sudo
-id angelia                                              # groups: angelia only. Never add sudo, docker, lxd or adm
+id angelia                                              # angelia (and users on 26.04). Never add sudo, docker, lxd or adm
 ```
 
 **Check:**
-- `tailscale ssh angelia@<server>` gives you a shell.
+- `ssh angelia@<tailnet-ip>` gives you a shell. Copy your key first: `sudo install -d -m 700 -o angelia -g angelia ~angelia/.ssh && sudo install -m 600 -o angelia -g angelia ~/.ssh/authorized_keys ~angelia/.ssh/`.
 - In that shell, `systemctl --user status` answers.
 - `loginctl show-user angelia -p Linger` says `Linger=yes`.
 
-From here on, every command runs as `angelia` unless it starts with `sudo`. For those, open a second `tailscale ssh admin@<server>`.
+From here on, every command runs as `angelia` unless it starts with `sudo`. For those, open a second `ssh admin@<tailnet-ip>`.
 
 ## 4. Node and git
 
@@ -124,7 +159,7 @@ Node from NodeSource puts it at `/usr/bin/node`. That path survives Node upgrade
 
 ```bash
 # as admin
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt install -y nodejs gh
 ```
 
@@ -144,7 +179,7 @@ git config --global user.email "<you>@users.noreply.github.com"
 3. If you want `gh`: `gh auth login` with a **fine-grained token** limited to those repos.
 
 **Check:**
-- `node --version` shows 22.23.4 or newer. Older fails: Angelia needs it, so wait for NodeSource or use 24.x.
+- `node --version` shows 24.22.1 or newer (measured: 24.22.3). Ubuntu 26.04's own `nodejs` is 22.22.1, too old for Angelia.
 - `which node` prints `/usr/bin/node`.
 - `npm prefix -g` prints `~/.local` in full (`echo ~/.local`).
 - `ssh -T git@github.com` names the deploy key's repo.
@@ -153,8 +188,21 @@ git config --global user.email "<you>@users.noreply.github.com"
 
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash          # lands in ~/.local/bin
-claude                                                  # log in. Full login, not a setup token
 ```
+
+From your laptop, log in with a real terminal (the login is interactive):
+
+```bash
+ssh -t angelia@<tailnet-ip> '~/.local/bin/claude'       # /login; full login, not a setup token
+```
+
+For profiles with `sandbox: true`, Claude Code's sandbox on Linux is bubblewrap, and it needs `socat` for its proxy. As admin:
+
+```bash
+sudo apt install -y bubblewrap socat
+```
+
+Ubuntu 24.04+ restricts unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns = 1`). It also ships an AppArmor profile for `bwrap`, so `bwrap` still works. Check it as `angelia`: `bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all echo ok` must print `ok` (measured on 26.04).
 
 The login prints a URL. Open it on your laptop and paste the code back. Credentials land in `~/.claude/.credentials.json`; make sure it is mode 600.
 
@@ -206,7 +254,7 @@ systemctl --user enable --now vnc desktop
 `-localhost` is the point: VNC's password is cut at 8 characters and its traffic is not encrypted. To reach it from the laptop, tunnel it:
 
 ```bash
-ssh -N -L 5901:127.0.0.1:5901 angelia@<server>      # over the tailnet, then open vnc://localhost:5901
+ssh -N -L 5901:127.0.0.1:5901 angelia@<tailnet-ip>      # over the tailnet, then open vnc://localhost:5901
 ```
 
 **Inside the VNC desktop:**
@@ -230,7 +278,7 @@ systemctl --user enable --now syncthing
 mkdir -p ~/sync/in ~/sync/out
 ```
 
-The GUI listens on `127.0.0.1:8384`. Reach it with `ssh -N -L 8384:127.0.0.1:8384 angelia@<server>`. In the GUI:
+The GUI listens on `127.0.0.1:8384`. Reach it with `ssh -N -L 8384:127.0.0.1:8384 angelia@<tailnet-ip>`. In the GUI:
 
 1. **Settings → GUI.** Set a user and password.
 2. **Settings → Connections.**
@@ -267,9 +315,17 @@ angelia service install          # writes ~/.config/systemd/user/angelia.service
 
 WhatsApp allows one linked device per running copy. Stop the Mac's daemon first (`angelia service uninstall` there), or pair a separate number.
 
-Expect a tmux version warning: Ubuntu 24.04 ships tmux 3.4. Angelia still runs.
+Run the installer with `ssh -t`: its last step opens `/dev/tty`, and without one it prints `cannot open /dev/tty` after installing.
 
-**Check:** run the six steps in [runbook → Linux server over Tailscale](runbook.md#linux-server-over-tailscale). They cover:
+**Trust the workspace once.** Claude Code ignores a profile's `add_dirs` until the folder has passed its trust dialog. The log line reads `Ignoring 1 permissions.additionalDirectories entry … this workspace has not been trusted`. Set the flag without the dialog:
+
+```bash
+jq '.projects["'"$HOME"'/.angelia/workspace"].hasTrustDialogAccepted = true' ~/.claude.json > ~/.claude.json.new && mv ~/.claude.json.new ~/.claude.json
+```
+
+Expect a tmux version warning if Ubuntu's tmux is older than 3.7 (24.04 has 3.4, 26.04 has 3.6). Angelia still runs.
+
+**Check:** run the six steps in [runbook → Linux server over Tailscale](runbook.md#linux-server-over-tailscale):
 - the service;
 - a reboot with nobody logged in;
 - `/restart` keeping tmux panes;
@@ -277,7 +333,70 @@ Expect a tmux version warning: Ubuntu 24.04 ships tmux 3.4. Angelia still runs.
 - `/restart` with a `$` in the config path;
 - a `.inbox` link being refused.
 
-Then send the maintainers your distro and systemd version (`systemctl --version | head -1`), so they can drop the word "experimental".
+Measured 2026-11-17 on Ubuntu 26.04.1, systemd 259, Angelia 0.3.26:
+- **Service:** `active`, linger on.
+- **Reboot with nobody logged in:** the daemon was up 11 s after boot, and WhatsApp reconnected.
+- **`/restart` from a group:** the chat heard "Restarting now" and then "Angelia is back up". The restarter ran as its own unit (`angelia is up under systemd` in `daemon.out`), and `NRestarts=0`.
+- **Not yet measured:** `angelia update` (no newer release), a `$` in the config path, and the `.inbox` link.
+
+Send the maintainers your distro and systemd version (`systemctl --version | head -1`), so they can drop the word "experimental".
+
+### Moving an instance from a Mac
+
+Measured 2026-11-17, moving a 0.3.25 Mac instance to 0.3.26 here.
+
+1. **On the Mac.** Back up the instance (`cp -a ~/.angelia ~/.angelia.bak-<date>`), then run `angelia service uninstall` and `angelia jobs remove <profile>` for each profile with jobs. The WhatsApp link must run in one place only.
+2. **Copy it over the tailnet:**
+
+   ```bash
+   rsync -a --chmod=Du=rwx,Dgo=,Fu=rw,Fgo= --exclude api.sock --exclude daemon.pid --exclude status.json --exclude sessions.json ~/.angelia/ angelia@<tailnet-ip>:.angelia/
+   ```
+
+   - `wa/` moves with it, so WhatsApp needs no new pairing.
+   - `sessions.json` stays behind: its Claude sessions live in the Mac's `~/.claude`.
+3. **On the server.**
+   - Rewrite the paths: `grep -rIl /Users/<you> --exclude-dir=wa ~/.angelia | xargs sed -i "s#/Users/<you>#$HOME#g"`.
+   - Clone every `add_dirs` repo to the same place under `$HOME`.
+   - Run `angelia check-config`, `angelia accept --check`, and `angelia compile <profile> --write` for each profile. The Linux deny rules (keyrings, `.config/google-chrome`, `.config/systemd/user`) arrive only with that compile.
+   - Run `angelia service install`.
+4. **Jobs do not move.** `angelia jobs install` is macOS only. Write systemd timers that call `angelia jobs run <profile> <job>`, or leave the jobs off.
+
+### `sandbox: true` on Ubuntu 26.04
+
+Measured 2026-11-17 with Claude Code 2.1.327 and Angelia 0.3.26.
+
+**1. It does not start.** `bwrap` itself works, but every sandboxed command fails with `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted …)`.
+
+- The kernel log shows `apparmor="DENIED" profile="unpriv_bwrap" capability=sys_admin`.
+- Ubuntu's `bwrap-userns-restrict` profile runs everything inside an unprivileged bwrap under `unpriv_bwrap`, which has `audit deny capability`.
+- A `deny` cannot be lifted from `local/unpriv_bwrap`.
+
+The fix, as root, gives Claude a `bwrap` copy under its own profile. Ubuntu's `/usr/bin/bwrap` keeps its restrictive one:
+
+```bash
+install -d -m 755 /usr/local/lib/claude-bwrap && install -m 755 /usr/bin/bwrap /usr/local/lib/claude-bwrap/bwrap
+printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' 'profile claude-bwrap /usr/local/lib/claude-bwrap/bwrap flags=(unconfined) {' '  userns,' '}' > /etc/apparmor.d/claude-bwrap
+apparmor_parser -r /etc/apparmor.d/claude-bwrap
+echo 'DPkg::Post-Invoke { "[ -x /usr/bin/bwrap ] && install -m 755 /usr/bin/bwrap /usr/local/lib/claude-bwrap/bwrap || true"; };' > /etc/apt/apt.conf.d/99claude-bwrap
+```
+
+Then, as `angelia`: `ln -sf /usr/local/lib/claude-bwrap/bwrap ~/.local/bin/bwrap`.
+
+- **Use the PATH link, not `sandbox.bwrapPath`.** The sandbox finds `bwrap` on `PATH`. `sandbox.bwrapPath` in `~/.claude/settings.json` or `--settings` did not change it: the denial still named `unpriv_bwrap`.
+- **The service's PATH already starts with `~/.local/bin`.**
+- **The cost:** that one binary may create user namespaces, as every program could before Ubuntu 24.04.
+
+**2. Once it starts, it holds in `acceptEdits`, and not in `bypassPermissions`.** Probes from a sandboxed Bash in a compiled profile:
+
+| Probe | `acceptEdits` | `bypassPermissions` |
+|---|---|---|
+| Write to `~` | refused (`Read-only file system`) | refused |
+| Write in the profile folder | allowed | allowed |
+| Open `~/.angelia/api.token` (`Read(...)` deny) | refused (`Permission denied`) | **readable** |
+| `curl https://example.com` (not in `allowedDomains`) | refused (`deny network-outbound`) | **200** |
+
+- **Keep `bypassPermissions` off every sandboxed Linux profile.** With it, the sandbox still blocks writes but not reads or network.
+- **Optionally keep shell commands asking anyway.** With the sandbox on, Claude Code runs Bash without asking. For chats other people write in, `"sandbox": {"autoAllowBashIfSandboxed": false}` in the profile's `.claude/settings.local.json` makes every command go to an owner too. Note that `echo` and other read-only commands still run without asking.
 
 ## Security
 
@@ -292,7 +411,7 @@ Then send the maintainers your distro and systemd version (`systemctl --version 
   - The Hetzner firewall and `ufw` both drop inbound traffic.
   - Angelia opens no port at all. Its API is a Unix socket under `~/.angelia`.
   - VNC and the Syncthing GUI are on localhost, and Syncthing's sync port is on the tailnet only.
-- **The server cannot reach your devices.** Tailscale grants no `tag:server` source except Syncthing's one port to the laptop. Tailscale SSH uses `check` mode, which asks you to re-authenticate in the browser periodically.
+- **The server cannot reach your devices.** Tailscale grants no `tag:server` source except Syncthing's one port to the laptop. SSH to the server needs both your tailnet login and your key; the policy's `tests` block refuses any change that lets the server reach your laptop.
 - **Private files.** The home folder is 700 and `umask 077` applies, so files are created private. Angelia keeps `~/.angelia/env` at 600, and Claude keeps its credentials at 600.
 - **Angelia's deny floor** keeps the agents' file tools away from:
   - Claude's `.credentials.json`, `~/.ssh`, `gh`'s login and Angelia's own secrets.
