@@ -81,7 +81,9 @@ function watched(t: TestContext, extra: Partial<WhatsAppAdapterOptions> = {}, pa
   const dead: number[] = [];
   r.a.on('dead', () => dead.push(clock.now));
   // Mocked time and our clock move together; the reopen timers (6 s and up) fire on the way.
-  const pass = async (ms: number) => { clock.now += ms; t.mock.timers.tick(ms); await settle(20); };
+  // 100 ms of real time per step: the reopen reads the auth folder from disk, which took more
+  // than 20 ms on a loaded runner (release 0.3.26 check failed here twice).
+  const pass = async (ms: number) => { clock.now += ms; t.mock.timers.tick(ms); await settle(100); };
   return { ...r, clock, dead, pass };
 }
 
