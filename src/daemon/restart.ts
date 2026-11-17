@@ -158,13 +158,14 @@ export function launchChatRestart(key: string, configPath: string, onFail: (why:
   // restarter is a transient unit of its own. --wait: the client exits with the restart's own code,
   // so a failed restart still reaches the chat; a successful one kills the client with the daemon.
   const child = spawn('systemd-run', restartUnitArgv({ node: process.execPath, entry: entry(), config: configPath, stateDir, env }), { stdio: 'ignore' });
+  // No fallback to the detached spawn here: inside the service's cgroup that restarter would be killed by its own
+  // `systemctl stop`, and Restart=on-failure does not start a unit after a stop, so the daemon would stay down.
+  // Failing keeps this daemon up and tells the chat why.
   child.once('error', (e: NodeJS.ErrnoException) => {
-    if (e.code !== 'ENOENT') {
-      try { unlinkSync(join(stateDir, RESTART_NOTE)); } catch {}
-      return onFail(`could not start the restart: ${e.message}`);
-    }
-    console.log('systemd-run not found: restarting detached; tmux panes may not survive');
-    detached();
+    try { unlinkSync(join(stateDir, RESTART_NOTE)); } catch {}
+    onFail(e.code === 'ENOENT'
+      ? 'systemd-run not found: a restart from inside the service would stop the daemon for good, so it keeps running. Run angelia restart from your own shell'
+      : `could not start the restart: ${e.message}`);
   });
   watchChatRestart(child, onFail, stateDir, { signalIsSuccess: true });
 }

@@ -115,6 +115,21 @@ test('a systemd-run that cannot be started (not ENOENT) fails the /restart and d
   } finally { process.env.PATH = path; }
 });
 
+test('under systemd without systemd-run the /restart fails and the daemon stays up: no detached fallback', async () => {
+  const b = bins({});
+  const s = mkdtempSync(join(tmpdir(), 'angelia-rs-'));
+  writeFileSync(join(s, 'daemon.out'), '');
+  const path = process.env.PATH;
+  process.env.PATH = b;
+  try {
+    const why = await new Promise<string>((res) => launchChatRestart('k', '/c.yaml', res, s, true));
+    assert.match(why, /^systemd-run not found/);
+    assert.equal(existsSync(join(s, 'restart-note.json')), false, 'no "back up" is announced for a restart that never ran');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(readFileSync(join(s, 'daemon.out'), 'utf8'), '', 'no detached restarter was started');
+  } finally { process.env.PATH = path; }
+});
+
 test('under systemd a restarter killed by a signal is a good restart, a non-zero exit is not', () => {
   for (const [code, sig, fails] of [[null, 'SIGTERM', false], [1, null, true]] as const) {
     writeFileSync(join(dir, 'restart-note.json'), '{}');
