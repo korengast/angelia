@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -127,6 +127,11 @@ test('under systemd without systemd-run the /restart fails and the daemon stays 
     assert.equal(existsSync(join(s, 'restart-note.json')), false, 'no "back up" is announced for a restart that never ran');
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(readFileSync(join(s, 'daemon.out'), 'utf8'), '', 'no detached restarter was started');
+    if (existsSync('/dev/fd')) {
+      const before = readdirSync('/dev/fd').length;
+      await new Promise<string>((res) => launchChatRestart('k', '/c.yaml', res, s, true));
+      assert.equal(readdirSync('/dev/fd').length, before, 'a failed /restart leaves no descriptor open');
+    }
   } finally { process.env.PATH = path; }
 });
 

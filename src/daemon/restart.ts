@@ -1,6 +1,6 @@
 import { isDaemonPid, pidAlive } from './pid.js';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { STATE_DIR } from './daemon.js';
@@ -140,13 +140,18 @@ const NOTE_TTL_MS = 10 * 60_000;
 export function launchChatRestart(key: string, configPath: string, onFail: (why: string) => void, stateDir = STATE_DIR, viaSystemd = inServiceCgroup() && serviceInstalled()): void {
   writeFileSync(join(stateDir, RESTART_NOTE), JSON.stringify({ key, at: new Date().toISOString() }));
   try { unlinkSync(join(stateDir, RESTART_ERROR)); } catch {}
-  const out = openSync(join(stateDir, 'daemon.out'), 'a');
   const env = { ...process.env };
   for (const k of SESSION_ENV) delete env[k];
   const detached = (): ChildProcess => {
-    const child = spawn(process.execPath, [entry(), 'restart', '--from-daemon', configPath], {
-      cwd: stateDir, env, detached: true, stdio: ['ignore', out, out],
-    });
+    // Opened here and closed once the child holds its own copy: the systemd path never needs it, and every
+    // /restart must not leave one more descriptor open in the daemon.
+    const out = openSync(join(stateDir, 'daemon.out'), 'a');
+    let child: ChildProcess;
+    try {
+      child = spawn(process.execPath, [entry(), 'restart', '--from-daemon', configPath], {
+        cwd: stateDir, env, detached: true, stdio: ['ignore', out, out],
+      });
+    } finally { closeSync(out); }
     watchChatRestart(child, onFail, stateDir);
     child.unref();
     return child;
