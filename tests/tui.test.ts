@@ -58,8 +58,8 @@ test('the external-imports dialog (a new profile folder importing _shared) is re
 
 // The add-dir fixtures are not raw captures: they were written after a real claude 2.1.326 frame, at
 // 120 columns (the rule's width), where the panes run at 220, and the folder is a placeholder. In
-// pane-adddir-wrapped.txt the folder fills the 120th column and goes on at the start of the next
-// line, as a tmux capture without -J shows a wrapped line.
+// pane-adddir-wrapped.txt the folder has the real wrap of a 220-column pane: Ink breaks it at column
+// 219 and draws the rest on the next line with the same one-space indent (a capture without -J).
 test('the add-dir dialog (claude 2.1.326) names its folder and is accepted only on yes, for a listed folder only', () => {
   assert.equal(paneIdle(fixture('adddir')), false);
   assert.equal(addDirDialog(fixture('adddir')), '/Users/example/.angelia/projects');
@@ -80,11 +80,28 @@ test('the add-dir dialog (claude 2.1.326) names its folder and is accepted only 
   assert.equal(addDirDialog(quoted + fixture('idle')), null, 'a quote above the input box is no dialog');
   assert.equal(addDirAccepted(quoted + fixture('idle')), false);
   assert.equal(addDirDialog(' Adding a new directory: /tmp/x\n'), null, 'the title alone, without both answers below it');
-  // A folder longer than the pane wraps at its edge (here 120 columns) with no character added.
-  const head = `/Users/example/${'x'.repeat(104)}`;
-  assert.equal(addDirDialog(fixture('adddir-wrapped')), `${head}bar/secret`, 'the wrapped lines join into one folder');
-  assert.equal(addDirListed(addDirDialog(fixture('adddir-wrapped'))!, [`${head}bar/secret`]), true, 'a wrapped listed folder is yes');
+  // A folder longer than the pane wraps at column 219 and goes on one space in, as the first line.
+  const head = `/Users/example/${'b'.repeat(203)}`;
+  assert.equal(addDirDialog(fixture('adddir-wrapped')), `${head}bbbbbbbb/secret`, 'the wrapped lines join into one folder, indent off');
+  assert.equal(addDirListed(addDirDialog(fixture('adddir-wrapped'))!, [`${head}bbbbbbbb/secret`]), true, 'a wrapped listed folder is yes');
   assert.equal(addDirListed(addDirDialog(fixture('adddir-wrapped'))!, [head]), false, 'a listed folder that is only the first line is no');
+  const spaced = fixture('adddir-wrapped').replace(' bbbbbbbb/secret', '  bbbbbbbb/secret');
+  assert.equal(addDirDialog(spaced), `${head} bbbbbbbb/secret`, 'a space at the wrap stays a space');
+  assert.equal(addDirListed(addDirDialog(spaced)!, [`${head}bbbbbbbb/secret`]), false, 'so that folder is refused, never yes');
+  assert.equal(addDirDialog('│ Adding a new directory:  │\n│                         │\n│ /tmp/z                  │\n│ /more                   │\n│                         │\n│ ❯ No, exit │\n│   Yes, add it │\n'), '/tmp/z/more', 'a bordered frame wraps the same way');
+  // A title opens its line: a folder whose name holds a title is still that folder, and refused.
+  const evil = '/Users/example/evil/Adding a new directory: /Users/example/.angelia/projects';
+  assert.equal(addDirDialog(fixture('adddir').replace('/Users/example/.angelia/projects', evil)), evil);
+  assert.equal(addDirListed(evil, ['/Users/example/.angelia/projects']), false);
+  const evilImports = fixture('adddir').replace('/Users/example/.angelia/projects', '/Users/example/Allow external CLAUDE.md file imports?');
+  assert.equal(addDirDialog(evilImports), '/Users/example/Allow external CLAUDE.md file imports?');
+  assert.equal(importsDialogOpen(evilImports + '  ❯ No, disable external imports\n'), false, 'nor is it the imports dialog');
+  // An answered frame with another dialog under it: the cursor is that dialog's, so no Enter for it.
+  const under = fixture('adddir-selected') + fixture('permission');
+  assert.equal(addDirAccepted(under), false, 'the last ❯ is the permission prompt');
+  assert.equal(addDirDialog(under), null);
+  assert.equal(trustAccepted(fixture('trust-selected') + fixture('permission')), false);
+  assert.equal(importsAccepted(fixture('imports-selected') + fixture('permission')), false);
   const dirs = ['/Users/example/.angelia/projects/', '~/code'];
   assert.equal(addDirListed('/Users/example/.angelia/projects', dirs, '/Users/example'), true);
   assert.equal(addDirListed('/Users/example/code', dirs, '/Users/example'), true);

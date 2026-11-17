@@ -46,6 +46,13 @@ test('a new session answers each add-dir dialog yes for a listed folder, once it
   assert.ok(Date.now() - t0 < 20_000, 'it fails at once, not at the start timeout');
   assert.equal(existsSync(join(cwd, 'keys.log')), false, 'no key reached the dialog of a folder not listed');
 
+  // A dialog for a folder not listed that is gone within the settle time ends nothing.
+  const flashing = mkdtempSync(join(tmpdir(), 'angelia-tuiad-cwd-'));
+  writeFileSync(join(flashing, 'adddir-flash.txt'), '/Users/example/.ssh');
+  const flash = await start(flashing, '11111111-2222-3333-4444-555555555556');
+  assert.equal(flash.problem, null, 'the frame passed, both listed folders were added');
+  assert.ok(!flash.logs.some((l) => l.includes('not in add_dirs')));
+
   // The answered trust frame stays in the history above the add-dir dialog: Enter for it would land
   // on the add-dir dialog's "No, exit".
   const trusting = mkdtempSync(join(tmpdir(), 'angelia-tuiad-cwd-'));

@@ -6,7 +6,8 @@
 // With ./trust-first.txt it first shows the folder-trust dialog (which takes keys at once), and once
 // that is answered its frame scrolls into tmux's history, where a capture still finds it above the
 // add-dir dialog. With ./adddir-quoted.txt it asks nothing and shows the idle prompt under a resumed
-// conversation that quotes the start dialogs. Every key it gets is logged to ./keys.log.
+// conversation that quotes the start dialogs. With ./adddir-flash.txt it first shows a dialog for
+// the folder in that file for 1 s (less than the settle time), as a frame drawn mid-redraw. Every key it gets is logged to ./keys.log.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +36,10 @@ let trust = existsSync('trust-first.txt') ? { yes: false } : null;
 // Rows 21 on, so the answered frame lands in the last 40 lines of history once it scrolls off.
 const drawTrust = () => frame(`${'\n'.repeat(20)} Accessing workspace:\n\n ${process.cwd()}\n\n Quick safety check: Is this a project you created or one you trust?\n\n`
   + `${trust.yes ? '  ' : ' ❯'} No, exit\n${trust.yes ? ' ❯' : '  '} Yes, I trust this folder\n\n Enter to confirm · Esc to cancel`);
+if (existsSync('adddir-flash.txt')) {
+  dirs.unshift(readFileSync('adddir-flash.txt', 'utf8').trim());
+  setTimeout(() => { dirs.shift(); next(); }, 1000);
+}
 if (trust) drawTrust(); else next();
 process.stdin.setRawMode(true);
 process.stdin.on('data', (b) => {

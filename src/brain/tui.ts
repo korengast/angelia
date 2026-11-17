@@ -311,14 +311,20 @@ export class TuiBrain extends EventEmitter implements Brain {
       if (importsDialogOpen(pane)) { await this.acceptDialog(importsDialogOpen, importsAccepted); continue; }
       const dir = addDirDialog(pane);
       if (dir !== null) {
-        // Yes only for a folder the owner listed in add_dirs: that line was the answer. Anything else
-        // stays unanswered, and the start fails with the folder named.
-        if (!addDirListed(dir, this.profile.add_dirs, homedir(), this.profile.cwd)) { this.emit('log', `pane ${this.name} asks to add ${dir}, which is not in add_dirs`); unlisted = dir; break; }
         // claude 2.1.326 drops keys for about a second after it draws this dialog (measured: Down and
         // Enter at once leave it on "No"), and a profile with two new folders gets one dialog each.
         // So wait until a folder's dialog has stood ADD_DIR_SETTLE_MS, and give an answer time to land
         // before the same folder is answered again.
         if (asked?.dir !== dir) asked = { dir, at: Date.now(), answered: 0 };
+        // Yes only for a folder the owner listed in add_dirs: that line was the answer. Anything else
+        // stays unanswered, and once it has stood as long (one frame drawn mid-redraw is no answer)
+        // the start fails with the folder named.
+        if (!addDirListed(dir, this.profile.add_dirs, homedir(), this.profile.cwd)) {
+          if (Date.now() - asked.at < ADD_DIR_SETTLE_MS) { await sleep(250); continue; }
+          this.emit('log', `pane ${this.name} asks to add ${dir}, which is not in add_dirs`);
+          unlisted = dir;
+          break;
+        }
         if (Date.now() - asked.at < ADD_DIR_SETTLE_MS || Date.now() - asked.answered < ADD_DIR_SETTLE_MS * 2) { await sleep(250); continue; }
         // Bound to this folder: when its dialog closes and the next folder's opens, that one waits for
         // its own listed check and settle time, and gets no Down or Enter meant for this one.
