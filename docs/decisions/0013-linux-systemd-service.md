@@ -48,8 +48,11 @@ systemd's default `KillMode=control-group` kills every process the service start
 Both apply only to the daemon in `angelia.service`'s own cgroup (`/proc/self/cgroup` ends in
 `/angelia.service`). Not `SYSTEMD_EXEC_PID`: it exists only from systemd 248, and below that the
 restarter would run detached inside the service's cgroup and be killed by its own `stop`, leaving
-the daemon down. Both fall back to today's detached spawn or plain tmux when `systemd-run` is
-missing or fails (no user bus, a daemon in another unit).
+the daemon down. The tmux server falls back to a plain tmux call when `systemd-run` is missing or fails (no
+user bus): its panes may then not survive a restart. The restarter never falls back: inside the
+service's cgroup a detached restarter would die by its own `stop`, so without `systemd-run` the
+`/restart` fails with "systemd-run not found" and the daemon stays up. A non-zero exit of
+`systemd-run` is a failed restart, reported to the chat.
 
 ## Rejected
 
@@ -64,8 +67,10 @@ missing or fails (no user bus, a daemon in another unit).
 ## Also needed on Linux
 
 - **Symlink guard.** `O_NOFOLLOW_ANY` is macOS only. `openNoFollow` walks the path from `/`,
-  opening each folder with `O_DIRECTORY | O_NOFOLLOW` through `/proc/self/fd/<dir>/<name>` (the
-  effect of `openat`, without an addon). Measured on Linux (node:22-alpine): a link as the last
+  opening each folder with `O_PATH | O_DIRECTORY | O_NOFOLLOW` (search permission only, so a
+  parent of mode 0711 does not refuse the walk) through `/proc/self/fd/<dir>/<name>` (the
+  effect of `openat`, without an addon). Measured on Linux (node:22-alpine, with the earlier `O_RDONLY` walk; the ubuntu CI runs the
+  same tests, and a search-only parent, on the `O_PATH` one): a link as the last
   name, a middle folder or the parent is refused. On some kernels `O_DIRECTORY | O_NOFOLLOW` on a
   link reports `ENOTDIR`, so that is mapped to `ELOOP` when `lstat` confirms a link.
 - **Deny floor.** Claude Code keeps its login in `~/.claude/.credentials.json` on Linux (the

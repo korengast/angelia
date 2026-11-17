@@ -76,7 +76,7 @@ angelia service install   # keep it running: starts at login, comes back after a
 
 Then send *"what is in this folder?"* to your bot. The agent answers from the profile's folder.
 
-> **Linux** is supported for the daemon: `angelia service install` writes a systemd user unit. Still macOS only until their sub-projects land: `angelia jobs`, voice replies, sandboxed profiles and the pi backend. **Windows:** not yet.
+> **Linux is experimental:** `angelia service install` writes a systemd user unit, but it has not yet been measured on a real box (the [runbook checks](docs/runbook.md#linux-server-over-tailscale) do that). `angelia init` offers the service on macOS only, so on Linux run `angelia service install` yourself. Still macOS only until their sub-projects land: `angelia jobs`, voice replies, sandboxed profiles and the pi backend. **Windows:** not yet.
 
 ---
 
