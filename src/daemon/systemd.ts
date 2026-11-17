@@ -37,6 +37,8 @@ export function buildUnit(i: ServiceInput): string {
   }
   const env = [`PATH=${i.path}`, `HOME=${i.home}`, `ANGELIA_STATE_DIR=${i.stateDir}`, ...(i.lang ? [`LANG=${i.lang}`] : [])];
   const out = `append:${escapeSpecifiers(join(i.stateDir, 'daemon.out'))}`;
+  // The program path is never $-expanded, but argv[0] (the same word) still is at exec. Cosmetic: the ps name, a journal
+  // 'unset variable' line; node finds itself through /proc/self/exe.
   return `# Written by angelia service install. Rewrite it with the same command, not by hand.
 # angelia: ${JSON.stringify({ config: i.config, node: i.node, entry: i.entry, stateDir: i.stateDir })}
 [Unit]

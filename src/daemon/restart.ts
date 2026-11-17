@@ -186,6 +186,7 @@ export function restartUnitArgv(o: { node: string; entry: string; config: string
   const setenv = ['PATH', 'HOME', 'LANG', 'ANGELIA_STATE_DIR', 'XDG_RUNTIME_DIR'].flatMap((k) => (o.env[k] ? [`--setenv=${k}=${o.env[k]}`] : []));
   return ['--user', '--wait', '--collect', '--quiet', `--unit=angelia-restart-${o.now ?? Date.now()}`,
     '-p', `StandardOutput=${log}`, '-p', `StandardError=${log}`, `--working-directory=${o.stateDir}`, ...setenv,
+    // argv[0] is still $-expanded at exec; only the program path is not. Cosmetic: the ps name, a journal 'unset variable' line.
     o.node, ...[o.entry, 'restart', '--from-daemon', o.config].map((w) => w.replace(/\$/g, '$$$$'))];
 }
 
