@@ -1,4 +1,8 @@
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { systemd, systemdStart, systemdEnable, systemdStop, systemdAvailable, inServiceCgroup, UNIT, type Run } from '../src/daemon/systemd.js';
 import { backend, tableMismatch } from '../src/daemon/service.js';
@@ -99,4 +103,26 @@ test('$ is doubled in ExecStart words only; Environment keeps it literal', () =>
 test('tableMismatch names the unit on systemd and the plist on launchd', () => {
   assert.match(tableMismatch('/h/other.yaml', undefined, false, 'unit') ?? '', /the table in its unit, not/);
   assert.match(tableMismatch('/h/other.yaml', undefined, false, 'plist') ?? '', /the table in its plist, not/);
+});
+
+// The quoting is checked by systemd itself, not only by reading its sources: CI on ubuntu sets ANGELIA_SYSTEMD_VERIFY=1,
+// and there a missing systemd-analyze fails the test instead of skipping it. The folder name holds a space, `%h` and
+// `$HOME`: if either were expanded, ExecStart would name a node that does not exist and verify would say so.
+test('a rendered unit for a path with a space, % and $ passes systemd-analyze verify', { skip: process.env.ANGELIA_SYSTEMD_VERIFY ? false : 'set ANGELIA_SYSTEMD_VERIFY=1 where systemd-analyze exists (the ubuntu CI does)' }, () => {
+  const base = join(mkdtempSync(join(tmpdir(), 'angelia-unit-')), 'My Files 50%h $HOME');
+  mkdirSync(join(base, 'state'), { recursive: true });
+  symlinkSync(process.execPath, join(base, 'node'));
+  const unit = join(base, '..', UNIT);
+  writeFileSync(unit, systemd.render({ node: join(base, 'node'), entry: join(base, 'cli.js'), config: join(base, 'routing.yaml'), stateDir: join(base, 'state'), path: '/usr/bin:/bin', home: base, lang: 'C.UTF-8' }));
+  let r = spawnSync('systemd-analyze', ['--user', 'verify', unit], { encoding: 'utf8' });
+  assert.ok(!r.error, `systemd-analyze could not run: ${r.error?.message}`);
+  // --user loads the user manager's search paths and needs XDG_RUNTIME_DIR; a runner without a user session has none.
+  // The unit's own checks (quoting, specifiers, the ExecStart binary) are the same in system mode.
+  if (r.status !== 0 && /XDG_RUNTIME_DIR|user bus|Failed to (initialize|connect)/i.test(r.stderr)) {
+    console.log(`systemd-analyze --user verify unavailable here (${r.stderr.trim().split('\n')[0]}); verifying in system mode`);
+    r = spawnSync('systemd-analyze', ['verify', unit], { encoding: 'utf8' });
+  }
+  const mine = r.stderr.split('\n').filter((l) => l.includes(UNIT) || l.includes(base));
+  assert.equal(r.status, 0, `systemd-analyze verify failed:\n${r.stderr}`);
+  assert.deepEqual(mine, [], `systemd-analyze warned about the unit:\n${mine.join('\n')}`);
 });

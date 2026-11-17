@@ -33,4 +33,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run lint
+      # On ubuntu, systemd-analyze verifies a rendered unit (tests/systemd.test.ts): quoting checked by systemd itself.
       - run: npm test
+        env:
+          ANGELIA_SYSTEMD_VERIFY: ${{ runner.os == 'Linux' && '1' || '' }}
