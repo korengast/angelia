@@ -1,13 +1,13 @@
 # Angelia on a Linux server
 
-This guide covers a Hetzner VPS running Ubuntu 24.04, with these pieces:
+This guide covers a Hetzner VPS running Ubuntu 26.04 (24.04 works too), with these pieces:
 
 - Tailscale is the only way in.
 - Claude Code and Angelia run as a user that has no sudo.
-- A small desktop (xfce on TigerVNC, with Chrome) lets Claude drive a browser, and lets you step in when a login or captcha needs a person.
-- Syncthing moves files between your laptop and the server.
-
-This adapts Gal Tidhar's [AI shed](https://gal.tidhar.org.il/blog/ai-shed/) to Angelia.
+- Optional: a small desktop with Chrome for agents that drive a browser.
+- Optional: Syncthing to move files between your laptop and the server.
+- Optional: Claude Remote Control.
+- Optional: a twice-daily sync of the workspace to a private repo.
 
 Each step ends with a **Check**. Do not start the next step until the check passes.
 
