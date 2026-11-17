@@ -90,11 +90,11 @@ export function entry(self = fileURLToPath(new URL('../cli/cli.js', import.meta.
  *  /restart) is not: under the service the plist is the authority, and after `angelia service
  *  install <new table>` the running daemon still carries the old path - which is exactly the restart
  *  that has to go through. */
-export function tableMismatch(given: string | undefined, prog: ServiceProgram | undefined, fromDaemon = false): string | undefined {
+export function tableMismatch(given: string | undefined, prog: ServiceProgram | undefined, fromDaemon = false, file = backend()?.name === 'systemd' ? 'unit' : 'plist'): string | undefined {
   if (!given || fromDaemon) return undefined;
   const runs = prog?.config;
   if (runs && resolve(given) === resolve(runs)) return undefined;
-  return `the service runs ${runs ?? 'the table in its plist'}, not ${resolve(given)}. To change it: angelia service install <routing.yaml>`;
+  return `the service runs ${runs ?? `the table in its ${file}`}, not ${resolve(given)}. To change it: angelia service install <routing.yaml>`;
 }
 
 /** A service exists for this instance. One plist per user, so it belongs to the instance whose
@@ -182,7 +182,8 @@ export async function serviceCommand(argv: string[]): Promise<void> {
     }
     case 'status': {
       const pid = readPid();
-      console.log(`file    ${serviceInstalled() ? svc.filePath() : 'not installed'}`);
+      // The first word stays `plist` on macOS, as before the systemd backend: scripts parse this output.
+      console.log(`${svc.name === 'launchd' ? 'plist ' : 'unit  '}  ${serviceInstalled() ? svc.filePath() : 'not installed'}`);
       console.log(`loaded  ${serviceLoaded() ? 'yes' : 'no'}`);
       console.log(`daemon  ${isDaemonPid(pid) ? `pid ${pid}` : 'not running'}`);
       break;

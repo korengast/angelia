@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { systemd, systemdStart, systemdEnable, systemdStop, systemdAvailable, inServiceCgroup, UNIT, type Run } from '../src/daemon/systemd.js';
-import { backend } from '../src/daemon/service.js';
+import { backend, tableMismatch } from '../src/daemon/service.js';
 
 test('render → read round-trips every path exactly', () => {
   for (const p of ['/home/example/My Files/x', '/srv/50%/a', '/a/$HOME/b', '/a/"q"/b', '/a/b\\c', '/א/ב']) {
@@ -94,4 +94,9 @@ test('$ is doubled in ExecStart words only; Environment keeps it literal', () =>
   const env = /^Environment=.*$/m.exec(u)![0];
   assert.ok(env.includes('"ANGELIA_STATE_DIR=/a/$x/state"'));
   assert.ok(!env.includes('$$'));
+});
+
+test('tableMismatch names the unit on systemd and the plist on launchd', () => {
+  assert.match(tableMismatch('/h/other.yaml', undefined, false, 'unit') ?? '', /the table in its unit, not/);
+  assert.match(tableMismatch('/h/other.yaml', undefined, false, 'plist') ?? '', /the table in its plist, not/);
 });
