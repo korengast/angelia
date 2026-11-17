@@ -72,6 +72,9 @@ cat > /etc/ssh/sshd_config.d/10-hardening.conf <<'EOF'
 PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
+AllowUsers admin angelia
+X11Forwarding no
+AllowAgentForwarding no
 EOF
 sshd -t && systemctl reload ssh
 ```
@@ -79,7 +82,7 @@ sshd -t && systemctl reload ssh
 **Check:**
 - `ssh admin@<public-ip> sudo -n true` works.
 - `ssh root@<public-ip>` says `Permission denied (publickey)`.
-- `sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication) '` prints `no` for both.
+- `sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|x11forwarding|allowagentforwarding) '` prints `no` for all four. TCP forwarding stays on, since tunnels need it.
 
 ## 2. Tailscale, then close the door (as admin)
 
@@ -173,16 +176,26 @@ git config --global user.name "Angelia (server)"
 git config --global user.email "<you>@users.noreply.github.com"
 ```
 
-**GitHub, narrow:**
-1. Give the server its own SSH key: `ssh-keygen -t ed25519 -C angelia-server`.
-2. Add it as a **deploy key** on the repos it needs, write access only where it must push, rather than to your account. You can revoke it alone.
-3. If you want `gh`: `gh auth login` with a **fine-grained token** limited to those repos.
+**GitHub, narrow.** Give the server its own SSH key: `ssh-keygen -t ed25519 -C angelia-server`. Then pick one:
+
+- **Deploy keys.** Add the key as a deploy key on each repo the server needs, with write access only where it must push. You can revoke it alone.
+- **A machine account,** when agents open pull requests across several repos. Measured here: a dedicated bot user with write access to the org's repos. Log `gh` in as the bot. The device-code login works over SSH, so no token is pasted anywhere:
+
+  ```bash
+  ssh -t angelia@<tailnet-ip> 'gh auth login --hostname github.com --git-protocol ssh --web'
+  ```
+
+  - Answer "Upload your SSH public key" with `~/.ssh/id_ed25519.pub`, and open github.com/login/device signed in as the bot, not as yourself.
+  - Ubuntu's `gh` 2.46 has no `--skip-ssh-key`.
+  - With no keyring on the server, the token lands in `~/.config/gh/hosts.yml` (mode 600). The deny floor keeps agents' file tools out of it.
+  - **Then drop the key-upload scope.** The login granted `admin:public_key`, which lets the token add more SSH keys to the bot. A key added that way outlives the token. Remove the scope with `gh auth refresh -h github.com -r admin:public_key` and approve the code again as the bot.
 
 **Check:**
 - `node --version` shows 24.22.1 or newer (measured: 24.22.3). Ubuntu 26.04's own `nodejs` is 22.22.1, too old for Angelia.
 - `which node` prints `/usr/bin/node`.
 - `npm prefix -g` prints `~/.local` in full (`echo ~/.local`).
-- `ssh -T git@github.com` names the deploy key's repo.
+- `ssh -T git@github.com` names the deploy key's repo, or the bot's account.
+- With a machine account: `gh auth status` lists scopes without `admin:public_key` (measured: `gist`, `read:org`, `repo`).
 
 ## 5. Claude Code
 
@@ -210,7 +223,10 @@ The login prints a URL. Open it on your laptop and paste the code back. Credenti
 - `claude -p "say ok"` answers.
 - `stat -c %a ~/.claude/.credentials.json` prints `600`.
 
-## 6. Desktop for the browser: xfce, TigerVNC, Chrome
+## 6. Optional: a desktop for the browser (xfce, TigerVNC, Chrome)
+
+Skip this unless agents need a browser (`--chrome`), or you need to step in for a login or a captcha. Angelia runs without it. On a 4 GB server it costs about 0.5 GB of RAM while it runs. Measured 2026-11-17 on 26.04: installed, then turned off with `systemctl --user disable --now desktop vnc`.
+
 
 ```bash
 # as admin
@@ -223,13 +239,12 @@ sudo apt update && sudo apt install -y google-chrome-stable
 As `angelia`, set a VNC password, then add two user units: the X server, and the desktop on it.
 
 ```bash
-vncpasswd                                               # no view-only password
 mkdir -p ~/.config/systemd/user
 cat > ~/.config/systemd/user/vnc.service <<'EOF'
 [Unit]
-Description=TigerVNC display :1 (localhost only)
+Description=TigerVNC display :1 on a Unix socket only angelia can open
 [Service]
-ExecStart=/usr/bin/Xtigervnc :1 -localhost -rfbport 5901 -rfbauth %h/.vnc/passwd -SecurityTypes VncAuth -geometry 1600x1000 -depth 24
+ExecStart=/usr/bin/Xtigervnc :1 -rfbport -1 -rfbunixpath %h/.vnc/vnc.sock -rfbunixmode 0600 -SecurityTypes None -geometry 1600x1000 -depth 24 -nolisten tcp
 Restart=on-failure
 [Install]
 WantedBy=default.target
@@ -251,11 +266,15 @@ systemctl --user daemon-reload
 systemctl --user enable --now vnc desktop
 ```
 
-`-localhost` is the point: VNC's password is cut at 8 characters and its traffic is not encrypted. To reach it from the laptop, tunnel it:
+There is no VNC password and no TCP port: the server listens on a Unix socket that only `angelia` can open, and you reach it with your SSH key over the tailnet. Create the folder first with `mkdir -m 700 ~/.vnc`.
 
 ```bash
-ssh -N -L 5901:127.0.0.1:5901 angelia@<tailnet-ip>      # over the tailnet, then open vnc://localhost:5901
+ssh -N -L 5901:<angelia-home>/.vnc/vnc.sock angelia@<tailnet-ip>   # then open vnc://localhost:5901
 ```
+
+`<angelia-home>` is the `angelia` user's home folder (`echo ~angelia` on the server).
+
+macOS Screen Sharing may refuse a server without a VNC password. TigerVNC's viewer (`brew install --cask tigervnc-viewer`) connects.
 
 **Inside the VNC desktop:**
 1. Open Chrome.
@@ -264,11 +283,17 @@ ssh -N -L 5901:127.0.0.1:5901 angelia@<tailnet-ip>      # over the tailnet, then
 4. Leave this Chrome running. Sessions started with `--chrome` drive it.
 
 **Check:**
-- `ss -tlnp | grep 5901` shows only `127.0.0.1`.
+- `ss -tlnp` shows no VNC port, and `~/.vnc/vnc.sock` is `srw-------`.
 - The tunnel shows the xfce desktop.
 - After `sudo reboot`, the desktop comes back on its own.
 
-## 7. Syncthing (laptop ⇄ server)
+## 7. Optional: Syncthing (laptop ⇄ server)
+
+Skip this unless you want to hand files to agents, and take results back, without `scp`. Angelia runs without it.
+
+- **Who dials whom.** If you set it up, let the laptop dial the server (`tcp://<server-tailnet-ip>:22000`), so the tailnet policy needs no grant from `tag:server`.
+- **Homebrew on macOS:** `brew services start syncthing` stays down until `/opt/homebrew/var/log` exists.
+
 
 ```bash
 # as admin
@@ -398,6 +423,100 @@ Then, as `angelia`: `ln -sf /usr/local/lib/claude-bwrap/bwrap ~/.local/bin/bwrap
 - **Keep `bypassPermissions` off every sandboxed Linux profile.** With it, the sandbox still blocks writes but not reads or network.
 - **Optionally keep shell commands asking anyway.** With the sandbox on, Claude Code runs Bash without asking. For chats other people write in, `"sandbox": {"autoAllowBashIfSandboxed": false}` in the profile's `.claude/settings.local.json` makes every command go to an owner too. Note that `echo` and other read-only commands still run without asking.
 
+## 9. Optional: Claude Remote Control in `~/.angelia`
+
+A Claude session on the server that you open from claude.ai/code or the Claude app, for looking after the instance (logs, the table, `angelia` commands) without SSH. It starts at boot.
+
+As `angelia`, once: trust the folder, then answer Remote Control's one-time consent at a real terminal.
+
+```bash
+jq '.projects["'"$HOME"'/.angelia"].hasTrustDialogAccepted = true' ~/.claude.json > ~/.claude.json.new && mv ~/.claude.json.new ~/.claude.json
+```
+
+```bash
+ssh -t angelia@<tailnet-ip> 'cd ~/.angelia && ~/.local/bin/claude remote-control --name angelia-server --permission-mode default'
+# answer y to "Enable Remote Control?", wait until it is connected, then Ctrl+C
+```
+
+Without that consent the service exits with `"Enable Remote Control?" got no answer`.
+
+Then add the unit:
+
+```ini
+# ~/.config/systemd/user/claude-rc.service
+[Unit]
+Description=Claude Remote Control in ~/.angelia
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/.angelia
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/claude remote-control --name angelia-server --permission-mode default
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload && systemctl --user enable --now claude-rc
+```
+
+- **The account matters.** Remote Control needs the full login from step 5, not a setup token. The session appears under that account's claude.ai/code.
+- **This session is not an Angelia profile.** None of the deny floor applies to it: it can read `~/.angelia/env`, `wa/` and `api.token`.
+- **Who can drive it.** Anyone who gets into that claude.ai account can. Keep the account's 2FA on, and keep the session's permission mode at `default`, never `bypassPermissions`.
+
+**Check:**
+- `systemctl --user is-active claude-rc` prints `active`, and `NRestarts=0`.
+- `journalctl --user -u claude-rc` shows `Capacity: 0/32` and a `claude.ai/code?environment=…` link.
+- `angelia-server` is listed in claude.ai/code. Measured 2026-11-18 with Claude Code 2.1.327.
+
+## 10. Optional: sync the workspace to a private repo twice a day
+
+The workspace is the instance's memory: profiles, instructions and the table. A server lost without it is lost for good.
+
+- **The `.gitignore` written by `angelia init` keeps secrets out:** `.state/`, `**/.claude/settings.local.json` (where profile tokens live), `.env`, keys.
+- **Check before the first push:** `git ls-files | grep -E 'settings.local|\.state/|token'` must print nothing.
+
+**The repo.** Create a private repo with the server's GitHub identity:
+
+```bash
+gh repo create <org>/angelia-workspace --private
+```
+
+**The script**, `~/.local/bin/angelia-workspace-sync` (mode 700). It commits, merges `origin/main`, and pushes. On a conflict it aborts the merge and pushes nothing:
+
+```sh
+#!/bin/sh
+set -eu
+cd "$HOME/.angelia/workspace"
+git remote get-url origin >/dev/null 2>&1 || git remote add origin git@github.com:<org>/angelia-workspace.git
+git add -A
+git diff --cached --quiet || git commit -q -m "sync: $(hostname) $(date +%Y-%m-%dT%H:%M%z)"
+git fetch -q origin
+if git rev-parse -q --verify origin/main >/dev/null; then
+  git merge -q --no-edit origin/main || { git merge --abort; echo "merge conflict; nothing pushed" >&2; exit 1; }
+fi
+git push -q origin HEAD:main
+```
+
+**The units**, in `~/.config/systemd/user/`:
+
+- `angelia-workspace-sync.service`: `Type=oneshot`, `Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin`, `ExecStart=%h/.local/bin/angelia-workspace-sync`.
+- `angelia-workspace-sync.timer`: `OnCalendar=*-*-* 16,23:00:00`, `Persistent=true` (a sync missed while the server was down runs at boot), `WantedBy=timers.target`.
+
+```bash
+systemctl --user enable --now angelia-workspace-sync.timer
+```
+
+**A merged table does not take effect on its own.** A `routing.yaml` changed on GitHub and merged here still waits for `angelia accept` (or `/restart confirm`), because the daemon runs on the accepted copy.
+
+**Check:**
+- `systemctl --user start angelia-workspace-sync` logs `synced <commit>`.
+- `systemctl --user list-timers` shows the next run.
+- `git ls-tree -r --name-only origin/main | grep settings.local` prints nothing.
+
 ## Security
 
 ### Done by the steps above
@@ -410,8 +529,8 @@ Then, as `angelia`: `ln -sf /usr/local/lib/claude-bwrap/bwrap ~/.local/bin/bwrap
 - **No public port.**
   - The Hetzner firewall and `ufw` both drop inbound traffic.
   - Angelia opens no port at all. Its API is a Unix socket under `~/.angelia`.
-  - VNC and the Syncthing GUI are on localhost, and Syncthing's sync port is on the tailnet only.
-- **The server cannot reach your devices.** Tailscale grants no `tag:server` source except Syncthing's one port to the laptop. SSH to the server needs both your tailnet login and your key; the policy's `tests` block refuses any change that lets the server reach your laptop.
+  - If you set up the optional desktop or Syncthing: VNC listens on a Unix socket only `angelia` can open, and Syncthing's GUI on localhost and its sync port on the tailnet only.
+- **The server cannot reach your devices.** No Tailscale grant has `tag:server` as its source. SSH to the server needs both your tailnet login and your key; the policy's `tests` block refuses any change that lets the server reach your laptop.
 - **Private files.** The home folder is 700 and `umask 077` applies, so files are created private. Angelia keeps `~/.angelia/env` at 600, and Claude keeps its credentials at 600.
 - **Angelia's deny floor** keeps the agents' file tools away from:
   - Claude's `.credentials.json`, `~/.ssh`, `gh`'s login and Angelia's own secrets.
