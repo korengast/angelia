@@ -92,9 +92,11 @@ test('filePath is always ~/.config, whatever XDG_CONFIG_HOME says: the restarter
   } finally { if (was === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = was; }
 });
 
-test('$ is doubled in ExecStart words only; Environment keeps it literal', () => {
+test('$ is doubled in ExecStart arguments only; the program path and Environment keep it literal', () => {
   const u = systemd.render({ node: '/n', entry: '/e', config: '/c/$y.yaml', stateDir: '/a/$x/state', path: '/p', home: '/h' });
   assert.match(u, /^ExecStart=.*"\/c\/\$\$y\.yaml"$/m);
+  const n = systemd.render({ node: '/a/$x/node', entry: '/e/$z', config: '/c', stateDir: '/s', path: '/p', home: '/h' });
+  assert.match(n, /^ExecStart="\/a\/\$x\/node" "\/e\/\$\$z" /m, 'the program path is never expanded: no $$ there');
   const env = /^Environment=.*$/m.exec(u)![0];
   assert.ok(env.includes('"ANGELIA_STATE_DIR=/a/$x/state"'));
   assert.ok(!env.includes('$$'));

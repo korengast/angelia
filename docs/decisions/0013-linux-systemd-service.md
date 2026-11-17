@@ -21,7 +21,9 @@ and the pi backend stay macOS only.
   (table, node, entry, state folder) in a `# angelia: {json}` comment line, so nothing parses
   systemd quoting, and no Mac install has to migrate.
 - **Escaping, per directive** (systemd.exec(5)): `ExecStart=` words are quoted with `\`, `"`, `%`
-  and `$` escaped (`$$`, because it expands `$VAR`). `Environment=` does no `$` expansion, so there
+  and `$` escaped (`$$`, because it expands `$VAR`), except the program path: systemd never
+  expands it, so a `$$` there stays `$$` (measured: `systemd-analyze verify` on ubuntu said the
+  program "is not executable"). `Environment=` does no `$` expansion, so there
   only `\`, `"` and `%`. `WorkingDirectory=` and `append:` take only `%%`. A newline in any value is
   refused: systemd cannot express it.
 - **Restart policy:** `Restart=on-failure`, `RestartSec=10` (launchd's KeepAlive without
@@ -39,8 +41,8 @@ systemd's default `KillMode=control-group` kills every process the service start
   service, while the transient unit lives on. A failed restart leaves the daemon up and the client
   exits with the restarter's own code (`ExecMainStatus`). So: exit by signal is a good restart, a
   non-zero code a failed one. `-p StandardOutput=append:…` goes over D-Bus as given, with no
-  specifier expansion, so it is not `%`-escaped; the command words are `$`-escaped, since the
-  manager expands `$VAR` in a transient service's command as in a unit file.
+  specifier expansion, so it is not `%`-escaped; the command's arguments are `$`-escaped, since the
+  manager expands `$VAR` in a transient service's arguments as in a unit file (the program path is not).
 - **Angelia's tmux server** starts inside `systemd-run --user --scope --description="angelia tmux"`
   (only `new-session`, the call that may start it). The server's double fork stays in the scope.
   The description keeps the session key and the agent's argv out of the journal.

@@ -68,7 +68,7 @@ test('under systemd the restarter is its own unit: waits for it, logs to daemon.
   assert.ok(a.includes('--setenv=XDG_RUNTIME_DIR=/run/user/1'));
   assert.deepEqual(a.slice(-5), ['/n', '/e', 'restart', '--from-daemon', '/c/$$x.yaml'], 'systemd-run expands $VAR in the command: $ doubled there');
   const d = restartUnitArgv({ node: '/a$b/n', entry: '/e', config: '/c', stateDir: '/s/$y', env: { HOME: '/h/$z' }, now: 1 });
-  assert.equal(d[d.length - 5], '/a$$b/n');
+  assert.equal(d[d.length - 5], '/a$b/n', 'the program path is never expanded: a doubled $ would stay doubled');
   assert.ok(d.includes('StandardOutput=append:/s/$y/daemon.out') && d.includes('--setenv=HOME=/h/$z'), 'not in -p or --setenv values');
   assert.ok(!a.some((x) => /TOKEN|SESSION_KEY/.test(x)));
 });

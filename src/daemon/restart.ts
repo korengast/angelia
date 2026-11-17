@@ -174,13 +174,14 @@ export function launchChatRestart(key: string, configPath: string, onFail: (why:
  *  the daemon's cgroup. Output goes to daemon.out as the service's does (verbatim: `systemd-run -p` stores it
  *  as given, so `%` is not doubled as in the unit file), and only the variables the restarter needs are carried: the new
  *  daemon reads ~/.angelia/env itself, and nothing secret belongs on a command line. systemd-run expands `$VAR`
- *  in the command it runs, so `$` is doubled in those words; `-p` and `--setenv` values are taken as given. */
+ *  in the arguments of the command it runs, so `$` is doubled in those words (not in the program path, which is never
+ *  expanded); `-p` and `--setenv` values are taken as given. */
 export function restartUnitArgv(o: { node: string; entry: string; config: string; stateDir: string; env: NodeJS.ProcessEnv; now?: number }): string[] {
   const log = `append:${o.stateDir}/daemon.out`;
   const setenv = ['PATH', 'HOME', 'LANG', 'ANGELIA_STATE_DIR', 'XDG_RUNTIME_DIR'].flatMap((k) => (o.env[k] ? [`--setenv=${k}=${o.env[k]}`] : []));
   return ['--user', '--wait', '--collect', '--quiet', `--unit=angelia-restart-${o.now ?? Date.now()}`,
     '-p', `StandardOutput=${log}`, '-p', `StandardError=${log}`, `--working-directory=${o.stateDir}`, ...setenv,
-    ...[o.node, o.entry, 'restart', '--from-daemon', o.config].map((w) => w.replace(/\$/g, '$$$$'))];
+    o.node, ...[o.entry, 'restart', '--from-daemon', o.config].map((w) => w.replace(/\$/g, '$$$$'))];
 }
 
 /**

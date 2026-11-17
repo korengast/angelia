@@ -23,8 +23,9 @@ export function unitPath(home = homedir()): string {
 /** systemd expands `%x` specifiers in unit values and in `append:` paths; `%%` is a literal percent. */
 const escapeSpecifiers = (s: string): string => s.replace(/%/g, '%%');
 
-/** One quoted word: backslash and quote escaped, `%` doubled. ExecStart also expands `$VAR`, so there `$` is doubled
- *  too (`exec`); Environment= does not, so a `$` stays literal there. */
+/** One quoted word: backslash and quote escaped, `%` doubled. ExecStart also expands `$VAR` in its arguments, so there
+ *  `$` is doubled too (`exec`). Not in the program path (the first word): systemd never expands it, so `$$` would stay
+ *  `$$` (measured by systemd-analyze verify on ubuntu). Environment= does not expand either, so a `$` stays literal there. */
 const word = (s: string, exec = false): string => {
   const q = s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%');
   return `"${exec ? q.replace(/\$/g, '$$$$') : q}"`;
@@ -42,7 +43,7 @@ export function buildUnit(i: ServiceInput): string {
 Description=Angelia daemon
 
 [Service]
-ExecStart=${[i.node, i.entry, 'daemon', i.config].map((a) => word(a, true)).join(' ')}
+ExecStart=${[i.node, i.entry, 'daemon', i.config].map((a, n) => word(a, n > 0)).join(' ')}
 WorkingDirectory=${escapeSpecifiers(i.stateDir)}
 Environment=${env.map((a) => word(a)).join(' ')}
 Restart=on-failure
