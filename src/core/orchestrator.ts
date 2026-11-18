@@ -1456,12 +1456,18 @@ export function agentText(i: Inbound, bare = isAgentCommand(i)): string {
   return envelope(i) + quoteBlock(i.quoted) + '\n\n' + quoteLookalikes(i.text) + i.media.map(mediaLine).join('');
 }
 
+/** At most this many characters of a quoted message reach the agent: a reply to a long answer must
+ *  not send that answer whole again. */
+export const QUOTE_MAX = 2000;
+
 /** The message a reply quotes, under the envelope, with every line behind ">", so no line of it can
  *  pose as an envelope. Any line break counts, not only `\n`: handle() cleans the quote, and this does
- *  not rely on it. */
+ *  not rely on it. Cut at QUOTE_MAX characters (whole code points, so no emoji is split), with "…". */
 function quoteBlock(quoted: string | undefined): string {
-  const q = quoted?.trim();
+  let q = quoted?.trim();
   if (!q) return '';
+  const chars = Array.from(q);
+  if (chars.length > QUOTE_MAX) q = chars.slice(0, QUOTE_MAX).join('').trimEnd() + '…';
   return '\nReplying to:\n' + q.split(/\r\n|[\r\n\u0085\u2028\u2029]/).map((l) => `> ${l}`).join('\n');
 }
 
