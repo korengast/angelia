@@ -64,7 +64,7 @@ Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
 
 <h2 id="limits">Limits</h2>
 <ul>
-  <li>macOS, and Linux as experimental (<a href="/guides/claude-code-linux-server/">Claude Code on a Linux server</a>). Scheduled jobs and voice replies are still macOS only, and on Linux the sandbox needs an extra step. The Mac must be on and awake: while it sleeps, nothing answers.</li>
+  <li>macOS, and Linux as experimental (<a href="/guides/claude-code-linux-server/">Claude Code on a Linux server</a>). Scheduled jobs and voice replies are still macOS only, and on Linux the sandbox needs an extra step and does not hold in <code>bypassPermissions</code>. The Mac must be on and awake: while it sleeps, nothing answers.</li>
   <li>Claude Code profiles use your claude.ai login. API keys are kept out of the agent's environment, and in the default mode a session that would bill a Console API key is refused.</li>
   <li>Each chat runs its own Claude Code process. All chats share your plan's limits.</li>
   <li>Claude Code's auto memory (the notes it keeps per project under <code>~/.claude</code>) is off in every session Angelia starts. Each profile keeps its memory in its own folder.</li>
