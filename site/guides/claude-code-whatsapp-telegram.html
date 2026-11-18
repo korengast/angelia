@@ -2,7 +2,7 @@
   "title": "Claude Code on WhatsApp and Telegram: four ways compared",
   "description": "Claude Code has no official WhatsApp channel. Remote Control, the Telegram channel, a WhatsApp plugin and Angelia compared: setup, limits, which to pick.",
   "date": "2026-10-02",
-  "updated": "2026-10-30",
+  "updated": "2026-11-18",
   "faq": ["when-not-angelia"],
   "draft": false
 }-->
@@ -13,7 +13,7 @@
   <li>Keep steering one coding session from your phone: <a href="#remote-control"><strong>Remote Control</strong></a>.</li>
   <li>Ask a running session a quick question from Telegram, Discord or iMessage: an <a href="#official-channels"><strong>official channel</strong></a>.</li>
   <li>The same on WhatsApp, from your own number: a <a href="#whatsapp-plugins"><strong>community plugin</strong></a>.</li>
-  <li>A separate session per chat, each in its own folder with its own rules, running in the background: <a href="#angelia"><strong>Angelia</strong></a> (mine; macOS only for now, and WhatsApp needs a second number).</li>
+  <li>A separate session per chat, each in its own folder with its own rules, running in the background: <a href="#angelia"><strong>Angelia</strong></a> (mine; macOS, or Linux as experimental, and WhatsApp needs a second number).</li>
 </ul>
 <p>All four run on your computer, against your files, so the computer has to be on.</p>
 
@@ -78,7 +78,7 @@ angelia service install</code></pre>
 <p>The first line checks the release's signature, installs Angelia and starts the setup; you can <a href="https://github.com/{{REPO}}/blob/v{{VERSION}}/install.sh">read the script</a> first. The second makes it start at login and come back after a crash. The full setup, step by step: <a href="/guides/claude-code-from-phone/">how to control Claude Code from your phone</a>.</p>
 <figure class="video"><video controls muted playsinline preload="none" poster="/demo-poster.jpg" width="1920" height="1080" aria-label="Installing Angelia: from the install command to the first reply"><source src="/angelia-demo.webm" type="video/webm"><source src="/angelia-demo-muted.mp4" type="video/mp4"><a href="/angelia-demo-muted.mp4">Download the video</a></video><figcaption>The install command, the signature check, the setup wizard and the first reply. 48 seconds, sped up.</figcaption></figure>
 <ul>
-  <li><strong>Needs:</strong> macOS, Node 22.23.4+, 24.22.1+ or 26.12.1+, git, and a CLI you already use, signed in to your own account: Claude Code (2.1.270 or newer), Codex, Grok Build or pi. A Telegram bot (setup asks for its token), or for WhatsApp a second, established number, not your personal one: Angelia ignores what its own account sends, so on your personal number it would not hear you. WhatsApp bans newly created numbers that start acting like bots, often within hours.</li>
+  <li><strong>Needs:</strong> macOS, or a Linux server as experimental (<a href="/guides/claude-code-linux-server/">how</a>), Node 22.23.4+, 24.22.1+ or 26.12.1+, git, and a CLI you already use, signed in to your own account: Claude Code (2.1.270 or newer), Codex, Grok Build or pi. A Telegram bot (setup asks for its token), or for WhatsApp a second, established number, not your personal one: Angelia ignores what its own account sends, so on your personal number it would not hear you. WhatsApp bans newly created numbers that start acting like bots, often within hours.</li>
   <li><strong>Good at:</strong> an assistant per chat that answers whenever your Mac is on. A command the profile may not run on its own comes to the chat and waits for an owner's yes; no answer means no. Voice notes (with Whisper installed) and scheduled check-ins work too. API keys are kept out of the CLI's environment, so in the default mode a chat cannot switch you to per-token billing.</li>
   <li><strong>Keep in mind:</strong> it is a young project (v0.3), maintained by one person. Each chat keeps a warm CLI process, so ten chats are ten processes on your Mac, all drawing on the same plan limits.</li>
   <li><strong>Security:</strong> every profile is compiled with deny rules for your credentials and the other profiles' folders, but a deny stops the CLI's file tools, not every program it runs. For a profile other people can talk to, keep shell commands asking, or set <code>sandbox: true</code>. Its WhatsApp link can read every chat on the second number.</li>
@@ -93,7 +93,7 @@ angelia service install</code></pre>
   <li>You live in Discord or iMessage. Use the official channel.</li>
   <li>You want one assistant on your own WhatsApp number, and all your chats can share one session, one folder and one set of permissions. The plugin is simpler: nothing to route, no second number, and it already has per-group personalities.</li>
   <li>You pay for Claude Code with a Console API key. Angelia's Claude Code profiles need a claude.ai login; channels accept a key.</li>
-  <li>You are on Linux or Windows, or your Mac sleeps in a bag all day. Angelia is macOS only for now (Linux is next), and it answers only while the Mac is on.</li>
+  <li>You are on Windows, or your only computer sleeps in a bag all day and you do not want to run a server. Angelia runs on macOS, and on Linux as experimental, and it answers only while its machine is on.</li>
 </ul>
 
 <h2 id="also-possible">Also possible, not covered here</h2>

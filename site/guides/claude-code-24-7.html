@@ -2,6 +2,7 @@
   "title": "How to run Claude Code 24/7 on your own machine",
   "description": "Keep Claude Code reachable all day on your Mac: a service that starts at login and survives crashes, no sleep, scheduled jobs, and what still stops it.",
   "date": "2026-10-18",
+  "updated": "2026-11-18",
   "draft": false
 }-->
 <p class="lede">Claude Code is a terminal program. Close the terminal, let the laptop sleep, or reboot, and it is gone. To have it answer at any hour, three things must stay up: a process that runs Claude Code, a way to reach it, and the machine itself. This page goes through each one on a Mac. I use Angelia for the first two, which I built, so the commands below use it. The part about the machine applies whatever you use.</p>
@@ -34,7 +35,7 @@ angelia service install</code></pre>
   <li><strong>For a few hours only:</strong> run <code>caffeinate -s</code> in a terminal. The Mac stays awake on power until you press Ctrl-C.</li>
   <li><strong>After a reboot:</strong> the service starts at login, not at boot. With FileVault on, someone must log in after each reboot. macOS updates reboot the Mac, so check after an update.</li>
 </ul>
-<p>An old Mac mini that stays home is the simplest choice. It uses little power and never goes into a bag.</p>
+<p>An old Mac mini that stays home is the simplest choice. It uses little power and never goes into a bag. No Mac that stays on? A small Linux server works too: <a href="/guides/claude-code-linux-server/">Claude Code on a Linux server</a>.</p>
 
 <h2 id="scheduled">3. Work it does without you asking</h2>
 <p>Running all day also lets the agent work on a schedule. A profile lists its jobs in <code>angelia-jobs.yaml</code> in its folder:</p>
@@ -52,7 +53,7 @@ angelia service install</code></pre>
 <ul>
   <li>Power cuts and network outages. Angelia reconnects by itself when the network comes back.</li>
   <li>Your plan's usage limits. Every chat draws on the same plan.</li>
-  <li>macOS only for now. Linux, with a systemd unit, is next.</li>
+  <li>This page is for macOS. On Linux, Angelia runs as a systemd user service that starts at boot, with linger. That is experimental: see <a href="/guides/claude-code-linux-server/">Claude Code on a Linux server</a>.</li>
   <li>Claude Code changes often. A new version can break something before Angelia is updated for it. Angelia is a young project (v0.3), maintained by one person.</li>
 </ul>
 
