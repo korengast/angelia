@@ -410,10 +410,10 @@ chmod 644 /etc/claude-code/managed-settings.json
 ```
 
 - **Why managed settings.** Claude Code reads `sandbox.bwrapPath` only from managed settings (`/etc/claude-code/managed-settings.json` on Linux), so no user, project or local file can point the sandbox at another binary. That is why the key did nothing in `~/.claude/settings.json` or `--settings`: the denial still named `unpriv_bwrap`. Root owns the file, so no agent can change it.
-- **Not a `bwrap` link in `~/.local/bin`.** That folder is on the service's `PATH`, and an agent that runs a command outside the sandbox can write there: it could swap the binary for every other profile.
+- **Not a `bwrap` link in `~/.local/bin`.** That folder is on the service's `PATH`, and the agent of any profile without the sandbox can write there: it could swap the binary for every sandboxed profile.
 - **It applies to every Claude Code session on the box,** `admin`'s too. It only names the binary; it does not turn the sandbox on.
 - **The cost:** that one binary may create user namespaces, as every program could before Ubuntu 24.04. Mode 750 and group `angelia` keep it to `angelia` and root.
-- **Check:** in a `claude` session as `angelia`, `/status` lists `Enterprise managed settings (file)` under setting sources. A sandboxed `touch ~/sandbox-probe` then fails with `Read-only file system`, and `sudo dmesg | grep unpriv_bwrap` shows no new denial. The measurement below used a `PATH` link; the managed-settings route is from the [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference#sandbox-bwrappath), so run this check.
+- **Check:** in a `claude` session as `angelia`, `/status` lists `Enterprise managed settings (file)` under setting sources. Then ask Claude, in a sandboxed profile, to run `touch ~/sandbox-probe`: it fails with `Read-only file system`, and `sudo dmesg | grep unpriv_bwrap` shows no new denial. The measurement below used a `PATH` link; the managed-settings route is from the [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference#sandbox-bwrappath), so run this check.
 
 **2. Once it starts, it holds in `acceptEdits`, and not in `bypassPermissions`.** Probes from a sandboxed Bash in a compiled profile:
 
@@ -521,7 +521,7 @@ systemctl --user enable --now angelia-workspace-sync.timer
 
 **Check:**
 - `systemctl --user start angelia-workspace-sync` exits without an error, and `journalctl --user -u angelia-workspace-sync -n 5` shows `saved N files, pushed` (or no line, when there was nothing new).
-- `git -C ~/.angelia/workspace log -1 --format=%s origin/main` shows `Workspace sync <date>: N files`.
+- After a run that saved files, `git -C ~/.angelia/workspace log -1 --format=%s origin/main` shows `Workspace sync <date>: N files`.
 - `systemctl --user list-timers` shows the next run.
 - `git -C ~/.angelia/workspace ls-tree -r --name-only origin/main | grep -E '(^|/)(\.state|\.inbox|secrets)/|(^|/)\.env'` prints nothing.
 
