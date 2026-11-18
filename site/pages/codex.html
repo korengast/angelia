@@ -2,6 +2,7 @@
   "title": "Angelia for Codex: setup, sandbox, approvals and limits",
   "description": "Run the Codex CLI from WhatsApp or Telegram: a session per chat, Codex's own OS sandbox with your profile's rules, approvals in the chat, files, limits.",
   "date": "2026-10-27",
+  "updated": "2026-11-18",
   "nav": "Codex",
   "card": "Every command in Codex's own sandbox.",
   "draft": false
@@ -76,7 +77,7 @@ Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
 
 <h2 id="limits">Limits</h2>
 <ul>
-  <li>macOS only for now. Linux is next. The Mac must be on and awake: while it sleeps, nothing answers.</li>
+  <li>Tested on macOS only. Angelia also runs on Linux as experimental, measured with Claude Code (<a href="/guides/claude-code-linux-server/">Claude Code on a Linux server</a>). The Mac must be on and awake: while it sleeps, nothing answers.</li>
   <li>Codex marks its app-server protocol as experimental, and marks the two settings Angelia turns on for chat approvals as under development. A Codex without them still runs sandboxed, but a yes adds nothing.</li>
   <li>The sandbox lets commands reach the web, and nothing else on the network.</li>
   <li>The terminal resume line in <code>/status</code> and the Claude app view are for Claude Code only.</li>

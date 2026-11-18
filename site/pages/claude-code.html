@@ -3,7 +3,7 @@
   "heading": "Claude Code on WhatsApp and Telegram: sessions and approvals from your phone",
   "description": "What Angelia gives Claude Code: a session and folder per chat, your CLAUDE.md, skills and MCP servers as they are, approvals, voice notes, files, limits.",
   "date": "2026-10-27",
-  "updated": "2026-10-30",
+  "updated": "2026-11-18",
   "nav": "Claude Code",
   "card": "One session per chat, on your Mac.",
   "draft": false
@@ -15,7 +15,7 @@
   <li><strong>One session per chat.</strong> Each chat is routed to a profile: a folder with its own instructions and memory. The session comes back after a restart or an idle period. <code>/new</code> in one chat never touches another.</li>
   <li><strong>Your Claude Code, unchanged.</strong> Angelia starts the <code>claude</code> you installed, in the profile's folder. Anything Claude Code reads in a project works the same.</li>
   <li><strong>Approvals in the chat.</strong> A command the profile may not run on its own comes to the chat and waits for an owner's yes.</li>
-  <li><strong>It keeps running.</strong> As a LaunchAgent, Angelia starts at login and comes back after a crash. The chat answers whenever the Mac is on and awake.</li>
+  <li><strong>It keeps running.</strong> As a LaunchAgent, Angelia starts at login and comes back after a crash. The chat answers whenever the Mac is on and awake. On a Linux server it runs as a systemd user service instead (experimental, <a href="/guides/claude-code-linux-server/">how</a>).</li>
 </ul>
 
 <h2 id="what-you-need">What you need</h2>
@@ -64,7 +64,7 @@ Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
 
 <h2 id="limits">Limits</h2>
 <ul>
-  <li>macOS only for now. Linux is next. The Mac must be on and awake: while it sleeps, nothing answers.</li>
+  <li>macOS, and Linux as experimental (<a href="/guides/claude-code-linux-server/">Claude Code on a Linux server</a>). Scheduled jobs and voice replies are still macOS only, and on Linux the sandbox needs an extra step and does not hold in <code>bypassPermissions</code>. The Mac must be on and awake: while it sleeps, nothing answers.</li>
   <li>Claude Code profiles use your claude.ai login. API keys are kept out of the agent's environment, and in the default mode a session that would bill a Console API key is refused.</li>
   <li>Each chat runs its own Claude Code process. All chats share your plan's limits.</li>
   <li>Claude Code's auto memory (the notes it keeps per project under <code>~/.claude</code>) is off in every session Angelia starts. Each profile keeps its memory in its own folder.</li>

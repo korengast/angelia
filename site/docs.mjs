@@ -1,6 +1,6 @@
 // The repository's Markdown docs as HTML, at build time, so the site never drifts from them. A small
 // renderer for the Markdown docs/ writes, not for any Markdown: ATX headings, paragraphs, tight and
-// loose lists, fenced code, pipe tables, code spans, inline links, bold and italic with *. What
+// loose lists (nested too), fenced code, pipe tables, code spans, inline links, bold and italic with *. What
 // unsupported() knows to be outside that fails the build, so such a doc never renders differently here
 // and on GitHub without notice.
 
@@ -53,8 +53,8 @@ const UNSUPPORTED_LINE = [
   [/^ {0,3}~~~/, 'a ~~~ fence'],
   [/^ {0,3}>/, 'a blockquote'],
   [/^ {0,3}(=+|-+|(\* *){3,}|(_ *){3,})\s*$/, 'a setext heading or a rule'],
-  [/^ +([-*+]|\d+[.)]) /, 'an indented (nested) list item'],
-  [/^(\+|\d+\)) /, 'a list marker other than -, * or 1.'],
+  [/^ *(\+|\d+\)) /, 'a list marker other than -, * or 1.'],
+  [/^ *\t/, 'a tab indent (indent with spaces)'],
 ];
 const UNSUPPORTED_TEXT = [
   [/!\[/, 'an image'],
@@ -70,6 +70,8 @@ const BARE_URL = /https?:\/\/|www\./;
 function unsupported(md) {
   const found = [];
   const lines = md.replace(/\r\n?/g, '\n').split('\n');
+  // false, or where the open fence sits: in a list item (it may close at any indent) or at the top
+  // level (it closes at 0-3 spaces, as render() closes it), with its line.
   let fenced = false;
   let para = [];
   const flush = () => {
@@ -81,8 +83,12 @@ function unsupported(md) {
   let inList = false;
   let afterBlank = true;
   lines.forEach((l, k) => {
-    if (FENCE.test(l) || (fenced && /^ {0,3}```\s*$/.test(l))) { flush(); fenced = !fenced; afterBlank = false; return; }
-    if (fenced) return;
+    if (fenced) {
+      if ((fenced.inList ? /^ *```\s*$/ : /^ {0,3}```\s*$/).test(l)) { fenced = false; afterBlank = false; }
+      return;
+    }
+    // A fence in a nested list item sits deeper than three spaces.
+    if ((inList ? FENCE_IN_LIST : FENCE).test(l)) { flush(); fenced = { inList, line: k + 1 }; afterBlank = false; return; }
     if (/^\s*$/.test(l)) { flush(); afterBlank = true; return; }
     // Four spaces after a blank line are code, unless they go on with a list item.
     if (ITEM.test(l)) inList = true;
@@ -93,6 +99,8 @@ function unsupported(md) {
     para.push([k + 1, l]);
   });
   flush();
+  // An open fence would take every line after it, here and on GitHub.
+  if (fenced) found.push(`a fence that is never closed, opened at line ${fenced.line}`);
   return found;
 }
 
@@ -106,6 +114,8 @@ const plain = (md) => inline(md).replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').r
 const cells = (row) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
 const ITEM = /^( {0,3})([-*]|\d+\.) +(.*)$/;
 const FENCE = /^ {0,3}```\s*([\w-]*)\s*$/;
+const FENCE_IN_LIST = /^ *```\s*([\w-]*)\s*$/;
+const indentOf = (l) => l.length - l.trimStart().length;
 // A closing run of #s counts only after a space, so "Use C#" keeps its #.
 const HEADING = /^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/;
 const TABLE_RULE = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
@@ -155,8 +165,10 @@ function render(md, link, slug) {
       const rows = [];
       for (i += 2; i < lines.length && lines[i].trimStart().startsWith('|'); i++) rows.push(cells(lines[i]));
       const row = (r, tag) => `<tr>${head.map((_, k) => `<${tag}>${inline(r[k] ?? '', link)}</${tag}>`).join('')}</tr>`;
+      // A header row with no text (`| | |`, a table of name and meaning) is left out rather than drawn empty.
+      const thead = head.some((c) => c) ? `<thead>${row(head, 'th')}</thead>` : '';
       // A wide table scrolls sideways on a phone, under a hint (see the page's CSS).
-      out.push(`<div class="table${head.length >= 4 ? ' wide' : ''}"><table><thead>${row(head, 'th')}</thead><tbody>${rows.map((r) => row(r, 'td')).join('')}</tbody></table></div>`);
+      out.push(`<div class="table${head.length >= 4 ? ' wide' : ''}"><table>${thead}<tbody>${rows.map((r) => row(r, 'td')).join('')}</tbody></table></div>`);
       continue;
     }
     if ((m = line.match(ITEM))) {
@@ -166,19 +178,33 @@ function render(md, link, slug) {
       while (i < lines.length) {
         const im = lines[i].match(ITEM);
         if (!im || /\d/.test(im[2]) !== ordered) break;
+        // The item's content column: a line indented this far is the item's, a nested list item included.
         const width = im[1].length + im[2].length + 1;
+        const own = (l) => indentOf(l) >= width || (/^ {2,}\S/.test(l) && !ITEM.test(l));
         const body = [im[3]];
+        let fence = false;
         for (i++; i < lines.length; i++) {
           const l = lines[i];
+          // Inside a fenced block of the item, every line is code, blank ones too, up to its closing fence.
+          if (fence) { body.push(l.slice(Math.min(width, indentOf(l)))); if (/^ *```\s*$/.test(l)) fence = false; continue; }
           if (/^\s*$/.test(l)) {
-            // A blank line goes on with the item only when an indented line follows it.
+            // A blank line goes on with the item only when a line of the item follows it. It makes the list
+            // loose when it parts two of the item's own blocks, not when it sits inside a nested list.
             const next = lines[i + 1] ?? '';
-            if (/^ {2,}\S/.test(next) && !ITEM.test(next)) { body.push(''); loose = true; continue; }
-            break;
+            if (!/\S/.test(next) || !own(next)) break;
+            const top = body.findLast((b) => /^\S/.test(b)) ?? '';
+            const inner = next.slice(Math.min(width, indentOf(next)));
+            if (!(ITEM.test(top) && (ITEM.test(inner) || /^ /.test(inner)))) loose = true;
+            body.push('');
+            continue;
           }
-          if (ITEM.test(l)) break;
-          if (/^ {2,}/.test(l)) { body.push(l.slice(Math.min(width, l.length - l.trimStart().length))); continue; }
-          if (startsBlock(l) || l.trimStart().startsWith('|')) break;
+          if (own(l)) {
+            const s = l.slice(Math.min(width, indentOf(l)));
+            body.push(s);
+            if (FENCE.test(s)) fence = true;
+            continue;
+          }
+          if (ITEM.test(l) || startsBlock(l) || l.trimStart().startsWith('|')) break;
           body.push(l); // a lazy continuation line
         }
         items.push(body.join('\n'));

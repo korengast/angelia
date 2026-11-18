@@ -68,15 +68,77 @@ test('site docs: heading ids follow github-slugger, and a # in a heading is kept
 });
 
 test('site docs: Markdown the renderer does not handle fails the build, with where it is', () => {
-  for (const [md, what] of [['> quoted', 'a blockquote'], ['Title\n===', 'a setext heading'], ['a\n\n---', 'a rule'], ['- a\n  - nested', 'an indented (nested) list item'],
-    ['+ item', 'a list marker'], ['~~~\ncode\n~~~', 'a ~~~ fence'], ['![logo](x.png)', 'an image'], ['a \\* b', 'a backslash escape'], ['a <br> b', 'raw HTML'],
+  for (const [md, what] of [['> quoted', 'a blockquote'], ['Title\n===', 'a setext heading'], ['a\n\n---', 'a rule'],
+    ['+ item', 'a list marker'], ['- a\n  + nested', 'a list marker'], ['- a\n\t- b', 'a tab indent'],
+    ['```\ncode', 'a fence that is never closed'], ['- a\n\n  ```\n  code\n- b', 'a fence that is never closed'],
+    // A top-level fence closes at 0-3 spaces, as the page renders it: a deeper ``` is code, and the fence stays open.
+    ['```\ncode\n    ```\nafter', 'a fence that is never closed'], ['~~~\ncode\n~~~', 'a ~~~ fence'], ['![logo](x.png)', 'an image'], ['a \\* b', 'a backslash escape'], ['a <br> b', 'raw HTML'],
     ['[a][ref]', 'a reference link'], ['[ref]: https://x.org', 'a reference link or definition'], ['a &rarr; b', 'an HTML entity'], ['see https://x.org now', 'a bare URL'],
     ['para\n\n    code', 'an indented code block'], ['~~gone~~', 'strikethrough'], ['an _emphasis_ here', 'underscore emphasis']])
     assert.throws(() => renderMarkdown(md), (e: Error) => e.message.includes(what), md);
   // Inside code, in a table's escaped pipe, and in a fenced block, the same characters are fine.
   assert.doesNotThrow(() => renderMarkdown('`<br> \\* ![x](y)`\n\n| a | b |\n|---|---|\n| `x \\| y` | c |\n\n```\n> quoted\n---\n```'));
+  // A deeper ``` inside a top-level fence is code: the check after the fence still runs, and the page shows it as code.
+  assert.throws(() => renderMarkdown('```\n    ```\n```\n\n> quoted'), (e: Error) => e.message.includes('a blockquote'));
+  assert.equal(renderMarkdown('```\n    ```\n```').html, '<pre><code>    ```</code></pre>');
   // A link's own URL, snake_case words, and a list item's indented continuation are fine too.
   assert.doesNotThrow(() => renderMarkdown('[site](https://x.org) and allow_from and a_b_c\n\n- item\n\n    more of the item'));
+});
+
+test('site docs: a nested list, a fence and a table go inside the item whose content column they reach', () => {
+  const md = [
+    '1. **Firewall.** One rule.',
+    '   - Remove the ICMP rule.',
+    '   - Check the page.',
+    '2. **Copy it:**',
+    '',
+    '   ```bash',
+    '   rsync -a x y',
+    '',
+    '   echo two',
+    '   ```',
+    '',
+    '   - `wa/` moves with it.',
+    '3. Last.',
+    '',
+    '- top',
+    '  - nested',
+    '    - deeper',
+    '  - nested again',
+    '- next',
+    '  1. inner',
+    '',
+    '  2. inner, loose',
+    '- after',
+    '',
+    'Then:',
+    '',
+    '- outer',
+    '  under it',
+    '  - a',
+    '',
+    '    a goes on',
+    '  ',
+    '| | |',
+    '|---|---|',
+    '| `admin` | Your login. |',
+  ].join('\n');
+  // Text in a nested item is escaped like any other, and a quote still ends a link's target there.
+  assert.equal(renderMarkdown('- a\n  - `<b>` & "x" > y\n    - [`<i>`](q.md?a=1&b="2")').html,
+    '<ul><li>a\n<ul><li><code>&lt;b&gt;</code> &amp; &quot;x&quot; &gt; y\n<ul><li>[<code>&lt;i&gt;</code>](q.md?a=1&amp;b=&quot;2&quot;)</li></ul></li></ul></li></ul>');
+  const { html } = renderMarkdown(md);
+  assert.equal(html, [
+    // A tight list stays tight with its nested list; a blank line between an item's own blocks makes it loose.
+    '<ol><li><p><strong>Firewall.</strong> One rule.</p>\n<ul><li>Remove the ICMP rule.</li><li>Check the page.</li></ul></li>' +
+    '<li><p><strong>Copy it:</strong></p>\n<pre class="bash"><code>rsync -a x y\n\necho two</code></pre>\n<ul><li><code>wa/</code> moves with it.</li></ul></li><li><p>Last.</p></li></ol>',
+    // Three levels deep, and a blank line inside a nested list does not loosen the list it sits in.
+    '<ul><li>top\n<ul><li>nested\n<ul><li>deeper</li></ul></li><li>nested again</li></ul></li>' +
+    '<li>next\n<ol><li><p>inner</p></li><li><p>inner, loose</p></li></ol></li><li>after</li></ul>',
+    '<p>Then:</p>',
+    '<ul><li>outer\nunder it\n<ul><li><p>a</p>\n<p>a goes on</p></li></ul></li></ul>',
+    // A header row with no text is left out.
+    '<div class="table"><table><tbody><tr><td><code>admin</code></td><td>Your login.</td></tr></tbody></table></div>',
+  ].join('\n'));
 });
 
 test('site docs: the Markdown copy rewrites link targets, never inside code', () => {
@@ -85,13 +147,13 @@ test('site docs: the Markdown copy rewrites link targets, never inside code', ()
 });
 
 test('site docs: every doc the site publishes renders with no Markdown left in its text', () => {
-  const files = ['docs/reference.md', 'docs/security.md', 'docs/runbook.md', ...readdirSync(join(repo, 'docs', 'decisions')).filter((f) => f.endsWith('.md')).map((f) => `docs/decisions/${f}`)];
+  const files = ['docs/reference.md', 'docs/security.md', 'docs/runbook.md', 'docs/linux-server.md', ...readdirSync(join(repo, 'docs', 'decisions')).filter((f) => f.endsWith('.md')).map((f) => `docs/decisions/${f}`)];
   for (const file of files) {
     const { title, html } = renderMarkdown(readFileSync(join(repo, file), 'utf8'));
     assert.ok(title, `${file}: a title`);
     // Outside code, no Markdown syntax survives: no bold markers, link brackets, fences or table rules.
     const text = html.replace(/<pre[\s\S]*?<\/pre>/g, '').replace(/<code>[\s\S]*?<\/code>/g, '');
-    for (const left of ['**', '](', '```', '|---', '\n# ', '\n## ']) assert.ok(!text.includes(left), `${file}: "${left}" left in the page`);
-    assert.equal((html.match(/<pre/g) ?? []).length, (readFileSync(join(repo, file), 'utf8').match(/^```/gm) ?? []).length / 2, `${file}: every fence a code block`);
+    for (const left of ['**', '](', '```', '|---', '\n# ', '\n## ', '\n- ', '\n1. ']) assert.ok(!text.includes(left), `${file}: "${left}" left in the page`);
+    assert.equal((html.match(/<pre/g) ?? []).length, (readFileSync(join(repo, file), 'utf8').match(/^ *```/gm) ?? []).length / 2, `${file}: every fence a code block`);
   }
 });
