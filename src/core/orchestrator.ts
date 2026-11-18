@@ -1473,7 +1473,7 @@ function quoteBlock(quoted: string | undefined): string {
   if (!q) return '';
   const chars = Array.from(q);
   if (chars.length > QUOTE_MAX) q = chars.slice(0, QUOTE_MAX).join('').trimEnd() + '…';
-  return '\n' + QUOTE_LABEL + '\n' + q.split(/\r\n|[\r\n\u0085\u2028\u2029]/).map((l) => `> ${l}`).join('\n');
+  return '\n' + QUOTE_LABEL + '\n' + q.split(/\r\n|[\r\n\v\f\u0085\u2028\u2029]/).map((l) => `> ${l}`).join('\n');
 }
 
 /** A line in the sender's own text shaped like one Angelia writes (an envelope, a `[file: …]` or

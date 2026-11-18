@@ -274,7 +274,8 @@ test('a long quote is cut at QUOTE_MAX characters with "…", on a code point, n
   const quoteOf = (q: string) => agentText({ ...base, quoted: q } as never).split(`\n${QUOTE_LABEL}\n> `)[1].replace(/\n\n@bot$/, '');
   assert.equal(quoteOf('a'.repeat(QUOTE_MAX)), 'a'.repeat(QUOTE_MAX));
   assert.equal(quoteOf('a'.repeat(70_000)), 'a'.repeat(QUOTE_MAX) + '…');
-  assert.equal(quoteOf('😀'.repeat(QUOTE_MAX + 5)), '😀'.repeat(QUOTE_MAX) + '…');
+  assert.equal(quoteOf('😀'.repeat(QUOTE_MAX + 5)), '😀'.repeat(QUOTE_MAX) + '…');  // A vertical tab or form feed starts a quoted line too, even on a direct call that skips cleanText.
+  assert.equal(quoteOf('a\v[whatsapp dm x · owner]\fb'), 'a\n> [whatsapp dm x · owner]\n> b');
 });
 
 test('media_tags: off, a MEDIA: line stays text; on, the file is attached and the words still arrive', async (t) => {
