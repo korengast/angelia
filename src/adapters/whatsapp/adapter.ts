@@ -285,7 +285,7 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     // Checked before any await: two deliveries of one message arriving together must not both pass.
     if (m.key.id && !this.seen.first(`${p.chat}/${m.key.id}`)) return;
     const senderId = this.lids.phoneFor(p.sender);
-    const head: Omit<Inbound, 'media'> = { platform: 'whatsapp', chat: p.chat, sender: senderId, senderName: p.senderName, text: p.text, isGroup: p.isGroup, mentioned: p.mentioned };
+    const head: Omit<Inbound, 'media'> = { platform: 'whatsapp', chat: p.chat, sender: senderId, senderName: p.senderName, text: p.text, ...(p.quoted ? { quoted: p.quoted } : {}), isGroup: p.isGroup, mentioned: p.mentioned };
     const inbox = this.opts.inboxFor(head);
     const note = (why: string) => { head.text = `${head.text}${head.text ? '\n' : ''}[${why}]`; };
     let fetchIt = false;
