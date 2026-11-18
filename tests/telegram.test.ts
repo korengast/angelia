@@ -52,6 +52,17 @@ test('mentioned: an @mention of the bot (any case) or a reply to it; another bot
   assert.deepEqual(got.map((i) => i.mentioned), [true, false, true, false]);
 });
 
+test('a reply carries the text or the caption of the message it replies to; a reply with neither carries nothing', async () => {
+  const { tg, got } = rig();
+  const to = (extra: Record<string, unknown>) => ({ message_id: 1, date: 1, chat: { id: -100, type: 'supergroup', title: 'Trip' }, from: { id: 9, is_bot: false, first_name: 'Ann' }, ...extra });
+  await tg.bot.handleUpdate(group('what?', { reply_to_message: to({ text: 'line 1\nline 2' }) }));
+  await tg.bot.handleUpdate(group('nice', { reply_to_message: to({ photo: [{ file_id: 'p', file_unique_id: 'p', width: 1, height: 1 }], caption: 'the view' }) }));
+  await tg.bot.handleUpdate(group('hm', { reply_to_message: to({ sticker: { file_id: 's', file_unique_id: 's', type: 'regular', width: 1, height: 1, is_animated: false, is_video: false } }) }));
+  await tg.bot.handleUpdate(group('no reply'));
+  assert.deepEqual(got.map((i) => i.quoted), ['line 1\nline 2', 'the view', undefined, undefined]);
+  assert.deepEqual(got.map((i) => 'quoted' in i), [true, true, false, false]);
+});
+
 test('a topic message carries its thread; a plain group message does not', async () => {
   const { tg, got } = rig();
   await tg.bot.handleUpdate(group('in topic', { message_thread_id: 55, is_topic_message: true }));
