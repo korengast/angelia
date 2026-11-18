@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
-import { Orchestrator, envelope, agentText, isAgentCommand, QUOTE_LABEL, QUOTE_MAX } from '../src/core/orchestrator.js';
+import { Orchestrator, envelope, agentText, isAgentCommand } from '../src/core/orchestrator.js';
 import { DENIED_LINE, LATE_ANSWER_LINE, NO_ANSWER_LINE } from '../src/core/deliver/text.js';
 import type { Inbound } from '../src/core/types.js';
+import { QUOTE_LABEL, QUOTE_MAX } from '../src/core/orchestrator.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FAKE = join(here, 'fake-claude.mjs');
