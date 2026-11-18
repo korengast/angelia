@@ -31,7 +31,7 @@ A new Hetzner account may have to pass a verification first, by credit card or I
    - The form starts with TCP 22 and ICMP from any address. Remove both "Any" sources and the ICMP rule.
    - In the source field, Enter confirms the address but can also submit the whole form. Check the rules on the firewall's page afterwards.
 3. **Server** (Servers → Add Server).
-   - **Type:** x86 only, not ARM: Chrome has no ARM build for Linux. Measured 2026-11-17: the cheaper Cost-Optimized (CX) line was out of stock. In the Regular Performance line, CPX22 (2 vCPU, 4 GB, 80 GB) was $19.49/mo and CPX32 (4 vCPU, 8 GB) $35.49. CPX12 (2 GB) is too small once the desktop and Chrome from step 6 run.
+   - **Type:** x86. This guide was measured on x86 only. Google ships Chrome for arm64 Linux too, but no step here was run on ARM. Measured 2026-11-17: the cheaper Cost-Optimized (CX) line was out of stock. In the Regular Performance line, CPX22 (2 vCPU, 4 GB, 80 GB) was $19.49/mo and CPX32 (4 vCPU, 8 GB) $35.49. CPX12 (2 GB) is too small once the desktop and Chrome from step 6 run.
    - **Size can only grow.** Rescaling to a smaller type fails once the disk is bigger, so start small.
    - **Location:** Helsinki has no surcharge. Nuremberg and Falkenstein add $3.50 to $6.50/mo for about 10 ms less latency from the Middle East, which a chat bot does not notice.
    - **Image:** Ubuntu 26.04 LTS (systemd 259, tmux 3.6). 24.04 works too.
@@ -164,6 +164,8 @@ Node from NodeSource puts it at `/usr/bin/node`. That path survives Node upgrade
 # as admin
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt install -y nodejs gh
+# unattended-upgrades takes only Ubuntu's own origins by default; add NodeSource
+printf '%s\n' 'Unattended-Upgrade::Origins-Pattern {' '        "site=deb.nodesource.com";' '};' | sudo tee /etc/apt/apt.conf.d/52unattended-upgrades-nodesource
 ```
 
 Then, as `angelia`, keep global npm packages in its own home, so `npm i -g` never needs sudo:
@@ -193,6 +195,7 @@ git config --global user.email "<you>@users.noreply.github.com"
 **Check:**
 - `node --version` shows 24.22.1 or newer (measured: 24.22.3). Ubuntu 26.04's own `nodejs` is 22.22.1, too old for Angelia.
 - `which node` prints `/usr/bin/node`.
+- `sudo unattended-upgrade --dry-run -d 2>&1 | grep -i 'allowed origins'` includes `site=deb.nodesource.com`.
 - `npm prefix -g` prints `~/.local` in full (`echo ~/.local`).
 - `ssh -T git@github.com` names the deploy key's repo, or the bot's account.
 - With a machine account: `gh auth status` lists scopes without `admin:public_key` (measured: `gist`, `read:org`, `repo`).
@@ -234,7 +237,10 @@ sudo apt install -y xfce4 xfce4-terminal dbus-x11 tigervnc-standalone-server
 curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
 echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main' | sudo tee /etc/apt/sources.list.d/google-chrome.list
 sudo apt update && sudo apt install -y google-chrome-stable
+printf '%s\n' 'Unattended-Upgrade::Origins-Pattern {' '        "site=dl.google.com";' '};' | sudo tee /etc/apt/apt.conf.d/52unattended-upgrades-chrome
 ```
+
+The last line lets `unattended-upgrades` patch Chrome too. On an ARM server, write `arch=arm64` in the `deb` line.
 
 As `angelia`, add two user units: the X server, and the desktop on it. The socket's folder must exist before the first start.
 
@@ -389,7 +395,7 @@ Measured 2026-11-17 with Claude Code 2.1.327 and Angelia 0.3.26.
 
 - The kernel log shows `apparmor="DENIED" profile="unpriv_bwrap" capability=sys_admin`.
 - Ubuntu's `bwrap-userns-restrict` profile runs everything inside an unprivileged bwrap under `unpriv_bwrap`, which has `audit deny capability`.
-- A `deny` cannot be lifted from `local/unpriv_bwrap`.
+- An allow in `local/unpriv_bwrap` does not lift that `deny`. AppArmor 4's `priority=` can override it, but then for every program that runs under `unpriv_bwrap`. The copy below opens one binary only.
 
 The fix, as root, gives Claude a `bwrap` copy under its own profile. Ubuntu's `/usr/bin/bwrap` keeps its restrictive one:
 
@@ -421,7 +427,7 @@ chmod 644 /etc/claude-code/managed-settings.json
 
 - **Do not use `bypassPermissions` with the sandbox on Linux.** With it, the sandbox still blocks writes but not reads or network.
 - **`angelia check-config` does not know this yet.** It lets a group open to everyone (`allow_from: "*"`) run `bypassPermissions` when `sandbox: true`, because that holds on macOS. Do not rely on it on Linux.
-- **Optionally keep shell commands asking anyway.** With the sandbox on, Claude Code runs Bash without asking. For chats other people write in, `"sandbox": {"autoAllowBashIfSandboxed": false}` in the profile's `.claude/settings.local.json` makes every command go to an owner too. Note that `echo` and other read-only commands still run without asking.
+- **Shell commands still ask.** Since Claude Code 2.1.324, `sandbox.autoAllowBashIfSandboxed` defaults to `false`, so a sandboxed command goes through the profile's permission mode like any other. Do not set it to `true` on a profile other people write in. Note that `echo` and other read-only commands run without asking.
 
 ## 9. Optional: Claude Remote Control in `~/.angelia`
 
@@ -452,7 +458,7 @@ After=network-online.target
 WorkingDirectory=%h/.angelia
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.local/bin/claude remote-control --name angelia-server --permission-mode default
-Restart=on-failure
+Restart=always
 RestartSec=30
 
 [Install]
@@ -463,6 +469,7 @@ WantedBy=default.target
 systemctl --user daemon-reload && systemctl --user enable --now claude-rc
 ```
 
+- **`Restart=always`, not `on-failure`.** Remote Control gives up and exits after about 10 minutes without a network, and its exit code is not documented.
 - **The account matters.** Remote Control needs the full login from step 5, not a setup token. The session appears under that account's claude.ai/code.
 - **This session is not an Angelia profile.** None of the deny floor applies to it: it can read `~/.angelia/env`, `wa/` and `api.token`.
 - **Who can drive it.** Anyone who gets into that claude.ai account can. Keep the account's 2FA on, and keep the session's permission mode at `default`, never `bypassPermissions`.
@@ -538,7 +545,7 @@ systemctl --user enable --now angelia-workspace-sync.timer
   - Claude's `.credentials.json`, `~/.ssh`, `gh`'s login and Angelia's own secrets.
   - Chrome's and Firefox's profiles, and the keyrings.
   - `~/.config/systemd/user`, so an agent cannot plant a unit that runs at boot.
-- **Patches.** `unattended-upgrades` covers the OS and the NodeSource and Chrome repositories. Angelia's updates are signed (`angelia update`). Claude Code updates itself.
+- **Patches.** `unattended-upgrades` covers the OS, and the NodeSource and Chrome repositories through the origins added in steps 4 and 6. Angelia's updates are signed (`angelia update`). Claude Code updates itself.
 
 ### What stays open, and what to do about it
 
