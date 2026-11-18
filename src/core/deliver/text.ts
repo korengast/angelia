@@ -22,6 +22,16 @@ export const UNMATCHED_LINE = '[Angelia] This chat is not routed to a profile.';
 export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
 /** A chat answer to a request no hook waits for any more (it stepped aside when the chat stopped
  *  being read): Claude asks in its own dialog instead. */
+/** What the agent hears when a `permission_prompts: deny` profile refuses a request without asking.
+ *  A chat "no", the app and a timeout keep the CLI's plain "Denied from chat": after those the owner
+ *  may well say "run it again", and a tool result that says "do not retry" would stand in the way. */
+export const AUTO_DENY_MESSAGE = 'Not permitted. Do not retry it; tell the user it is not permitted.';
+/** permission_prompts: deny, past the cap in one turn: the agent kept asking, so the turn was stopped. */
+export function autoDenyCapLine(max: number): string {
+  return `The agent asked for ${max} things this profile does not permit, so Angelia stopped it.`;
+}
+/** permission_prompts: deny, but no hook waited for the refusal (tmux mode): Claude asks in its own dialog. */
+export const AUTO_DENY_FAILED_LINE = 'Claude asked for a permission this profile refuses, but the refusal could not reach it. Answer it in the Claude app or in its pane.';
 export const LATE_ANSWER_LINE = 'Too late: that request is no longer waiting for the chat. If Claude still asks, answer it in the Claude app or in its pane.';
 
 export function permissionLine(id: string, tool: string, preview: string): string {
@@ -30,11 +40,15 @@ export function permissionLine(id: string, tool: string, preview: string): strin
 }
 
 // Ids are not all hex: Grok Build's are `call-…`, and the chat is shown their first eight characters.
-// A digit or a dash marks an id, so "yes please" stays a message.
-export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+((?=[0-9a-z_-]*[0-9-])[0-9a-z_-]{5,40})\s*$/i;
+// A digit or a dash marks an id, so "yes please" stays a message. A comma, full stop or exclamation
+// mark may follow the id ("yes d640cc6a.").
+export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+((?=[0-9a-z_-]*[0-9-])[0-9a-z_-]{5,40})[.,!]*\s*$/i;
 
 export function parsePermissionReply(text: string): { id: string; allow: boolean } | null {
-  const m = PERMISSION_REPLY_RE.exec(text);
+  // A group passes on only messages that @mention the bot, so the answer often carries one
+  // ("yes d640cc6a @972…"); WhatsApp and Telegram both keep it in the text. Only a mention that starts
+  // a word goes: "no 12345@s.whatsapp.net" is not an answer to request 12345.
+  const m = PERMISSION_REPLY_RE.exec(text.replace(/(^|\s)@\S+/g, ' '));
   if (!m) return null;
   return { id: m[2], allow: /^y/i.test(m[1]) };
 }

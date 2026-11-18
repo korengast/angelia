@@ -22,7 +22,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, isLimitText, limitHint, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
+import { failureLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -113,6 +113,8 @@ const QUEUE_MAX = 10;
 const SEND_RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
 /** Undelivered answers kept per chat. */
 const OWED_MAX = 5;
+/** Requests one turn of a `permission_prompts: deny` profile may have refused before the turn is stopped. */
+const AUTO_DENY_MAX = 10;
 /** Questions (`angelia ask`) one chat answers at the same time; each is a CLI process. */
 const ASK_MAX = 2;
 /** Questions answered at the same time across all chats. */
@@ -612,6 +614,7 @@ export class Orchestrator {
     // the chat hears so; none for all of it and the CLI is stopped. tmux mode watches its own pane.
     const stallMs = this.cfg.defaults.turn_stall_minutes * 60_000;
     let lastEvent = Date.now(), told = false, stalled = false;
+    let autoDenied = 0, overDenied = false;
     const watch = stallMs > 0 && !profile.tui && !follow ? setInterval(() => {
       // A permission waiting on the owner is not a stall: the clock starts again once it is answered.
       if (b.pendingPermissionCount > 0) { lastEvent = Date.now(); return; }
@@ -640,6 +643,24 @@ export class Orchestrator {
         // A line that cannot be delivered must not end the turn: the agent works on, the answer is
         // what matters, and a permission line nobody saw times out as a no.
         else if (e.kind === 'notice') await this.reply(i, e.text).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
+        else if (e.kind === 'permission' && profile.permission_prompts === 'deny') {
+          // Each refusal is a sign of life to the stall clock, so an agent that keeps trying would run
+          // to the turn limit: past AUTO_DENY_MAX in one turn, the turn is stopped.
+          if (++autoDenied > AUTO_DENY_MAX) {
+            this.log(`permission auto-denied ${AUTO_DENY_MAX} times key=${key}: turn stopped`);
+            overDenied = true;
+            await this.stop(key);
+            break;
+          }
+          if (b.answerPermission(e.id, false, { message: AUTO_DENY_MESSAGE })) {
+            this.log(`permission auto-denied key=${key} tool=${e.tool}`);
+            this.denied.add(key);
+          } else {
+            // tmux mode: the hook stepped aside before the answer landed, so Claude asks in its own dialog.
+            this.log(`permission auto-deny failed key=${key} tool=${e.tool}: no hook waits for it`);
+            if (!app) await this.reply(i, AUTO_DENY_FAILED_LINE).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
+          }
+        }
         else if (e.kind === 'permission') {
           let open = this.asks.get(key);
           if (!open) this.asks.set(key, open = new Map());
@@ -673,6 +694,11 @@ export class Orchestrator {
       if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
       await this.reply(i, `The agent gave no output for ${this.cfg.defaults.turn_stall_minutes} minutes, so Angelia stopped it. Send your message again, or /new for a fresh session.`).catch(() => {});
       return 'stalled';
+    }
+    if (overDenied) {
+      if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
+      await this.reply(i, autoDenyCapLine(AUTO_DENY_MAX)).catch(() => {});
+      return 'denied';
     }
     if (!result || result.isError) {
       const stopped = (this.era.get(key) ?? 0) !== era;

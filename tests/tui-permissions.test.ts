@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PermissionRelay, RELAY_STALE_MS, relayedPermission, ScreenDialogs, SCREEN_ONLY_MS, type RelayedRequest } from '../src/brain/tui-permissions.js';
 
+import { AUTO_DENY_MESSAGE } from '../src/core/deliver/text.js';
+
 const HOOK = fileURLToPath(new URL('../scripts/tui-permission-hook.mjs', import.meta.url));
 
 /** One pane's private folder, and the hook as Claude runs it for that pane. */
@@ -74,6 +76,12 @@ test('a request reaches the chat exactly as Claude made it, and each answer goes
   assert.deepEqual(decision(db.out), { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } });
   assert.deepEqual(decision(da.out), { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Denied from chat' } });
   assert.deepEqual(readdirSync(join(dir, 'permissions')), ['relay.json'], 'each hook took its files with it');
+
+  // A profile that refuses without asking names the refusal; the hook passes it on as Claude's deny message.
+  const c = ask('Bash', { command: 'make' });
+  const [refused] = await requests(relay, 1);
+  assert.equal(relay.answer(refused.id, false, AUTO_DENY_MESSAGE), true);
+  assert.deepEqual(decision((await c.done).out), { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: AUTO_DENY_MESSAGE } });
   relay.answer(plain.id, true);
   relay.answer('00000000-0000-4000-8000-000000000000', true);
   assert.deepEqual(readdirSync(join(dir, 'permissions')), ['relay.json'], 'an answer to nothing waiting writes nothing');

@@ -29,6 +29,8 @@ export function configWarnings(cfg: Config, workspace?: string): string[] {
     if (p.tui && p.backend !== 'claude-code') out.push(`profiles.${name}: tui: true is Claude Code only and is ignored by ${p.backend}`);
     if (p.backend === 'pi' && !p.model) out.push(`profiles.${name}: backend pi with no model uses pi's own default provider, which may be one with no login here; set model: provider/model`);
     if (p.chrome && p.backend !== 'claude-code') out.push(`profiles.${name}: chrome: true is Claude Code only and is ignored by ${p.backend}`);
+    // It reads like protection, and protects nothing: the mode never asks, so there is nothing to refuse.
+    if (p.permission_prompts === 'deny' && p.permission_mode === 'bypassPermissions') out.push(`profiles.${name}: permission_prompts: deny with bypassPermissions refuses nothing: that mode never asks. Pick a mode that asks (default or acceptEdits) for deny to refuse those requests`);
   }
   const used = new Set(cfg.routes.map((r) => r.profile));
   for (const name of Object.keys(cfg.profiles)) {

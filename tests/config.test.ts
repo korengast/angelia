@@ -29,6 +29,7 @@ telegram: {}
 `));
   assert.equal(Object.keys(cfg.profiles).length, 2);
   assert.equal(cfg.profiles.family.permission_mode, 'acceptEdits');
+  assert.equal(cfg.profiles.family.permission_prompts, 'chat', 'a request is asked in the chat unless the profile says deny');
   assert.equal(cfg.routes[1].chat, '123');
   assert.equal(cfg.defaults.unmatched, 'drop');
   assert.equal(cfg.defaults.max_out_per_min, 10);
@@ -279,4 +280,16 @@ whatsapp: {}
   assert.throws(() => loadConfig(table(', sandbox: true, backend: grok', everyone)), /without a sandbox/, 'grok has no sandbox to hold it');
   assert.deepEqual(loadConfig(table('', ', allow_from: ["15550000001"]')).routes[0].allow_from, ['15550000001']);
   assert.deepEqual(loadConfig(table('')).routes[0].allow_from, [], 'no allow_from: the owners only, nothing to refuse');
+});
+
+test('check-config warns that permission_prompts: deny on a bypass profile refuses nothing', () => {
+  const cfg = Config.parse({
+    profiles: {
+      yolo: { cwd: '/tmp', permission_mode: 'bypassPermissions', permission_prompts: 'deny' },
+      careful: { cwd: '/tmp', permission_prompts: 'deny' },
+    },
+    routes: [{ platform: 'telegram', chat: 1, profile: 'yolo' }, { platform: 'telegram', chat: 2, profile: 'careful' }],
+  });
+  const hits = configWarnings(cfg).filter((w) => w.includes('permission_prompts'));
+  assert.deepEqual(hits, ['profiles.yolo: permission_prompts: deny with bypassPermissions refuses nothing: that mode never asks. Pick a mode that asks (default or acceptEdits) for deny to refuse those requests']);
 });

@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator, envelope, agentText, isAgentCommand } from '../src/core/orchestrator.js';
-import { DENIED_LINE, LATE_ANSWER_LINE, NO_ANSWER_LINE } from '../src/core/deliver/text.js';
+import { AUTO_DENY_FAILED_LINE, AUTO_DENY_MESSAGE, autoDenyCapLine, DENIED_LINE, LATE_ANSWER_LINE, NO_ANSWER_LINE } from '../src/core/deliver/text.js';
 import type { Inbound } from '../src/core/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -337,10 +337,81 @@ test('a permission request nobody answers is denied, and the chat is told', asyn
   const sent: string[] = [];
   const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE } });
   t.after(() => o.shutdown());
-  await o.handle(dm('1', 'PERM do it'));
+  await o.handle(dm('1', 'PERMWHY do it'));
   const id = /yes ([0-9a-f]{8})/.exec(sent[0])![1];
   assert.ok(sent.includes(`No answer to the permission request in time, so it was denied. (${id})`), sent.join(' | '));
-  assert.match(sent.at(-1)!, /^tool deny/, 'the agent got the deny');
+  assert.equal(sent.at(-1), 'tool denyed: Denied from chat', 'the agent got the plain deny: the owner may still ask for it again');
+});
+
+test('permission_prompts: deny refuses every request at once: nothing is asked in the chat, the agent hears it is not permitted', async (t) => {
+  const cfg = Config.parse({
+    profiles: { a: { cwd: here, permission_prompts: 'deny' }, b: { cwd: here } },
+    routes: [{ platform: 'telegram', chat: 1, profile: 'a' }, { platform: 'telegram', chat: 2, profile: 'b' }],
+    defaults: { max_out_per_min: 1000 },
+  });
+  const sent: { chat: string; text: string }[] = [], logs: string[] = [];
+  const sender = { send: async (chat: string, text: string) => { sent.push({ chat, text }); } };
+  const o = new Orchestrator(cfg, { telegram: sender }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, log: (l: string) => logs.push(l) });
+  t.after(() => o.shutdown());
+  const asked = () => sent.filter((s) => s.text.includes('🔐'));
+  await o.handle(dm('1', 'warm up'));
+  await o.handle(dm('1', 'PERMWHY do it'));
+  assert.deepEqual(asked(), [], 'no prompt line');
+  assert.equal(sent.at(-1)!.text, `tool denyed: ${AUTO_DENY_MESSAGE}`, 'the agent got the refusal, with why');
+  assert.equal(logs.filter((l) => /^permission auto-denied key=telegram:1 tool=Bash$/.test(l)).length, 1, logs.join('\n'));
+  // The agent says nothing after the refusal: the chat hears the turn is over.
+  await o.handle(dm('1', 'PERMQUIET do it'));
+  assert.deepEqual(asked(), []);
+  assert.equal(sent.at(-1)!.text, DENIED_LINE);
+  // A profile that asks still asks, and its "no" is the plain one.
+  await o.handle(dm('2', 'warm up'));
+  const p = o.handle(dm('2', 'PERMWHY do it'));
+  await new Promise((r) => setTimeout(r, 300));
+  const id = /no ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
+  await o.handle(dm('2', `no ${id}`));
+  await p;
+  assert.equal(asked().length, 1);
+  assert.equal(sent.at(-1)!.text, 'tool denyed: Denied from chat');
+});
+
+test('permission_prompts: deny stops a turn whose agent keeps asking, after ten refusals', async (t) => {
+  const cfg = Config.parse({ profiles: { a: { cwd: here, permission_prompts: 'deny' } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000 } });
+  const sent: string[] = [], logs: string[] = [];
+  const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } },
+    { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, log: (l: string) => logs.push(l) });
+  t.after(() => o.shutdown());
+  await o.handle(dm('1', 'warm up'));
+  const b = (o as unknown as { brains: Map<string, { alive: boolean }> }).brains.get('telegram:1')!;
+  await o.handle(dm('1', 'PERMLOOP do it'));
+  assert.equal(logs.filter((l) => l.startsWith('permission auto-denied key=')).length, 10, logs.join('\n'));
+  assert.ok(logs.includes('permission auto-denied 10 times key=telegram:1: turn stopped'), logs.join('\n'));
+  assert.equal(b.alive, false, 'the agent was ended');
+  assert.deepEqual(sent.slice(1), [autoDenyCapLine(10)]);
+  // The next message starts a fresh agent on the same session and is answered.
+  await o.handle(dm('1', 'hello'));
+  assert.match(sent.at(-1)!, /^echo:/);
+});
+
+test('permission_prompts: deny whose refusal reaches nobody (the tmux hook stepped aside) logs it and tells the chat', async (t) => {
+  const cfg = Config.parse({ profiles: { a: { cwd: here, permission_prompts: 'deny' } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000 } });
+  const sent: string[] = [], logs: string[] = [];
+  const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } },
+    { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, log: (l: string) => logs.push(l) });
+  t.after(() => o.shutdown());
+  const brains = (o as unknown as { brains: Map<string, unknown> }).brains;
+  brains.set('telegram:1', {
+    name: 'stepped-aside', alive: true, lastUsedAt: 0, pendingPermissionCount: 0,
+    on() { return this; }, start() {}, kill() {}, async release() {}, async stop() {},
+    hasPendingPermission: () => false, answerPermission: () => false,
+    async *turn() {
+      yield { kind: 'permission', id: 'abcdef12-0000-4000-8000-000000000000', tool: 'Bash', preview: 'make' };
+      yield { kind: 'result', text: 'asked in the pane', isError: false };
+    },
+  });
+  await o.handle(dm('1', 'do it'));
+  assert.ok(logs.includes('permission auto-deny failed key=telegram:1 tool=Bash: no hook waits for it'), logs.join('\n'));
+  assert.ok(!logs.some((l) => l.startsWith('permission auto-denied')), 'not logged as refused');
+  assert.deepEqual(sent, [AUTO_DENY_FAILED_LINE, 'asked in the pane']);
 });
 
 test('a member cannot pose as the owner or hand the agent a file line: lookalike lines are quoted', async (t) => {

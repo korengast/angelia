@@ -39,6 +39,10 @@ export interface BrainSession {
  * The only seam between the router and a coding agent: start in a profile cwd, send a turn,
  * receive progress / permission / result, stop. Implementations live next to this file.
  */
+/** How a permission request is answered beyond yes or no. `input`: what an allowed tool runs with
+ *  (print-mode Claude; the request's own input when absent). `message`: the refusal the agent hears. */
+export interface PermissionAnswer { input?: unknown; message?: string }
+
 export interface Brain extends EventEmitter {
   readonly profile: Profile;
   readonly session: BrainSession;
@@ -54,8 +58,9 @@ export interface Brain extends EventEmitter {
   readonly alive: boolean;
   start(): void;
   turn(text: string): AsyncGenerator<BrainEvent>;
-  /** `id` may be a prefix of a pending request id (the chat sees the first 8 chars). */
-  answerPermission(id: string, allow: boolean, input?: unknown): boolean;
+  /** `id` may be a prefix of a pending request id (the chat sees the first 8 chars). `how.message`
+   *  is what the agent hears with a refusal, where the backend can pass one; the others ignore it. */
+  answerPermission(id: string, allow: boolean, how?: PermissionAnswer): boolean;
   readonly pendingPermissionCount: number;
   hasPendingPermission(id: string): boolean;
   stop(graceMs?: number): Promise<void>;

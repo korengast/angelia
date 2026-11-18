@@ -78,11 +78,11 @@ export class PermissionRelay {
 
   /** The owner's answer, for the hook waiting on this request and no other. False when no hook waits
    *  for it any more, though the last poll had not seen it go: nothing is left behind for nobody. */
-  answer(id: string, allow: boolean): boolean {
+  answer(id: string, allow: boolean, message?: string): boolean {
     if (!this.open.delete(id)) return false;
     const request = join(this.dir, `${id}.request.json`);
     if (!existsSync(request)) return false;
-    this.put(`${id}.answer.json`, { allow });
+    this.put(`${id}.answer.json`, !allow && message ? { allow, message } : { allow });
     // The hook can step aside between the check and the write; then its answer file goes too.
     if (existsSync(request)) return true;
     rmSync(join(this.dir, `${id}.answer.json`), { force: true });
