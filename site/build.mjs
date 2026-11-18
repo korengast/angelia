@@ -216,6 +216,8 @@ const DOCS = [
   { file: 'docs/reference.md', description: 'Every Angelia feature in full: capabilities per profile, the backends, setting up by hand, the instance folder, and every file Angelia keeps.' },
   { file: 'docs/security.md', description: 'Who can reach and command the agent, tokens, secrets, the sandbox, logs, and what leaves your machine. Read it before you give the bot to anyone.' },
   { file: 'docs/runbook.md', description: 'Day-to-day Angelia commands, where to look, known failures and their fixes, backup, cutting a release, and uninstalling.' },
+  // Its H1 stays the page's heading; the tab title says what the guide sets up.
+  { file: 'docs/linux-server.md', title: 'Angelia on a Linux server: Ubuntu, Tailscale, systemd', description: 'Run Angelia on an Ubuntu VPS, step by step: Tailscale as the only way in, a user without sudo, a systemd user service, the sandbox, and a security audit.' },
   ...readdirSync(join(here, '..', 'docs', 'decisions')).filter((f) => /^\d{4}-.+\.md$/.test(f)).sort().map((f) => ({ file: `docs/decisions/${f}`, adr: f.slice(0, 4) })),
 ].map((d) => {
   const md = readFileSync(join(here, '..', d.file), 'utf8');
@@ -245,7 +247,7 @@ const docLink = (from) => (href) => {
   if (target === '..' || target.startsWith('../') || target.startsWith('/')) throw new Error(`${from}: the link ${href} leaves the repository`);
   return (docPath.get(target) ?? `${BLOB}/${target}`) + (hash ? `#${hash}` : '');
 };
-const MORE_DOCS = [['/docs/reference/', 'Reference'], ['/docs/security/', 'Security model'], ['/docs/runbook/', 'Runbook'], ['/docs/decisions/', 'Decisions'], ['/docs/api.md', 'Local API (Markdown)']];
+const MORE_DOCS = [['/docs/reference/', 'Reference'], ['/docs/security/', 'Security model'], ['/docs/runbook/', 'Runbook'], ['/docs/linux-server/', 'Linux server'], ['/docs/decisions/', 'Decisions'], ['/docs/api.md', 'Local API (Markdown)']];
 const moreDocs = (path) => `<nav class="more" aria-label="More docs"><h2 id="more-docs">More docs</h2><ul>${MORE_DOCS.filter(([p]) => p !== path).map(([p, t]) => `<li><a href="${p}">${t}</a></li>`).join('')}</ul></nav>`;
 const docByline = (d) => `<a href="/docs/">Docs</a>${d.adr ? ' · <a href="/docs/decisions/">Decisions</a>' : ''} · <a href="${BLOB}/${d.file}">${d.file} on GitHub</a>`;
 for (const d of DOCS) {
@@ -283,6 +285,7 @@ docIndex('/docs/', 'Angelia docs: reference, security, runbook, API, decisions',
 <li><a href="/docs/reference/">Reference</a><br><span class="meta">Features in detail, capabilities per profile, the backends, setting things up by hand, the instance folder, every file Angelia keeps.</span></li>
 <li><a href="/docs/security/">Security model</a><br><span class="meta">Who can reach and command the agent, tokens, secrets, the sandbox, logs, what leaves your machine.</span></li>
 <li><a href="/docs/runbook/">Runbook</a><br><span class="meta">Day-to-day commands, where to look, known failures and their fixes, cutting a release, uninstalling.</span></li>
+<li><a href="/docs/linux-server/">Angelia on a Linux server</a> (experimental)<br><span class="meta">An Ubuntu VPS from empty to running: Tailscale as the only way in, a user without sudo, the systemd service, the sandbox step, a security audit.</span></li>
 <li><a href="/docs/api.md">Local API</a> (Markdown, with an <a href="/openapi.json">OpenAPI document</a>)<br><span class="meta">Scripts and agents talk to the daemon: tokens, routes, events, the stability promise.</span></li>
 <li><a href="/docs/decisions/">Decisions</a><br><span class="meta">Why it is built this way, with the CLI versions each finding was measured on.</span></li>
 </ul>
