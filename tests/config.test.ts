@@ -29,6 +29,7 @@ telegram: {}
 `));
   assert.equal(Object.keys(cfg.profiles).length, 2);
   assert.equal(cfg.profiles.family.permission_mode, 'acceptEdits');
+  assert.equal(cfg.profiles.family.permission_prompts, 'chat', 'a request is asked in the chat unless the profile says deny');
   assert.equal(cfg.routes[1].chat, '123');
   assert.equal(cfg.defaults.unmatched, 'drop');
   assert.equal(cfg.defaults.max_out_per_min, 10);
