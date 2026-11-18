@@ -47,6 +47,7 @@ const init = () => { if (inited) return; inited = true; out({ type: 'system', su
 let pending = null; // permission request awaiting a control_response
 let quiet = false; // the result after the permission answer says nothing
 let why = false; // PERMWHY: a refusal is said with the message it came with
+let tries = 0; // PERMLOOP: a refused request is asked again, up to 30 times
 let initialized = false; // like the real CLI: no initialize handshake, no permission requests (tools are denied)
 const rl = createInterface({ input: process.stdin });
 rl.on('line', (line) => {
@@ -58,6 +59,12 @@ rl.on('line', (line) => {
   }
   if (msg.type === 'control_response') {
     const behavior = msg.response?.response?.behavior ?? 'deny';
+    if (tries > 0 && behavior === 'deny' && tries < 30) {
+      pending = `6b480a6f-d386-4972-95d9-${String(++tries).padStart(12, '0')}`;
+      out({ type: 'control_request', request_id: pending, request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: `try ${tries}` } } });
+      return;
+    }
+    tries = 0;
     // The CLI runs the tool with updatedInput, so an allow must carry the request's own input back.
     const ran = msg.response?.response?.updatedInput?.command;
     const said = `tool ${behavior}ed${behavior === 'allow' ? `: ${ran ?? 'no command'}` : why ? `: ${msg.response?.response?.message}` : ''}`;
@@ -96,6 +103,7 @@ rl.on('line', (line) => {
     pending = '6b480a6f-d386-4972-95d9-2eeaef82f3bc';
     quiet = text.includes('PERMQUIET');
     why = text.includes('PERMWHY');
+    tries = text.includes('PERMLOOP') ? 1 : 0;
     out({ type: 'control_request', request_id: pending, request: { subtype: 'can_use_tool', tool_name: 'Bash',
           input: { command: 'rm -rf /tmp/x' }, description: 'remove x' } });
     return;
