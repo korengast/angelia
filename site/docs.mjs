@@ -54,6 +54,7 @@ const UNSUPPORTED_LINE = [
   [/^ {0,3}>/, 'a blockquote'],
   [/^ {0,3}(=+|-+|(\* *){3,}|(_ *){3,})\s*$/, 'a setext heading or a rule'],
   [/^ *(\+|\d+\)) /, 'a list marker other than -, * or 1.'],
+  [/^ *\t/, 'a tab indent (indent with spaces)'],
 ];
 const UNSUPPORTED_TEXT = [
   [/!\[/, 'an image'],
@@ -69,6 +70,8 @@ const BARE_URL = /https?:\/\/|www\./;
 function unsupported(md) {
   const found = [];
   const lines = md.replace(/\r\n?/g, '\n').split('\n');
+  // false, or where the open fence sits: in a list item (it may close at any indent) or at the top
+  // level (it closes at 0-3 spaces, as render() closes it), with its line.
   let fenced = false;
   let para = [];
   const flush = () => {
@@ -80,9 +83,12 @@ function unsupported(md) {
   let inList = false;
   let afterBlank = true;
   lines.forEach((l, k) => {
+    if (fenced) {
+      if ((fenced.inList ? /^ *```\s*$/ : /^ {0,3}```\s*$/).test(l)) { fenced = false; afterBlank = false; }
+      return;
+    }
     // A fence in a nested list item sits deeper than three spaces.
-    if ((inList ? FENCE_IN_LIST : FENCE).test(l) || (fenced && /^ *```\s*$/.test(l))) { flush(); fenced = !fenced; afterBlank = false; return; }
-    if (fenced) return;
+    if ((inList ? FENCE_IN_LIST : FENCE).test(l)) { flush(); fenced = { inList, line: k + 1 }; afterBlank = false; return; }
     if (/^\s*$/.test(l)) { flush(); afterBlank = true; return; }
     // Four spaces after a blank line are code, unless they go on with a list item.
     if (ITEM.test(l)) inList = true;
@@ -93,6 +99,8 @@ function unsupported(md) {
     para.push([k + 1, l]);
   });
   flush();
+  // An open fence would take every line after it, here and on GitHub.
+  if (fenced) found.push(`a fence that is never closed, opened at line ${fenced.line}`);
   return found;
 }
 

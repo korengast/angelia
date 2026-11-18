@@ -69,12 +69,18 @@ test('site docs: heading ids follow github-slugger, and a # in a heading is kept
 
 test('site docs: Markdown the renderer does not handle fails the build, with where it is', () => {
   for (const [md, what] of [['> quoted', 'a blockquote'], ['Title\n===', 'a setext heading'], ['a\n\n---', 'a rule'],
-    ['+ item', 'a list marker'], ['- a\n  + nested', 'a list marker'], ['~~~\ncode\n~~~', 'a ~~~ fence'], ['![logo](x.png)', 'an image'], ['a \\* b', 'a backslash escape'], ['a <br> b', 'raw HTML'],
+    ['+ item', 'a list marker'], ['- a\n  + nested', 'a list marker'], ['- a\n\t- b', 'a tab indent'],
+    ['```\ncode', 'a fence that is never closed'], ['- a\n\n  ```\n  code\n- b', 'a fence that is never closed'],
+    // A top-level fence closes at 0-3 spaces, as the page renders it: a deeper ``` is code, and the fence stays open.
+    ['```\ncode\n    ```\nafter', 'a fence that is never closed'], ['~~~\ncode\n~~~', 'a ~~~ fence'], ['![logo](x.png)', 'an image'], ['a \\* b', 'a backslash escape'], ['a <br> b', 'raw HTML'],
     ['[a][ref]', 'a reference link'], ['[ref]: https://x.org', 'a reference link or definition'], ['a &rarr; b', 'an HTML entity'], ['see https://x.org now', 'a bare URL'],
     ['para\n\n    code', 'an indented code block'], ['~~gone~~', 'strikethrough'], ['an _emphasis_ here', 'underscore emphasis']])
     assert.throws(() => renderMarkdown(md), (e: Error) => e.message.includes(what), md);
   // Inside code, in a table's escaped pipe, and in a fenced block, the same characters are fine.
   assert.doesNotThrow(() => renderMarkdown('`<br> \\* ![x](y)`\n\n| a | b |\n|---|---|\n| `x \\| y` | c |\n\n```\n> quoted\n---\n```'));
+  // A deeper ``` inside a top-level fence is code: the check after the fence still runs, and the page shows it as code.
+  assert.throws(() => renderMarkdown('```\n    ```\n```\n\n> quoted'), (e: Error) => e.message.includes('a blockquote'));
+  assert.equal(renderMarkdown('```\n    ```\n```').html, '<pre><code>    ```</code></pre>');
   // A link's own URL, snake_case words, and a list item's indented continuation are fine too.
   assert.doesNotThrow(() => renderMarkdown('[site](https://x.org) and allow_from and a_b_c\n\n- item\n\n    more of the item'));
 });
@@ -117,6 +123,9 @@ test('site docs: a nested list, a fence and a table go inside the item whose con
     '|---|---|',
     '| `admin` | Your login. |',
   ].join('\n');
+  // Text in a nested item is escaped like any other, and a quote still ends a link's target there.
+  assert.equal(renderMarkdown('- a\n  - `<b>` & "x" > y\n    - [`<i>`](q.md?a=1&b="2")').html,
+    '<ul><li>a\n<ul><li><code>&lt;b&gt;</code> &amp; &quot;x&quot; &gt; y\n<ul><li>[<code>&lt;i&gt;</code>](q.md?a=1&amp;b=&quot;2&quot;)</li></ul></li></ul></li></ul>');
   const { html } = renderMarkdown(md);
   assert.equal(html, [
     // A tight list stays tight with its nested list; a blank line between an item's own blocks makes it loose.
