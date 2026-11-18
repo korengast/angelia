@@ -196,7 +196,9 @@ export class Orchestrator {
   }
 
   async handle(raw: Inbound): Promise<void> {
-    const i = { ...raw, text: cleanText(raw.text), ...(raw.senderName !== undefined ? { senderName: cleanText(raw.senderName) } : {}) };
+    // The quote is someone else's text as much as the message is: cleaned the same way, so a `\r` in it
+    // cannot start a line of its own when the turn is pasted into a pane.
+    const i = { ...raw, text: cleanText(raw.text), ...(raw.senderName !== undefined ? { senderName: cleanText(raw.senderName) } : {}), ...(raw.quoted !== undefined ? { quoted: cleanText(raw.quoted) } : {}) };
     const g = gate(i, matchRoute(this.cfg, i));
     const key = sessionKey(i);
     if (!g.ok) {
@@ -1451,8 +1453,16 @@ export function backendBin(p: Profile, b: BackendName): string {
  *  (`bare`), a CLI command as typed. */
 export function agentText(i: Inbound, bare = isAgentCommand(i)): string {
   if (bare && isAgentCommand(i)) return i.text.trim();
-  const q = i.quoted?.trim() ? `\nReplying to:\n${i.quoted.trim().split('\n').map((l) => `> ${l}`).join('\n')}` : '';
-  return envelope(i) + q + '\n\n' + quoteLookalikes(i.text) + i.media.map(mediaLine).join('');
+  return envelope(i) + quoteBlock(i.quoted) + '\n\n' + quoteLookalikes(i.text) + i.media.map(mediaLine).join('');
+}
+
+/** The message a reply quotes, under the envelope, with every line behind ">", so no line of it can
+ *  pose as an envelope. Any line break counts, not only `\n`: handle() cleans the quote, and this does
+ *  not rely on it. */
+function quoteBlock(quoted: string | undefined): string {
+  const q = quoted?.trim();
+  if (!q) return '';
+  return '\nReplying to:\n' + q.split(/\r\n|[\r\n\u0085\u2028\u2029]/).map((l) => `> ${l}`).join('\n');
 }
 
 /** A line in the sender's own text shaped like one Angelia writes (an envelope, a `[file: …]` or
