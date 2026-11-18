@@ -50,7 +50,7 @@ echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' 
 dpkg-reconfigure -f noninteractive unattended-upgrades
 timedatectl set-timezone Asia/Jerusalem             # yours; timers and logs follow it
 
-# Swap, the size of the RAM: several agents and an npm ci will otherwise stall the box
+# Swap, 4 GB (the RAM of a CPX22): several agents and an npm ci will otherwise stall the box
 fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
@@ -332,16 +332,15 @@ On the laptop, keep the synced `out` folder away from anything that runs or open
 Linux support ships in 0.3.26 and is marked experimental until the runbook checks below pass on a real server.
 
 ```bash
-curl -fsSL https://useangelia.com/install | sh       # checks the release signature; installs under ~/.local
+curl -fsSL https://useangelia.com/install | sh       # checks the release signature; installs under ~/.local; then runs angelia init
 angelia --version                                    # 0.3.26 or newer
-angelia init                     # the wizard; the WhatsApp QR prints in this terminal
 angelia check-config
 angelia service install          # writes ~/.config/systemd/user/angelia.service, enables it, starts it
 ```
 
 WhatsApp allows one linked device per running copy. Stop the Mac's daemon first (`angelia service uninstall` there), or pair a separate number.
 
-Run the installer with `ssh -t`: its last step opens `/dev/tty`, and without one it prints `cannot open /dev/tty` after installing.
+The installer ends with `angelia init`, the wizard, unless an instance already exists. The WhatsApp QR prints in this terminal. Run the installer with `ssh -t`: that last step opens `/dev/tty`, and without one it prints `cannot open /dev/tty` after installing.
 
 **Trust the workspace once.** Claude Code ignores a profile's `add_dirs` until the folder has passed its trust dialog. The log line reads `Ignoring 1 permissions.additionalDirectories entry … this workspace has not been trusted`. Set the flag without the dialog:
 
@@ -383,9 +382,9 @@ Measured 2026-11-17, moving a 0.3.25 Mac instance to 0.3.26 here.
 3. **On the server.**
    - Rewrite the paths: `grep -rIl /Users/<you> --exclude-dir=wa ~/.angelia | xargs sed -i "s#/Users/<you>#$HOME#g"`.
    - Clone every `add_dirs` repo to the same place under `$HOME`.
-   - Run `angelia check-config`, `angelia accept --check`, and `angelia compile <profile> --write` for each profile. The Linux deny rules (keyrings, `.config/google-chrome`, `.config/systemd/user`) arrive only with that compile.
+   - Run `angelia check-config` and `angelia accept --check`, which only lists the changes. Then `angelia accept`, and `angelia compile <profile> --write` for each profile. The Linux deny rules (keyrings, `.config/google-chrome`, `.config/systemd/user`) arrive only with that compile.
    - Run `angelia service install`.
-4. **Jobs do not move.** `angelia jobs install` is macOS only. Write systemd timers that call `angelia jobs run <profile> <job>`, or leave the jobs off.
+4. **Jobs do not move.** `angelia jobs install` is macOS only. Write systemd timers that call `angelia jobs run <profile> <job>`, or leave the jobs off. A `run:` job of a profile with `sandbox: true` is refused on Linux: its sandbox is macOS only for now.
 
 ### `sandbox: true` on Ubuntu 26.04
 
@@ -397,7 +396,7 @@ Measured 2026-11-17 with Claude Code 2.1.327 and Angelia 0.3.26.
 - Ubuntu's `bwrap-userns-restrict` profile runs everything inside an unprivileged bwrap under `unpriv_bwrap`, which has `audit deny capability`.
 - An allow in `local/unpriv_bwrap` does not lift that `deny`. AppArmor 4's `priority=` can override it, but then for every program that runs under `unpriv_bwrap`. The copy below opens one binary only.
 
-The fix, as root, gives Claude a `bwrap` copy under its own profile. Ubuntu's `/usr/bin/bwrap` keeps its restrictive one:
+The fix, in a root shell (`sudo -i` as `admin`), gives Claude a `bwrap` copy under its own profile. Ubuntu's `/usr/bin/bwrap` keeps its restrictive one:
 
 ```bash
 install -d -m 755 /usr/local/lib/claude-bwrap && install -m 750 -o root -g angelia /usr/bin/bwrap /usr/local/lib/claude-bwrap/bwrap
@@ -540,7 +539,7 @@ systemctl --user enable --now angelia-workspace-sync.timer
   - Angelia opens no port at all. Its API is a Unix socket under `~/.angelia`.
   - If you set up the optional desktop or Syncthing: VNC listens on a Unix socket only `angelia` can open (with no password, so every `angelia` process can: see point 3 under "What stays open"), and Syncthing's GUI on localhost and its sync port on the tailnet only.
 - **The server cannot reach your devices.** No Tailscale grant has `tag:server` as its source. SSH to the server needs both your tailnet login and your key; the policy's `tests` block refuses any change that lets the server reach your laptop.
-- **Private files.** The home folder is 700 and `umask 077` applies, so files are created private. Angelia keeps `~/.angelia/env` at 600, and Claude keeps its credentials at 600.
+- **Private files.** The home folder is 700, so other users cannot open what is in it. `umask 077` in `~/.profile` covers your login shells only: systemd user units do not read `~/.profile`, so the daemon and the units keep their own umask. Angelia keeps `~/.angelia/env` at 600, and Claude keeps its credentials at 600.
 - **Angelia's deny floor** keeps the agents' file tools away from:
   - Claude's `.credentials.json`, `~/.ssh`, `gh`'s login and Angelia's own secrets.
   - Chrome's and Firefox's profiles, and the keyrings.
@@ -552,7 +551,7 @@ systemctl --user enable --now angelia-workspace-sync.timer
 1. **A shell reads everything `angelia` can.** The deny floor stops the file tools and a plain `cat`. It does not stop a script the agent writes. On macOS `sandbox: true` closes that gap; on Linux it is not built yet. So, on this box:
    - **No `bypassPermissions` on any profile someone else can message.** Use `acceptEdits` or `default` there, so a shell command asks you first.
    - Keep `bypassPermissions` for a profile only you talk to.
-   - Do not use the article's `--dangerously-skip-permissions` on anything that reads chat or web content. Prompt injection then has the whole account.
+   - Do not run `claude --dangerously-skip-permissions` on anything that reads chat or web content. Prompt injection then has the whole account.
 2. **Make each credential worth little if it leaks.** Assume an agent can read them all:
    - The Claude login.
    - A dedicated Google account in Chrome.
@@ -564,15 +563,16 @@ systemctl --user enable --now angelia-workspace-sync.timer
    - Stop the desktop when you do not need it: `systemctl --user stop desktop vnc`.
 4. **The WhatsApp session** in `~/.angelia/wa/` is as good as the linked device. Reading it would mean getting past the deny floor (point 1). Hetzner snapshots copy it too.
 5. **Synced files are inputs.** Anything in `~/sync/in` can carry a prompt injection, like any other file. Do not put it in a bypass profile's `add_dirs`.
-6. **Other users' processes are visible.** By default `ps` shows `admin`'s processes too. `angelia` cannot touch them. To hide them, mount `/proc` with `hidepid=invisible`; that can upset polkit and logind, so test it before you rely on it.
+6. **Remote Control, if you set it up (step 9),** is not an Angelia profile, so no deny floor applies to it. It puts `~/.angelia/env`, `wa/` and `api.token` behind your claude.ai login. Keep 2FA on that account.
+7. **Other users' processes are visible.** By default `ps` shows `admin`'s processes too. `angelia` cannot touch them. To hide them, mount `/proc` with `hidepid=invisible`; that can upset polkit and logind, so test it before you rely on it.
 
 ### Quick audit (run any time)
 
 ```bash
-sudo ss -tulpn                                # nothing public except tailscaled
+sudo ss -tulpn                                # on 0.0.0.0/[::] only tailscaled and sshd; ufw drops sshd's port from the internet
 sudo ufw status verbose                       # deny incoming; allow in on tailscale0
 sudo -l -U angelia; id angelia                # no sudo; no extra groups
-stat -c '%a %n' ~angelia ~angelia/.angelia ~angelia/.angelia/env ~angelia/.claude/.credentials.json
+sudo stat -c '%a %n' ~angelia ~angelia/.angelia ~angelia/.angelia/env ~angelia/.claude/.credentials.json
                                               # 700 700 600 600
 sudo grep -h '^Permit\|^Password' /etc/ssh/sshd_config.d/*.conf
 ```
