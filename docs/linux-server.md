@@ -20,7 +20,7 @@ Each step ends with a **Check**. Do not start the next step until the check pass
 | Inbound | None from the internet. The Hetzner firewall and `ufw` both drop everything; Tailscale gets through without an open port. |
 | VNC, Syncthing GUI | Bound to `127.0.0.1` only. You reach them through an SSH tunnel over Tailscale. |
 
-Everything `angelia` can read, an agent with a shell can read too. On Linux there is no sandbox for profiles yet, so the plan below keeps the secrets on this box few and narrow. Read [Security](#security) before you pair any chat.
+Everything `angelia` can read, an agent with a shell can read too. On Linux the sandbox for profiles works only with the extra bwrap step in [step 8](#sandbox-true-on-ubuntu-2604), not in `bypassPermissions`, and it is experimental. So the plan below keeps the secrets on this box few and narrow. Read [Security](#security) before you pair any chat.
 
 ## 0. Create the server (Hetzner console)
 
@@ -548,7 +548,7 @@ systemctl --user enable --now angelia-workspace-sync.timer
 
 ### What stays open, and what to do about it
 
-1. **A shell reads everything `angelia` can.** The deny floor stops the file tools and a plain `cat`. It does not stop a script the agent writes. On macOS `sandbox: true` closes that gap; on Linux it is not built yet. So, on this box:
+1. **A shell reads everything `angelia` can.** The deny floor stops the file tools and a plain `cat`. It does not stop a script the agent writes. `sandbox: true` closes that gap on macOS. On Linux it closes it only with the bwrap step from step 8, not in `bypassPermissions`, and it is experimental. So, on this box:
    - **No `bypassPermissions` on any profile someone else can message.** Use `acceptEdits` or `default` there, so a shell command asks you first.
    - Keep `bypassPermissions` for a profile only you talk to.
    - Do not run `claude --dangerously-skip-permissions` on anything that reads chat or web content. Prompt injection then has the whole account.

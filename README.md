@@ -76,7 +76,7 @@ angelia service install   # keep it running: starts at login, comes back after a
 
 Then send *"what is in this folder?"* to your bot. The agent answers from the profile's folder.
 
-> **Linux is experimental:** `angelia service install` writes a systemd user unit, but it has not yet been measured on a real box (the [runbook checks](docs/runbook.md#linux-server-over-tailscale) do that). `angelia init` offers the service on macOS only, so on Linux run `angelia service install` yourself. Still macOS only until their sub-projects land: `angelia jobs`, voice replies, sandboxed profiles and the pi backend. **Windows:** not yet.
+> **Linux is experimental:** `angelia service install` writes a systemd user unit. On Ubuntu 26.04 with systemd 259 the service, a reboot with linger and `/restart` were measured; `angelia update`, a `$` in the config path and the `.inbox` link are not yet (the [runbook checks](docs/runbook.md#linux-server-over-tailscale)). `angelia init` offers the service on macOS only, so on Linux run `angelia service install` yourself. Sandboxed profiles work on Linux only with the extra bwrap step in the server guide, and not in `bypassPermissions`. Still macOS only until their sub-projects land: `angelia jobs`, voice replies and the pi backend. [Angelia on a Linux server](docs/linux-server.md) walks a VPS from empty to running. **Windows:** not yet.
 
 ---
 
