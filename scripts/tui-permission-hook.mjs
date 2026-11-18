@@ -53,7 +53,7 @@ function wait() {
   try { said = JSON.parse(readFileSync(answer, 'utf8')); } catch { said = undefined; }
   if (said) {
     leave();
-    const decision = said.allow === true ? { behavior: 'allow' } : { behavior: 'deny', message: 'Denied from chat' };
+    const decision = said.allow === true ? { behavior: 'allow' } : { behavior: 'deny', message: 'Not permitted. Do not retry it; tell the user it is not permitted.' };
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } }));
     return;
   }

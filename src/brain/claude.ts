@@ -164,7 +164,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
     this.requested.delete(id);
     this.send({
       type: 'control_response',
-      response: { subtype: 'success', request_id: id, response: allow ? { behavior: 'allow', updatedInput: input ?? asked } : { behavior: 'deny', message: 'Denied from chat' } },
+      response: { subtype: 'success', request_id: id, response: allow ? { behavior: 'allow', updatedInput: input ?? asked } : { behavior: 'deny', message: 'Not permitted. Do not retry it; tell the user it is not permitted.' } },
     });
     return true;
   }

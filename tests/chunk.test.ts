@@ -49,6 +49,9 @@ test('permission replies parse', () => {
   assert.deepEqual(parsePermissionReply('yes call-2ac'), { id: 'call-2ac', allow: true });
   assert.deepEqual(parsePermissionReply('n call-abc'), { id: 'call-abc', allow: false });
   assert.equal(parsePermissionReply('yes'), null);
+  assert.deepEqual(parsePermissionReply('yes d640cc6a @972501234567'), { id: 'd640cc6a', allow: true });
+  assert.deepEqual(parsePermissionReply('@972501234567 no d640cc6a'), { id: 'd640cc6a', allow: false });
+  assert.equal(parsePermissionReply('@bot yes please'), null);
 });
 
 test('rate limiter: gap between chunks and per-minute ceiling with a fake clock', async () => {

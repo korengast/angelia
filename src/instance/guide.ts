@@ -38,7 +38,8 @@ or \`angelia profile add <platform:chat> [name]\` makes one before anyone writes
 By hand:
 1. Create workspace/profiles/<name>/ with its instruction file, CLAUDE.md (every backend reads it).
 2. Add it under \`profiles:\` in routing.yaml. Fields: cwd, backend (claude-code | grok | pi | codex),
-   permission_mode (default | acceptEdits | bypassPermissions | plan), model, effort, add_dirs,
+   permission_mode (default | acceptEdits | bypassPermissions | plan), permission_prompts (chat |
+   deny: refuse every request without asking), model, effort, add_dirs,
    shell, shell_timeout_seconds, chrome, tui (claude-code only), media_tags, bin (the CLI's full
    path when it is not found), unsafe_ok, agent_commands (CLI slash commands every group member
    may send, e.g. [compact]), sandbox (claude-code: the CLI's own sandbox on, no escape; shell

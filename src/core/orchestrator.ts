@@ -640,6 +640,10 @@ export class Orchestrator {
         // A line that cannot be delivered must not end the turn: the agent works on, the answer is
         // what matters, and a permission line nobody saw times out as a no.
         else if (e.kind === 'notice') await this.reply(i, e.text).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
+        else if (e.kind === 'permission' && profile.permission_prompts === 'deny') {
+          this.log(`permission auto-denied key=${key} tool=${e.tool}`);
+          if (b.answerPermission(e.id, false)) this.denied.add(key);
+        }
         else if (e.kind === 'permission') {
           let open = this.asks.get(key);
           if (!open) this.asks.set(key, open = new Map());

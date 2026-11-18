@@ -72,7 +72,7 @@ test('a request reaches the chat exactly as Claude made it, and each answer goes
   relay.answer(plain.id, false);
   const [da, db] = await Promise.all([a.done, b.done]);
   assert.deepEqual(decision(db.out), { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } });
-  assert.deepEqual(decision(da.out), { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Denied from chat' } });
+  assert.deepEqual(decision(da.out), { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'Not permitted. Do not retry it; tell the user it is not permitted.' } });
   assert.deepEqual(readdirSync(join(dir, 'permissions')), ['relay.json'], 'each hook took its files with it');
   relay.answer(plain.id, true);
   relay.answer('00000000-0000-4000-8000-000000000000', true);

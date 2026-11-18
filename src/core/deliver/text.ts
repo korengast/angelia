@@ -34,7 +34,9 @@ export function permissionLine(id: string, tool: string, preview: string): strin
 export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+((?=[0-9a-z_-]*[0-9-])[0-9a-z_-]{5,40})\s*$/i;
 
 export function parsePermissionReply(text: string): { id: string; allow: boolean } | null {
-  const m = PERMISSION_REPLY_RE.exec(text);
+  // A group passes on only messages that @mention the bot, so the answer often carries one
+  // ("yes d640cc6a @972…"); WhatsApp and Telegram both keep it in the text.
+  const m = PERMISSION_REPLY_RE.exec(text.replace(/@\S+/g, ' '));
   if (!m) return null;
   return { id: m[2], allow: /^y/i.test(m[1]) };
 }
