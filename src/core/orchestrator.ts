@@ -1460,6 +1460,11 @@ export function agentText(i: Inbound, bare = isAgentCommand(i)): string {
  *  not send that answer whole again. */
 export const QUOTE_MAX = 2000;
 
+/** The line above a quote. The quoted text and its author come from the sender's app, which can send
+ *  anything (a modified client can forge the quote), so the agent is told the author is not verified.
+ *  The self prompt (daemon/self.ts) says the same. */
+export const QUOTE_LABEL = "Replying to (quoted by the sender's app; author not verified):";
+
 /** The message a reply quotes, under the envelope, with every line behind ">", so no line of it can
  *  pose as an envelope. Any line break counts, not only `\n`: handle() cleans the quote, and this does
  *  not rely on it. Cut at QUOTE_MAX characters (whole code points, so no emoji is split), with "…". */
@@ -1468,7 +1473,7 @@ function quoteBlock(quoted: string | undefined): string {
   if (!q) return '';
   const chars = Array.from(q);
   if (chars.length > QUOTE_MAX) q = chars.slice(0, QUOTE_MAX).join('').trimEnd() + '…';
-  return '\nReplying to:\n' + q.split(/\r\n|[\r\n\u0085\u2028\u2029]/).map((l) => `> ${l}`).join('\n');
+  return '\n' + QUOTE_LABEL + '\n' + q.split(/\r\n|[\r\n\u0085\u2028\u2029]/).map((l) => `> ${l}`).join('\n');
 }
 
 /** A line in the sender's own text shaped like one Angelia writes (an envelope, a `[file: …]` or
