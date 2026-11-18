@@ -34,13 +34,15 @@ export function permissionLine(id: string, tool: string, preview: string): strin
 }
 
 // Ids are not all hex: Grok Build's are `call-…`, and the chat is shown their first eight characters.
-// A digit or a dash marks an id, so "yes please" stays a message.
-export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+((?=[0-9a-z_-]*[0-9-])[0-9a-z_-]{5,40})\s*$/i;
+// A digit or a dash marks an id, so "yes please" stays a message. A comma, full stop or exclamation
+// mark may follow the id ("yes d640cc6a.").
+export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+((?=[0-9a-z_-]*[0-9-])[0-9a-z_-]{5,40})[.,!]*\s*$/i;
 
 export function parsePermissionReply(text: string): { id: string; allow: boolean } | null {
   // A group passes on only messages that @mention the bot, so the answer often carries one
-  // ("yes d640cc6a @972…"); WhatsApp and Telegram both keep it in the text.
-  const m = PERMISSION_REPLY_RE.exec(text.replace(/@\S+/g, ' '));
+  // ("yes d640cc6a @972…"); WhatsApp and Telegram both keep it in the text. Only a mention that starts
+  // a word goes: "no 12345@s.whatsapp.net" is not an answer to request 12345.
+  const m = PERMISSION_REPLY_RE.exec(text.replace(/(^|\s)@\S+/g, ' '));
   if (!m) return null;
   return { id: m[2], allow: /^y/i.test(m[1]) };
 }

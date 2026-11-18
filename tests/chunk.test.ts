@@ -52,6 +52,20 @@ test('permission replies parse', () => {
   assert.deepEqual(parsePermissionReply('yes d640cc6a @972501234567'), { id: 'd640cc6a', allow: true });
   assert.deepEqual(parsePermissionReply('@972501234567 no d640cc6a'), { id: 'd640cc6a', allow: false });
   assert.equal(parsePermissionReply('@bot yes please'), null);
+  // Only a mention that starts a word is dropped: an address is not an id with a mention after it.
+  assert.equal(parsePermissionReply('no 12345@s.whatsapp.net'), null);
+  assert.equal(parsePermissionReply('yes d640c@c6a'), null);
+  assert.equal(parsePermissionReply('yes d640cc6a me@example.com'), null);
+  // A comma, full stop or exclamation mark after the id, with or without a mention.
+  assert.deepEqual(parsePermissionReply('yes d640cc6a, @bot'), { id: 'd640cc6a', allow: true });
+  assert.deepEqual(parsePermissionReply('@bot yes d640cc6a.'), { id: 'd640cc6a', allow: true });
+  assert.deepEqual(parsePermissionReply('no d640cc6a!'), { id: 'd640cc6a', allow: false });
+  assert.deepEqual(parsePermissionReply('no call-2ac. @bot'), { id: 'call-2ac', allow: false });
+  // Nothing else is loosened: punctuation elsewhere, or inside the id, is still a message.
+  assert.equal(parsePermissionReply('yes, d640cc6a'), null);
+  assert.equal(parsePermissionReply('yes d640cc6a?'), null);
+  assert.equal(parsePermissionReply('yes d640.cc6a'), null);
+  assert.equal(parsePermissionReply('yes please!'), null);
 });
 
 test('rate limiter: gap between chunks and per-minute ceiling with a fake clock', async () => {
