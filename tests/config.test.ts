@@ -281,3 +281,15 @@ whatsapp: {}
   assert.deepEqual(loadConfig(table('', ', allow_from: ["15550000001"]')).routes[0].allow_from, ['15550000001']);
   assert.deepEqual(loadConfig(table('')).routes[0].allow_from, [], 'no allow_from: the owners only, nothing to refuse');
 });
+
+test('check-config warns that permission_prompts: deny on a bypass profile refuses nothing', () => {
+  const cfg = Config.parse({
+    profiles: {
+      yolo: { cwd: '/tmp', permission_mode: 'bypassPermissions', permission_prompts: 'deny' },
+      careful: { cwd: '/tmp', permission_prompts: 'deny' },
+    },
+    routes: [{ platform: 'telegram', chat: 1, profile: 'yolo' }, { platform: 'telegram', chat: 2, profile: 'careful' }],
+  });
+  const hits = configWarnings(cfg).filter((w) => w.includes('permission_prompts'));
+  assert.deepEqual(hits, ['profiles.yolo: permission_prompts: deny with bypassPermissions refuses nothing: that mode never asks. Pick a mode that asks (default or acceptEdits) for deny to refuse those requests']);
+});
