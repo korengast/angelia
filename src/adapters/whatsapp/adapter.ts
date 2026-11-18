@@ -8,7 +8,7 @@ import qrcode from 'qrcode-terminal';
 import type { Inbound } from '../../core/types.js';
 import type { Sender, SendOptions } from '../../core/orchestrator.js';
 import { LidMap, normalizeJid } from './ids.js';
-import { MAX_MENTIONS, parseMessage, SeenIds, withMentions, type WaMessageLike } from './parse.js';
+import { MAX_MENTIONS, parseMessage, SeenIds, toInbound, withMentions, type WaMessageLike } from './parse.js';
 import { GroupCache } from './groups.js';
 import { SentMessages } from './sent.js';
 import { isOpus, type Media } from '../../core/deliver/media.js';
@@ -285,7 +285,8 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     // Checked before any await: two deliveries of one message arriving together must not both pass.
     if (m.key.id && !this.seen.first(`${p.chat}/${m.key.id}`)) return;
     const senderId = this.lids.phoneFor(p.sender);
-    const head: Omit<Inbound, 'media'> = { platform: 'whatsapp', chat: p.chat, sender: senderId, senderName: p.senderName, text: p.text, isGroup: p.isGroup, mentioned: p.mentioned };
+    // One builder for the Inbound (toInbound), so a field parseMessage adds cannot be dropped here again.
+    const { media: _none, ...head }: Inbound = toInbound(p, senderId, []);
     const inbox = this.opts.inboxFor(head);
     const note = (why: string) => { head.text = `${head.text}${head.text ? '\n' : ''}[${why}]`; };
     let fetchIt = false;

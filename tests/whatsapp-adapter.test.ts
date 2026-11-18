@@ -315,3 +315,20 @@ test('send: a phone the lid map knows goes out as the lid with tags off, after a
   assert.ok(!last.mentions.includes('33333333333333@lid'));
   assert.match(last.text, /@33333333333333$/);
 });
+
+test('a reply carries the quoted text to the handler, and a plain message carries none', async (t) => {
+  const got: Record<string, unknown>[] = [];
+  const r = rig({ onInbound: async (i) => { got.push(i as never); } });
+  t.after(() => r.a.stop());
+  await r.a.start();
+  const sock = r.sockets[0];
+  sock.open();
+  const msg = (id: string, message: Record<string, unknown>) => ({ key: { remoteJid: '120363000000000001@g.us', fromMe: false, participant: '22222222222222@lid', id }, pushName: 'Someone', message });
+  sock.ev.emit('messages.upsert', { type: 'notify', messages: [
+    msg('Q1', { extendedTextMessage: { text: '@bot', contextInfo: { quotedMessage: { conversation: 'line 1\nline 2' } } } }),
+    msg('Q2', { conversation: 'plain' }),
+  ] });
+  await until(() => got.length === 2, 'two inbound messages');
+  assert.equal(got[0].quoted, 'line 1\nline 2');
+  assert.equal('quoted' in got[1], false);
+});
