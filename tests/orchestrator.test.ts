@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator, envelope, agentText, isAgentCommand } from '../src/core/orchestrator.js';
-import { AUTO_DENY_MESSAGE, DENIED_LINE, LATE_ANSWER_LINE, NO_ANSWER_LINE } from '../src/core/deliver/text.js';
+import { AUTO_DENY_FAILED_LINE, AUTO_DENY_MESSAGE, autoDenyCapLine, DENIED_LINE, LATE_ANSWER_LINE, NO_ANSWER_LINE } from '../src/core/deliver/text.js';
 import type { Inbound } from '../src/core/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -386,7 +386,7 @@ test('permission_prompts: deny stops a turn whose agent keeps asking, after ten 
   assert.equal(logs.filter((l) => l.startsWith('permission auto-denied key=')).length, 10, logs.join('\n'));
   assert.ok(logs.includes('permission auto-denied 10 times key=telegram:1: turn stopped'), logs.join('\n'));
   assert.equal(b.alive, false, 'the agent was ended');
-  assert.deepEqual(sent.slice(1), [DENIED_LINE]);
+  assert.deepEqual(sent.slice(1), [autoDenyCapLine(10)]);
   // The next message starts a fresh agent on the same session and is answered.
   await o.handle(dm('1', 'hello'));
   assert.match(sent.at(-1)!, /^echo:/);
@@ -411,7 +411,7 @@ test('permission_prompts: deny whose refusal reaches nobody (the tmux hook stepp
   await o.handle(dm('1', 'do it'));
   assert.ok(logs.includes('permission auto-deny failed key=telegram:1 tool=Bash: no hook waits for it'), logs.join('\n'));
   assert.ok(!logs.some((l) => l.startsWith('permission auto-denied')), 'not logged as refused');
-  assert.deepEqual(sent, [LATE_ANSWER_LINE, 'asked in the pane']);
+  assert.deepEqual(sent, [AUTO_DENY_FAILED_LINE, 'asked in the pane']);
 });
 
 test('a member cannot pose as the owner or hand the agent a file line: lookalike lines are quoted', async (t) => {

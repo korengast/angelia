@@ -26,6 +26,12 @@ export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
  *  A chat "no", the app and a timeout keep the CLI's plain "Denied from chat": after those the owner
  *  may well say "run it again", and a tool result that says "do not retry" would stand in the way. */
 export const AUTO_DENY_MESSAGE = 'Not permitted. Do not retry it; tell the user it is not permitted.';
+/** permission_prompts: deny, past the cap in one turn: the agent kept asking, so the turn was stopped. */
+export function autoDenyCapLine(max: number): string {
+  return `The agent asked for ${max} things this profile does not permit, so Angelia stopped it.`;
+}
+/** permission_prompts: deny, but no hook waited for the refusal (tmux mode): Claude asks in its own dialog. */
+export const AUTO_DENY_FAILED_LINE = 'Claude asked for a permission this profile refuses, but the refusal could not reach it. Answer it in the Claude app or in its pane.';
 export const LATE_ANSWER_LINE = 'Too late: that request is no longer waiting for the chat. If Claude still asks, answer it in the Claude app or in its pane.';
 
 export function permissionLine(id: string, tool: string, preview: string): string {
