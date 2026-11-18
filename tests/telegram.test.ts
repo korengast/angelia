@@ -52,6 +52,21 @@ test('mentioned: an @mention of the bot (any case) or a reply to it; another bot
   assert.deepEqual(got.map((i) => i.mentioned), [true, false, true, false]);
 });
 
+test('a reply carries what it quotes: the selected part, else the text, else the caption; a reply with neither carries nothing', async () => {
+  const { tg, got } = rig();
+  const to = (extra: Record<string, unknown>) => ({ message_id: 1, date: 1, chat: { id: -100, type: 'supergroup', title: 'Trip' }, from: { id: 9, is_bot: false, first_name: 'Ann' }, ...extra });
+  await tg.bot.handleUpdate(group('what?', { reply_to_message: to({ text: 'line 1\nline 2' }) }));
+  await tg.bot.handleUpdate(group('nice', { reply_to_message: to({ photo: [{ file_id: 'p', file_unique_id: 'p', width: 1, height: 1 }], caption: 'the view' }) }));
+  await tg.bot.handleUpdate(group('hm', { reply_to_message: to({ sticker: { file_id: 's', file_unique_id: 's', type: 'regular', width: 1, height: 1, is_animated: false, is_video: false } }) }));
+  await tg.bot.handleUpdate(group('this part', { reply_to_message: to({ text: 'a long message with a part' }), quote: { text: 'a part', position: 20 } }));
+  // A reply to a message in another chat: no reply_to_message, the quote is the only text.
+  await tg.bot.handleUpdate(group('from there', { external_reply: { origin: { type: 'user', date: 1, sender_user: { id: 9, is_bot: false, first_name: 'Ann' } } }, quote: { text: 'quoted elsewhere', position: 0 } }));
+  await tg.bot.handleUpdate(group('empty quote', { reply_to_message: to({ text: 'whole' }), quote: { text: '', position: 0 } }));
+  await tg.bot.handleUpdate(group('no reply'));
+  assert.deepEqual(got.map((i) => i.quoted), ['line 1\nline 2', 'the view', undefined, 'a part', 'quoted elsewhere', 'whole', undefined]);
+  assert.deepEqual(got.map((i) => 'quoted' in i), [true, true, false, true, true, true, false]);
+});
+
 test('a topic message carries its thread; a plain group message does not', async () => {
   const { tg, got } = rig();
   await tg.bot.handleUpdate(group('in topic', { message_thread_id: 55, is_topic_message: true }));

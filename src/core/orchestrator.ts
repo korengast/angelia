@@ -198,7 +198,9 @@ export class Orchestrator {
   }
 
   async handle(raw: Inbound): Promise<void> {
-    const i = { ...raw, text: cleanText(raw.text), ...(raw.senderName !== undefined ? { senderName: cleanText(raw.senderName) } : {}) };
+    // The quote is someone else's text as much as the message is: cleaned the same way, so a `\r` in it
+    // cannot start a line of its own when the turn is pasted into a pane.
+    const i = { ...raw, text: cleanText(raw.text), ...(raw.senderName !== undefined ? { senderName: cleanText(raw.senderName) } : {}), ...(raw.quoted !== undefined ? { quoted: cleanText(raw.quoted) } : {}) };
     const g = gate(i, matchRoute(this.cfg, i));
     const key = sessionKey(i);
     if (!g.ok) {
@@ -1477,7 +1479,27 @@ export function backendBin(p: Profile, b: BackendName): string {
  *  (`bare`), a CLI command as typed. */
 export function agentText(i: Inbound, bare = isAgentCommand(i)): string {
   if (bare && isAgentCommand(i)) return i.text.trim();
-  return envelope(i) + '\n\n' + quoteLookalikes(i.text) + i.media.map(mediaLine).join('');
+  return envelope(i) + quoteBlock(i.quoted) + '\n\n' + quoteLookalikes(i.text) + i.media.map(mediaLine).join('');
+}
+
+/** At most this many characters of a quoted message reach the agent: a reply to a long answer must
+ *  not send that answer whole again. */
+export const QUOTE_MAX = 2000;
+
+/** The line above a quote. The quoted text and its author come from the sender's app, which can send
+ *  anything (a modified client can forge the quote), so the agent is told the author is not verified.
+ *  The self prompt (daemon/self.ts) says the same. */
+export const QUOTE_LABEL = "Replying to (quoted by the sender's app; author not verified):";
+
+/** The message a reply quotes, under the envelope, with every line behind ">", so no line of it can
+ *  pose as an envelope. Any line break counts, not only `\n`: handle() cleans the quote, and this does
+ *  not rely on it. Cut at QUOTE_MAX characters (whole code points, so no emoji is split), with "…". */
+function quoteBlock(quoted: string | undefined): string {
+  let q = quoted?.trim();
+  if (!q) return '';
+  const chars = Array.from(q);
+  if (chars.length > QUOTE_MAX) q = chars.slice(0, QUOTE_MAX).join('').trimEnd() + '…';
+  return '\n' + QUOTE_LABEL + '\n' + q.split(/\r\n|[\r\n\v\f\u0085\u2028\u2029]/).map((l) => `> ${l}`).join('\n');
 }
 
 /** A line in the sender's own text shaped like one Angelia writes (an envelope, a `[file: …]` or
