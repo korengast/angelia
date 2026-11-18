@@ -51,7 +51,7 @@ export function profilesDetail(cfg: Config, sessions: SessionMapFile): { version
     profiles: profiles.map((row) => {
       const p = cfg.profiles[row.name];
       return { ...row, settings: {
-        permission_mode: p.permission_mode, effort: p.effort ?? null, capabilities: p.capabilities, except: p.except, deny: p.deny,
+        permission_mode: p.permission_mode, permission_prompts: p.permission_prompts, effort: p.effort ?? null, capabilities: p.capabilities, except: p.except, deny: p.deny,
         add_dirs: p.add_dirs, sandbox: p.sandbox ?? null, isolated: p.isolated, chrome: p.chrome, shell: p.shell, media_tags: p.media_tags,
       } };
     }),

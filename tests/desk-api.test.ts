@@ -143,6 +143,7 @@ test('desk api: reads and the stream take the owner\'s token only; reply-to-call
   assert.equal(profiles.body.profiles[0].model, 'm1');
   assert.deepEqual(profiles.body.profiles[0].settings.add_dirs, ['/tmp']);
   assert.equal(profiles.body.profiles[0].settings.permission_mode, 'acceptEdits');
+  assert.equal(profiles.body.profiles[0].settings.permission_prompts, 'chat');
   assert.deepEqual((await get(socket, '/sessions?key=telegram:1', token)).body, { active: null, sessions: [] });
 });
 
