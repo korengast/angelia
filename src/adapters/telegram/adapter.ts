@@ -214,12 +214,15 @@ export class TelegramAdapter implements Sender {
         return (e.type === 'mention' && word === me) || (e.type === 'bot_command' && word.endsWith(me));
       }) ||
       m.reply_to_message?.from?.id === ctx.me.id;
+    // What a reply quotes: the part the user selected when there is one (Bot API TextQuote; the only text
+    // a reply to another chat, external_reply, carries), else the whole message replied to, or its caption.
+    const quoted = m.quote?.text || m.reply_to_message?.text || m.reply_to_message?.caption || undefined;
     const head: Omit<Inbound, 'media'> = {
       platform: 'telegram', chat,
       thread: m.message_thread_id !== undefined && m.is_topic_message ? String(m.message_thread_id) : undefined,
       sender: String(m.from?.id ?? ''), senderName: m.from?.first_name,
       text, isGroup, mentioned,
-      ...(m.reply_to_message?.text ?? m.reply_to_message?.caption ? { quoted: m.reply_to_message?.text ?? m.reply_to_message?.caption } : {}),
+      ...(quoted ? { quoted } : {}),
     };
     const inbox = this.opts.inboxFor(head);
     const file = inbox ? m.document ?? m.photo?.at(-1) ?? m.voice ?? m.audio ?? m.video : undefined;
