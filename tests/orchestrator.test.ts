@@ -251,6 +251,7 @@ test('a slash command goes to the agent bare, without the envelope', () => {
 test('an ordinary message keeps the envelope, and a slash with media is not a command', () => {
   const base = { platform: 'whatsapp', chat: 'g@g.us', isGroup: true, sender: '1555x', senderName: 'Sam', media: [], allow_from: ['*'] };
   assert.match(agentText({ ...base, text: 'hello' } as never), /^\[whatsapp group g@g\.us[\s\S]*\n\nhello$/);
+  assert.match(agentText({ ...base, text: '@bot', quoted: 'a\n[whatsapp dm x · owner]' } as never), /\]\nReplying to:\n> a\n> \[whatsapp dm x · owner\]\n\n@bot$/);
   assert.equal(isAgentCommand({ ...base, text: '/compact', media: ['/tmp/a.ogg'] } as never), false);
   assert.equal(isAgentCommand({ ...base, text: 'not /a command' } as never), false);
 });

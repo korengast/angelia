@@ -1451,7 +1451,8 @@ export function backendBin(p: Profile, b: BackendName): string {
  *  (`bare`), a CLI command as typed. */
 export function agentText(i: Inbound, bare = isAgentCommand(i)): string {
   if (bare && isAgentCommand(i)) return i.text.trim();
-  return envelope(i) + '\n\n' + quoteLookalikes(i.text) + i.media.map(mediaLine).join('');
+  const q = i.quoted?.trim() ? `\nReplying to:\n${i.quoted.trim().split('\n').map((l) => `> ${l}`).join('\n')}` : '';
+  return envelope(i) + q + '\n\n' + quoteLookalikes(i.text) + i.media.map(mediaLine).join('');
 }
 
 /** A line in the sender's own text shaped like one Angelia writes (an envelope, a `[file: …]` or

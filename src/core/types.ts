@@ -27,6 +27,8 @@ export interface Inbound {
   isGroup: boolean;
   mentioned: boolean;
   media: string[];
+  /** The text of the message this one replies to (quotes), when the platform sends it. */
+  quoted?: string;
   /** 'app': the owner typed it in a client on this machine (the API's reply-to-caller turn). What
    *  the turn says goes to that client as events (core/events.ts) and never to the chat. */
   surface?: 'app';

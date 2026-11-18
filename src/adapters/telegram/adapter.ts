@@ -219,6 +219,7 @@ export class TelegramAdapter implements Sender {
       thread: m.message_thread_id !== undefined && m.is_topic_message ? String(m.message_thread_id) : undefined,
       sender: String(m.from?.id ?? ''), senderName: m.from?.first_name,
       text, isGroup, mentioned,
+      ...(m.reply_to_message?.text ?? m.reply_to_message?.caption ? { quoted: m.reply_to_message?.text ?? m.reply_to_message?.caption } : {}),
     };
     const inbox = this.opts.inboxFor(head);
     const file = inbox ? m.document ?? m.photo?.at(-1) ?? m.voice ?? m.audio ?? m.video : undefined;
