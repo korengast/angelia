@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { childEnv, versionAtLeast } from './argv.js';
-import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
 import { cacheEnv, profileCacheDir } from './cache.js';
 import { CODEX_PROFILE, codexApproval, codexConfigConflict, codexOverrides, codexSandboxNote, codexSandboxed } from './codex-config.js';
 import { profilePermissions, readRecord } from '../capabilities/compile.js';
@@ -333,14 +333,14 @@ export class CodexBrain extends EventEmitter implements Brain {
     }
   }
 
-  answerPermission(id: string, allow: boolean): boolean {
+  answerPermission(id: string, allow: boolean, how: PermissionAnswer = {}): boolean {
     const full = this.permissions.take(id);
     if (!full) return false;
     const p = this.pending.get(full);
     this.pending.delete(full);
     if (!p) return false;
     if (p.kind === 'grant') { this.reply(p.rpcId, { permissions: allow ? p.grant ?? {} : {}, scope: 'turn' }); return true; }
-    const decision = p.kind === 'legacy' ? (allow ? 'approved' : { denied: { rejection: 'Denied in the chat' } }) : (allow ? 'accept' : 'decline');
+    const decision = p.kind === 'legacy' ? (allow ? 'approved' : { denied: { rejection: how.message ?? 'Denied in the chat' } }) : (allow ? 'accept' : 'decline');
     this.reply(p.rpcId, { decision });
     return true;
   }

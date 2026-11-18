@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { ClaudeBrain as Brain } from '../src/brain/claude.js';
 import type { BrainEvent } from '../src/core/types.js';
+import { AUTO_DENY_MESSAGE } from '../src/core/deliver/text.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FAKE = join(here, 'fake-claude.mjs');
@@ -77,6 +78,20 @@ test('permission timeout auto-denies', async () => {
   const out: BrainEvent[] = [];
   for await (const e of b.turn('PERM wait')) out.push(e); // never answered by the test
   assert.equal((out[1] as any).text, 'tool denyed');
+  await b.stop();
+});
+
+test('a refusal carries its message to the agent; without one, as after a timeout, it is the plain "Denied from chat"', async () => {
+  const b = make(); b.start();
+  const out: BrainEvent[] = [];
+  for await (const e of b.turn('PERMWHY wait')) out.push(e); // never answered: the timeout refuses it
+  assert.equal((out[1] as any).text, 'tool denyed: Denied from chat');
+  const told: BrainEvent[] = [];
+  for await (const e of b.turn('PERMWHY run it')) {
+    told.push(e);
+    if (e.kind === 'permission') assert.equal(b.answerPermission(e.id, false, { message: AUTO_DENY_MESSAGE }), true);
+  }
+  assert.equal((told[1] as any).text, `tool denyed: ${AUTO_DENY_MESSAGE}`);
   await b.stop();
 });
 

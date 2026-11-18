@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent } from '../core/types.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
-import { PermissionBook, type Brain, type BrainOptions, type BrainSession } from './brain.js';
+import { PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer } from './brain.js';
 import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadBuffer, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { paneVerdict, PermissionRelay, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
@@ -632,11 +632,11 @@ export class TuiBrain extends EventEmitter implements Brain {
 
   /** A chat answer goes to the hook waiting on that request, and to no other; no key is pressed. False
    *  when that hook has stepped aside already: Claude then asks in its own dialog. */
-  answerPermission(id: string, allow: boolean): boolean {
+  answerPermission(id: string, allow: boolean, how: PermissionAnswer = {}): boolean {
     const full = this.permissions.take(id);
     if (!full) return false;
     this.relayedAt = Date.now();
-    return this.relay.answer(full, allow);
+    return this.relay.answer(full, allow, how.message);
   }
 
   /** The hook relays while this beats: written now, then every RELAY_BEAT_MS, whatever the reader is

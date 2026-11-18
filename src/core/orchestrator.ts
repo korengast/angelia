@@ -22,7 +22,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, isLimitText, limitHint, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
+import { failureLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -642,7 +642,7 @@ export class Orchestrator {
         else if (e.kind === 'notice') await this.reply(i, e.text).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
         else if (e.kind === 'permission' && profile.permission_prompts === 'deny') {
           this.log(`permission auto-denied key=${key} tool=${e.tool}`);
-          if (b.answerPermission(e.id, false)) this.denied.add(key);
+          if (b.answerPermission(e.id, false, { message: AUTO_DENY_MESSAGE })) this.denied.add(key);
         }
         else if (e.kind === 'permission') {
           let open = this.asks.get(key);

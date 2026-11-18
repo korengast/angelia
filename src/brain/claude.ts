@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { claudeArgv, childEnv, versionAtLeast, CLAUDE_ENV, MIN_CLAUDE_VERSION } from './argv.js';
-import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
+import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
 import { LOST_SESSION_LINE, placeTranscript } from './transcripts.js';
 
 export { BrainExited, exitReason, type BrainOptions } from './brain.js';
@@ -155,7 +155,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
   }
 
   /** `id` may be a prefix of a pending request id (the chat sees the first 8 chars). */
-  answerPermission(id: string, allow: boolean, input?: unknown): boolean {
+  answerPermission(id: string, allow: boolean, how: PermissionAnswer = {}): boolean {
     const full = this.permissions.take(id);
     if (!full) return false;
     id = full;
@@ -164,7 +164,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
     this.requested.delete(id);
     this.send({
       type: 'control_response',
-      response: { subtype: 'success', request_id: id, response: allow ? { behavior: 'allow', updatedInput: input ?? asked } : { behavior: 'deny', message: 'Not permitted. Do not retry it; tell the user it is not permitted.' } },
+      response: { subtype: 'success', request_id: id, response: allow ? { behavior: 'allow', updatedInput: how.input ?? asked } : { behavior: 'deny', message: how.message ?? 'Denied from chat' } },
     });
     return true;
   }

@@ -53,7 +53,9 @@ function wait() {
   try { said = JSON.parse(readFileSync(answer, 'utf8')); } catch { said = undefined; }
   if (said) {
     leave();
-    const decision = said.allow === true ? { behavior: 'allow' } : { behavior: 'deny', message: 'Not permitted. Do not retry it; tell the user it is not permitted.' };
+    // The daemon names the refusal only for a profile that refuses without asking (permission_prompts: deny).
+    const why = typeof said.message === 'string' && said.message ? said.message.slice(0, 500) : 'Denied from chat';
+    const decision = said.allow === true ? { behavior: 'allow' } : { behavior: 'deny', message: why };
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } }));
     return;
   }

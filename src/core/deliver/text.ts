@@ -22,6 +22,10 @@ export const UNMATCHED_LINE = '[Angelia] This chat is not routed to a profile.';
 export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
 /** A chat answer to a request no hook waits for any more (it stepped aside when the chat stopped
  *  being read): Claude asks in its own dialog instead. */
+/** What the agent hears when a `permission_prompts: deny` profile refuses a request without asking.
+ *  A chat "no", the app and a timeout keep the CLI's plain "Denied from chat": after those the owner
+ *  may well say "run it again", and a tool result that says "do not retry" would stand in the way. */
+export const AUTO_DENY_MESSAGE = 'Not permitted. Do not retry it; tell the user it is not permitted.';
 export const LATE_ANSWER_LINE = 'Too late: that request is no longer waiting for the chat. If Claude still asks, answer it in the Claude app or in its pane.';
 
 export function permissionLine(id: string, tool: string, preview: string): string {
