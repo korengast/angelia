@@ -1,0 +1,86 @@
+<!--{
+  "title": "How to run Claude Code on a Linux server (VPS)",
+  "description": "Run Claude Code on an Ubuntu VPS that never sleeps, and chat with it from WhatsApp or Telegram: Tailscale, a user without sudo, systemd, the limits.",
+  "date": "2026-11-18",
+  "draft": false
+}-->
+<p class="lede">Claude Code on a laptop answers only while the laptop is awake. A small Linux server is always on, and it comes back by itself after a reboot. Since version 0.3.26, Angelia runs there as a systemd user service, so the chats on your phone reach a Claude Code that never sleeps. Linux support is experimental, and this page says what that means. I built Angelia; the Linux service and the server guide are by Yoav, a contributor (<a href="#credits">more below</a>).</p>
+
+<p>Short version: rent an Ubuntu VPS, make Tailscale the only way in, run Claude Code and Angelia as a user that has no sudo, and pair a WhatsApp or Telegram chat. The <a href="/docs/linux-server/">full server guide</a> has every command, with a check after each step. This page is the overview.</p>
+
+<h2 id="why-a-server">Why a server and not the Mac</h2>
+<ul>
+  <li><strong>It does not sleep.</strong> No energy settings, no lid, no laptop in a bag.</li>
+  <li><strong>It starts at boot, with nobody logged in.</strong> On a Mac, Angelia's service starts at login, so after a reboot it waits for one. On Linux, a user service with linger starts at boot.</li>
+  <li><strong>Your Mac stays yours.</strong> The agents work in the server's folders, not on the computer you use every day.</li>
+</ul>
+<p>The cost: the server holds your secrets (the Claude login, the WhatsApp session, a GitHub key), and it does not have what your Mac has, such as your logged-in browser and your local repos. You clone the repos the agents need onto it. If you have a Mac that stays home and on, <a href="/guides/claude-code-24-7/">running Claude Code 24/7 on your own machine</a> is less work.</p>
+
+<h2 id="the-shape">The shape of the setup</h2>
+<ul>
+  <li><strong>The box.</strong> A Hetzner VPS with Ubuntu 26.04 (24.04 works too), x86. The guide was measured on x86 only. Its swap step assumes a 4 GB server; 2 GB is too small once the optional desktop and Chrome run.</li>
+  <li><strong>The way in.</strong> Tailscale only. The Hetzner firewall and <code>ufw</code> drop all inbound traffic from the internet, and the Tailscale policy lets you reach the server but not the server reach your devices. Angelia opens no port at all: its API is a Unix socket.</li>
+  <li><strong>Two users.</strong> <code>admin</code> has sudo, installs packages and runs nothing. <code>angelia</code> has no sudo and runs everything: the daemon, Claude Code, and the optional extras.</li>
+  <li><strong>The service.</strong> <code>angelia service install</code> writes a systemd user unit, enables it and starts it. Linger makes it start at boot. It restarts the daemon after a failure.</li>
+  <li><strong>The chat.</strong> WhatsApp or Telegram on your phone, as on the Mac. Nothing changes on the chat side.</li>
+  <li><strong>Optional.</strong> A small desktop with Chrome for agents that drive a browser, Syncthing to pass files back and forth, Claude Remote Control, and a twice-daily sync of the workspace to a private repo.</li>
+</ul>
+
+<h2 id="the-steps">The steps, in short</h2>
+<p>Each step in the <a href="/docs/linux-server/">server guide</a> ends with a check. Do not start the next step until it passes.</p>
+<ol>
+  <li><a href="/docs/linux-server/#0-create-the-server-hetzner-console">Create the server</a> with your SSH key and a firewall that lets in only your own IP, for now.</li>
+  <li><a href="/docs/linux-server/#1-base-system-as-root-once">The base system</a>: updates, automatic security patches, swap, the <code>admin</code> user, and SSH with keys only and no root.</li>
+  <li><a href="/docs/linux-server/#2-tailscale-then-close-the-door-as-admin">Tailscale, then close the door</a>: join the tailnet with a tag, then drop every public inbound rule.</li>
+  <li><a href="/docs/linux-server/#3-the-angelia-user-as-admin">The <code>angelia</code> user</a>, with no sudo and with linger.</li>
+  <li><a href="/docs/linux-server/#4-node-and-git">Node and git</a>. Node comes from NodeSource: Ubuntu 26.04's own Node is too old for Angelia. GitHub access is narrow, with a deploy key or a machine account.</li>
+  <li><a href="/docs/linux-server/#5-claude-code">Claude Code</a>, logged in from your laptop over SSH.</li>
+  <li><a href="/docs/linux-server/#8-angelia">Angelia</a> and its service.</li>
+</ol>
+<p>The Angelia part. Start the installer from your laptop with <code>ssh -t</code>: its setup wizard needs a terminal, and the WhatsApp QR code prints there. Then, as <code>angelia</code> on the server, install the service.</p>
+<pre><code># from your laptop
+ssh -t angelia@&lt;tailnet-ip&gt; 'curl -fsSL https://useangelia.com/install | sh'
+# on the server, as angelia
+angelia check-config
+angelia service install</code></pre>
+<p>Two things differ from a Mac:</p>
+<ul>
+  <li><code>angelia init</code> offers the service on macOS only. On Linux, run <code>angelia service install</code> yourself.</li>
+  <li>Claude Code ignores a profile's extra folders (<code>add_dirs</code>) until the workspace has passed its trust dialog. The guide gives a <a href="/docs/linux-server/#8-angelia">one-line fix</a>.</li>
+</ul>
+<p>WhatsApp allows one linked device per running copy. Stop the Mac's daemon first (<code>angelia service uninstall</code> there), or pair a second number. To bring an existing instance over, the guide <a href="/docs/linux-server/#moving-an-instance-from-a-mac">moves it from a Mac</a> with <code>rsync</code>: the WhatsApp session moves with it, so there is no new pairing.</p>
+
+<h2 id="measured">What was measured, and what was not</h2>
+<p>On 2026-11-17, on Ubuntu 26.04.1 with systemd 259 and Angelia 0.3.26:</p>
+<ul>
+  <li><strong>The service:</strong> active, with linger on.</li>
+  <li><strong>A reboot with nobody logged in:</strong> the daemon was up 11 seconds after boot, and WhatsApp reconnected.</li>
+  <li><strong><code>/restart</code> from a group:</strong> the chat heard "Restarting now" and then "Angelia is back up". The restarter ran as its own unit, and systemd counted no restarts of the service.</li>
+</ul>
+<p>Not measured yet: <code>angelia update</code> (there was no newer release to update to), a <code>$</code> in the config path, and a <code>.inbox</code> folder that is a link being refused. These three are why Linux is still called experimental. The <a href="/docs/runbook/#linux-server-over-tailscale">runbook</a> lists the six checks. If you run them on your own server, send your distro and <code>systemctl --version</code>: that is how the word goes away.</p>
+
+<h2 id="sandbox">The sandbox on Linux</h2>
+<p>A profile's deny rules stop the agent's file tools, not every program the agent runs. A script it writes can read anything the <code>angelia</code> user can. On macOS, <code>sandbox: true</code> closes that gap. On Linux, it is not that simple:</p>
+<ul>
+  <li><strong>It does not start out of the box on Ubuntu 26.04.</strong> Claude Code's sandbox on Linux is bubblewrap, and Ubuntu's AppArmor rules block what it needs. The guide's fix gives Claude Code its own copy of <code>bwrap</code> with its own AppArmor profile, named in Claude Code's managed settings (<a href="/docs/linux-server/#sandbox-true-on-ubuntu-2604">the bwrap step</a>).</li>
+  <li><strong>With that step, it holds in <code>acceptEdits</code>.</strong> Measured with Claude Code 2.1.327: a write to the home folder, a read of Angelia's API token and a request to a domain not on the list were all refused.</li>
+  <li><strong>It does not hold in <code>bypassPermissions</code>.</strong> There, the sandbox still blocks writes, but not reads or network. <code>angelia check-config</code> does not know this yet: it accepts a group open to everyone in <code>bypassPermissions</code> when the sandbox is on, because that holds on macOS. On Linux, do not rely on it.</li>
+</ul>
+<p>So on a server: no <code>bypassPermissions</code> on any profile someone else can message, and few, narrow secrets on the box. Use a dedicated Google account in its Chrome, deploy keys that each reach one repo, and no cloud API keys. The guide's <a href="/docs/linux-server/#security">security section</a> lists what the steps close and what stays open.</p>
+
+<h2 id="macos-only">What still needs a Mac</h2>
+<ul>
+  <li><strong>Scheduled jobs.</strong> <code>angelia jobs install</code> is macOS only. On Linux, write systemd timers that call <code>angelia jobs run &lt;profile&gt; &lt;job&gt;</code>.</li>
+  <li><strong>Voice replies.</strong> <code>angelia speak</code> uses the voice built into macOS.</li>
+  <li><strong>The pi backend.</strong> Its sandbox is macOS's own.</li>
+</ul>
+<p>The server guide uses Claude Code. Ubuntu's tmux is older than 3.7, so Angelia prints a version warning; it still runs. Windows is not supported yet.</p>
+
+<h2 id="credits">Who built the Linux part</h2>
+<p>Yoav (<a href="https://github.com/yoavtpr">@yoavtpr on GitHub</a>) wrote Angelia's systemd user service (<a href="https://github.com/{{REPO}}/pull/43">pull request #43</a>) and the server guide (<a href="https://github.com/{{REPO}}/pull/46">#46</a>), measured on a real Ubuntu 26.04 server. I reviewed both and merged them. Thank you, Yoav.</p>
+
+<div class="try" id="try">
+<h2 id="try-angelia">Try Angelia</h2>
+<pre><code>curl -fsSL https://useangelia.com/install | sh</code></pre>
+<p>It checks the release's signature, then a wizard pairs your first chat. Free and open source (MIT). <a href="/docs/linux-server/">Server guide</a> · <a href="/docs/security/">Security model</a> · <a href="https://github.com/{{REPO}}">GitHub</a></p>
+</div>

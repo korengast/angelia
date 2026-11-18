@@ -36,6 +36,8 @@ test('site build: the pages carry the titles and headings people search for', ()
     'claude-code': ['Claude Code on WhatsApp and Telegram: sessions, approvals', 'Claude Code on WhatsApp and Telegram: sessions and approvals from your phone'],
     alternatives: ['Angelia vs OpenClaw, Hermes Agent and Remote Control', 'Angelia vs OpenClaw, Hermes Agent and Claude Code Remote Control'],
     'tools/claude-code-permissions': ['Claude Code permissions: settings.json allow, ask, deny', 'Claude Code permissions: settings.json allow, ask, deny'],
+    'guides/claude-code-linux-server': ['How to run Claude Code on a Linux server (VPS) · Angelia', 'How to run Claude Code on a Linux server (VPS)'],
+    'docs/linux-server': ['Angelia on a Linux server: Ubuntu, Tailscale, systemd', 'Angelia on a Linux server'],
   };
   for (const [path, [title, h1]] of Object.entries(want)) {
     const h = head(path);
