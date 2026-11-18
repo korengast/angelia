@@ -4,7 +4,7 @@
   "date": "2026-11-18",
   "draft": false
 }-->
-<p class="lede">Claude Code on a laptop answers only while the laptop is awake. A small Linux server is always on, and it comes back by itself after a reboot. Since version 0.3.26, Angelia runs there as a systemd user service, so the chats on your phone reach a Claude Code that never sleeps. Linux support is experimental, and this page says what that means. I built Angelia; the Linux service and the server guide are by Yoav, a contributor (<a href="#credits">more below</a>).</p>
+<p class="lede">Claude Code on a laptop answers only while the laptop is awake. A small Linux server is always on, and it comes back by itself after a reboot. Since version 0.3.26, Angelia runs there as a systemd user service, so the chats on your phone reach a Claude Code that never sleeps. Linux support is experimental, and this page says what that means. I built Angelia; the Linux service and the server guide are by Yoav, an outside contributor (<a href="#credits">more below</a>).</p>
 
 <p>Short version: rent an Ubuntu VPS, make Tailscale the only way in, run Claude Code and Angelia as a user that has no sudo, and pair a WhatsApp or Telegram chat. The <a href="/docs/linux-server/">full server guide</a> has every command, with a check after each step. This page is the overview.</p>
 
@@ -57,7 +57,7 @@ angelia service install</code></pre>
   <li><strong>A reboot with nobody logged in:</strong> the daemon was up 11 seconds after boot, and WhatsApp reconnected.</li>
   <li><strong><code>/restart</code> from a group:</strong> the chat heard "Restarting now" and then "Angelia is back up". The restarter ran as its own unit, and systemd counted no restarts of the service.</li>
 </ul>
-<p>Not measured yet: <code>angelia update</code> (there was no newer release to update to), a <code>$</code> in the config path, and a <code>.inbox</code> folder that is a link being refused. These three are why Linux is still called experimental. The <a href="/docs/runbook/#linux-server-over-tailscale">runbook</a> lists the six checks. If you run them on your own server, send your distro and <code>systemctl --version</code>: that is how the word goes away.</p>
+<p>Not measured yet: <code>angelia update</code> (there was no newer release to update to), a <code>$</code> in the config path, and a <code>.inbox</code> folder that is a link being refused. These three, and the sandbox limits below, are why Linux is still called experimental. The <a href="/docs/runbook/#linux-server-over-tailscale">runbook</a> lists the six checks. If you run them on your own server, send your distro and <code>systemctl --version</code>: that is how the word goes away.</p>
 
 <h2 id="sandbox">The sandbox on Linux</h2>
 <p>A profile's deny rules stop the agent's file tools, not every program the agent runs. A script it writes can read anything the <code>angelia</code> user can. On macOS, <code>sandbox: true</code> closes that gap. On Linux, it is not that simple:</p>
@@ -70,7 +70,7 @@ angelia service install</code></pre>
 
 <h2 id="macos-only">What still needs a Mac</h2>
 <ul>
-  <li><strong>Scheduled jobs.</strong> <code>angelia jobs install</code> is macOS only. On Linux, write systemd timers that call <code>angelia jobs run &lt;profile&gt; &lt;job&gt;</code>.</li>
+  <li><strong>Scheduled jobs.</strong> <code>angelia jobs install</code> is macOS only. On Linux, write systemd timers that call <code>angelia jobs run &lt;profile&gt; &lt;job&gt;</code>. A <code>run:</code> job of a profile with <code>sandbox: true</code> is refused on Linux.</li>
   <li><strong>Voice replies.</strong> <code>angelia speak</code> uses the voice built into macOS.</li>
   <li><strong>The pi backend.</strong> Its sandbox is macOS's own.</li>
 </ul>
