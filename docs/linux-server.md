@@ -236,9 +236,10 @@ echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://d
 sudo apt update && sudo apt install -y google-chrome-stable
 ```
 
-As `angelia`, set a VNC password, then add two user units: the X server, and the desktop on it.
+As `angelia`, add two user units: the X server, and the desktop on it. The socket's folder must exist before the first start.
 
 ```bash
+mkdir -m 700 ~/.vnc
 mkdir -p ~/.config/systemd/user
 cat > ~/.config/systemd/user/vnc.service <<'EOF'
 [Unit]
@@ -266,7 +267,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now vnc desktop
 ```
 
-There is no VNC password and no TCP port: the server listens on a Unix socket that only `angelia` can open, and you reach it with your SSH key over the tailnet. Create the folder first with `mkdir -m 700 ~/.vnc`.
+There is no VNC password and no TCP port: the server listens on a Unix socket that only `angelia` can open, and you reach it with your SSH key over the tailnet. With no password, every process of the `angelia` user can open that socket too, agents included (see [Security](#what-stays-open-and-what-to-do-about-it), point 3).
 
 ```bash
 ssh -N -L 5901:<angelia-home>/.vnc/vnc.sock angelia@<tailnet-ip>   # then open vnc://localhost:5901
@@ -291,7 +292,7 @@ macOS Screen Sharing may refuse a server without a VNC password. TigerVNC's view
 
 Skip this unless you want to hand files to agents, and take results back, without `scp`. Angelia runs without it.
 
-- **Who dials whom.** If you set it up, let the laptop dial the server (`tcp://<server-tailnet-ip>:22000`), so the tailnet policy needs no grant from `tag:server`.
+- **Who dials whom.** The laptop dials the server (`tcp://<server-tailnet-ip>:22000`). Tailscale lets the replies back, so the tailnet policy needs no grant from `tag:server`.
 - **Homebrew on macOS:** `brew services start syncthing` stays down until `/opt/homebrew/var/log` exists.
 
 
@@ -309,18 +310,12 @@ The GUI listens on `127.0.0.1:8384`. Reach it with `ssh -N -L 8384:127.0.0.1:838
 2. **Settings → Connections.**
    - Listen address: `tcp://<server-tailscale-ip>:22000`.
    - Turn off global discovery, relaying and NAT traversal. Sync then goes only over the tailnet.
-3. **Add your laptop** as a device, using its Tailscale IP: `tcp://100.x.y.z:22000`.
+3. **Add your laptop** as a device, by its device ID, with the address left at `dynamic`: the server does not dial it. On the laptop, give the server's address as `tcp://<server-tailnet-ip>:22000`.
 4. **Share the folders.**
    - `~/sync/in` is **Receive Only** on the server: you hand files in.
    - `~/sync/out` is **Send Only** on the server: results come out.
 
 On the laptop, keep the synced `out` folder away from anything that runs or opens files on its own: not `~`, not the Desktop, not a watched folder.
-
-This grant goes in the Tailscale access rules from step 2, which so far let the server start nothing. Add it, or the server cannot reach the laptop:
-
-```jsonc
-{ "src": ["tag:server"], "dst": ["<your-laptop>"], "ip": ["tcp:22000"] }
-```
 
 **Check:**
 - A file dropped into the laptop's `in` appears on the server.
@@ -399,17 +394,21 @@ Measured 2026-11-17 with Claude Code 2.1.327 and Angelia 0.3.26.
 The fix, as root, gives Claude a `bwrap` copy under its own profile. Ubuntu's `/usr/bin/bwrap` keeps its restrictive one:
 
 ```bash
-install -d -m 755 /usr/local/lib/claude-bwrap && install -m 755 /usr/bin/bwrap /usr/local/lib/claude-bwrap/bwrap
+install -d -m 755 /usr/local/lib/claude-bwrap && install -m 750 -o root -g angelia /usr/bin/bwrap /usr/local/lib/claude-bwrap/bwrap
 printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' 'profile claude-bwrap /usr/local/lib/claude-bwrap/bwrap flags=(unconfined) {' '  userns,' '}' > /etc/apparmor.d/claude-bwrap
 apparmor_parser -r /etc/apparmor.d/claude-bwrap
-echo 'DPkg::Post-Invoke { "[ -x /usr/bin/bwrap ] && install -m 755 /usr/bin/bwrap /usr/local/lib/claude-bwrap/bwrap || true"; };' > /etc/apt/apt.conf.d/99claude-bwrap
+echo 'DPkg::Post-Invoke { "[ -x /usr/bin/bwrap ] && install -m 750 -o root -g angelia /usr/bin/bwrap /usr/local/lib/claude-bwrap/bwrap || true"; };' > /etc/apt/apt.conf.d/99claude-bwrap
+# Point Claude Code at the copy. If the file exists already, add the key to it instead.
+install -d -m 755 /etc/claude-code
+printf '%s\n' '{' '  "sandbox": { "bwrapPath": "/usr/local/lib/claude-bwrap/bwrap" }' '}' > /etc/claude-code/managed-settings.json
+chmod 644 /etc/claude-code/managed-settings.json
 ```
 
-Then, as `angelia`: `ln -sf /usr/local/lib/claude-bwrap/bwrap ~/.local/bin/bwrap`.
-
-- **Use the PATH link, not `sandbox.bwrapPath`.** The sandbox finds `bwrap` on `PATH`. `sandbox.bwrapPath` in `~/.claude/settings.json` or `--settings` did not change it: the denial still named `unpriv_bwrap`.
-- **The service's PATH already starts with `~/.local/bin`.**
-- **The cost:** that one binary may create user namespaces, as every program could before Ubuntu 24.04.
+- **Why managed settings.** Claude Code reads `sandbox.bwrapPath` only from managed settings (`/etc/claude-code/managed-settings.json` on Linux), so no user, project or local file can point the sandbox at another binary. That is why the key did nothing in `~/.claude/settings.json` or `--settings`: the denial still named `unpriv_bwrap`. Root owns the file, so no agent can change it.
+- **Not a `bwrap` link in `~/.local/bin`.** That folder is on the service's `PATH`, and an agent that runs a command outside the sandbox can write there: it could swap the binary for every other profile.
+- **It applies to every Claude Code session on the box,** `admin`'s too. It only names the binary; it does not turn the sandbox on.
+- **The cost:** that one binary may create user namespaces, as every program could before Ubuntu 24.04. Mode 750 and group `angelia` keep it to `angelia` and root.
+- **Check:** in a `claude` session as `angelia`, `/status` lists `Enterprise managed settings (file)` under setting sources. A sandboxed `touch ~/sandbox-probe` then fails with `Read-only file system`, and `sudo dmesg | grep unpriv_bwrap` shows no new denial. The measurement below used a `PATH` link; the managed-settings route is from the [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference#sandbox-bwrappath), so run this check.
 
 **2. Once it starts, it holds in `acceptEdits`, and not in `bypassPermissions`.** Probes from a sandboxed Bash in a compiled profile:
 
@@ -420,7 +419,8 @@ Then, as `angelia`: `ln -sf /usr/local/lib/claude-bwrap/bwrap ~/.local/bin/bwrap
 | Open `~/.angelia/api.token` (`Read(...)` deny) | refused (`Permission denied`) | **readable** |
 | `curl https://example.com` (not in `allowedDomains`) | refused (`deny network-outbound`) | **200** |
 
-- **Keep `bypassPermissions` off every sandboxed Linux profile.** With it, the sandbox still blocks writes but not reads or network.
+- **Do not use `bypassPermissions` with the sandbox on Linux.** With it, the sandbox still blocks writes but not reads or network.
+- **`angelia check-config` does not know this yet.** It lets a group open to everyone (`allow_from: "*"`) run `bypassPermissions` when `sandbox: true`, because that holds on macOS. Do not rely on it on Linux.
 - **Optionally keep shell commands asking anyway.** With the sandbox on, Claude Code runs Bash without asking. For chats other people write in, `"sandbox": {"autoAllowBashIfSandboxed": false}` in the profile's `.claude/settings.local.json` makes every command go to an owner too. Note that `echo` and other read-only commands still run without asking.
 
 ## 9. Optional: Claude Remote Control in `~/.angelia`
@@ -476,8 +476,9 @@ systemctl --user daemon-reload && systemctl --user enable --now claude-rc
 
 The workspace is the instance's memory: profiles, instructions and the table. A server lost without it is lost for good.
 
-- **The `.gitignore` written by `angelia init` keeps secrets out:** `.state/`, `**/.claude/settings.local.json` (where profile tokens live), `.env`, keys.
-- **Check before the first push:** `git ls-files | grep -E 'settings.local|\.state/|token'` must print nothing.
+- **The `.gitignore` written by `angelia init` keeps secrets out:** `.state/`, `.inbox/`, logs, `.env` files, keys, `*credentials*.json`, `*token*.json`, `auth.json` and `secrets/`. A profile's `.claude/settings.local.json` is generated settings and is committed: no token lives there. The daemon gives each agent its token in the environment at launch.
+- **`angelia workspace sync` scans before it commits.** It runs the same secret scan as `angelia workspace commit` and leaves a secret-shaped file out, and says so. Do not replace it with a plain `git add -A` and `git commit`, which skip the scan.
+- **Check before the first push:** `git -C ~/.angelia/workspace ls-files | grep -E '(^|/)(\.state|\.inbox|secrets)/|(^|/)\.env'` must print nothing.
 
 **The repo.** Create a private repo with the server's GitHub identity:
 
@@ -485,21 +486,21 @@ The workspace is the instance's memory: profiles, instructions and the table. A 
 gh repo create <org>/angelia-workspace --private
 ```
 
-**The script**, `~/.local/bin/angelia-workspace-sync` (mode 700). It commits, merges `origin/main`, and pushes. On a conflict it aborts the merge and pushes nothing:
+**The script**, `~/.local/bin/angelia-workspace-sync` (mode 700). It merges `origin/main` first, then lets Angelia commit and push. On a conflict, or when the merge would overwrite a change not yet saved, it stops and saves nothing:
 
 ```sh
 #!/bin/sh
 set -eu
 cd "$HOME/.angelia/workspace"
 git remote get-url origin >/dev/null 2>&1 || git remote add origin git@github.com:<org>/angelia-workspace.git
-git add -A
-git diff --cached --quiet || git commit -q -m "sync: $(hostname) $(date +%Y-%m-%dT%H:%M%z)"
 git fetch -q origin
 if git rev-parse -q --verify origin/main >/dev/null; then
-  git merge -q --no-edit origin/main || { git merge --abort; echo "merge conflict; nothing pushed" >&2; exit 1; }
+  git merge -q --no-edit origin/main || { git merge --abort || true; echo "merge failed; nothing saved" >&2; exit 1; }
 fi
-git push -q origin HEAD:main
+exec angelia workspace sync --quiet
 ```
+
+`angelia workspace sync` prints what it did, such as `saved 3 files, pushed`, and nothing at all with `--quiet` when there was nothing to save. It fails when the commit or the push fails, so the unit shows the failure.
 
 **The units**, in `~/.config/systemd/user/`:
 
@@ -513,9 +514,10 @@ systemctl --user enable --now angelia-workspace-sync.timer
 **A merged table does not take effect on its own.** A `routing.yaml` changed on GitHub and merged here still waits for `angelia accept` (or `/restart confirm`), because the daemon runs on the accepted copy.
 
 **Check:**
-- `systemctl --user start angelia-workspace-sync` logs `synced <commit>`.
+- `systemctl --user start angelia-workspace-sync` exits without an error, and `journalctl --user -u angelia-workspace-sync -n 5` shows `saved N files, pushed` (or no line, when there was nothing new).
+- `git -C ~/.angelia/workspace log -1 --format=%s origin/main` shows `Workspace sync <date>: N files`.
 - `systemctl --user list-timers` shows the next run.
-- `git ls-tree -r --name-only origin/main | grep settings.local` prints nothing.
+- `git -C ~/.angelia/workspace ls-tree -r --name-only origin/main | grep -E '(^|/)(\.state|\.inbox|secrets)/|(^|/)\.env'` prints nothing.
 
 ## Security
 
@@ -529,7 +531,7 @@ systemctl --user enable --now angelia-workspace-sync.timer
 - **No public port.**
   - The Hetzner firewall and `ufw` both drop inbound traffic.
   - Angelia opens no port at all. Its API is a Unix socket under `~/.angelia`.
-  - If you set up the optional desktop or Syncthing: VNC listens on a Unix socket only `angelia` can open, and Syncthing's GUI on localhost and its sync port on the tailnet only.
+  - If you set up the optional desktop or Syncthing: VNC listens on a Unix socket only `angelia` can open (with no password, so every `angelia` process can: see point 3 under "What stays open"), and Syncthing's GUI on localhost and its sync port on the tailnet only.
 - **The server cannot reach your devices.** No Tailscale grant has `tag:server` as its source. SSH to the server needs both your tailnet login and your key; the policy's `tests` block refuses any change that lets the server reach your laptop.
 - **Private files.** The home folder is 700 and `umask 077` applies, so files are created private. Angelia keeps `~/.angelia/env` at 600, and Claude keeps its credentials at 600.
 - **Angelia's deny floor** keeps the agents' file tools away from:
@@ -547,9 +549,12 @@ systemctl --user enable --now angelia-workspace-sync.timer
 2. **Make each credential worth little if it leaks.** Assume an agent can read them all:
    - The Claude login.
    - A dedicated Google account in Chrome.
-   - Deploy keys and a fine-grained `gh` token, limited to the repos the server needs.
+   - Deploy keys where you can: each reaches one repo.
+   - A machine account's `gh` login from step 4 is an OAuth token with `repo`, `gist` and `read:org`, and those scopes cannot be dropped. It reaches every repo the bot can, so give the bot access only to the repos the server needs.
    - **No cloud API keys on this box:** no Hetzner token and no AWS keys. Whoever holds them can rebuild the server.
 3. **The browser is an agent's tool.** Whatever that Chrome is logged into, an agent with `--chrome` can use. Log it into only what you would let the agent do alone.
+   - The VNC socket has no password (`-SecurityTypes None`). Any process of the `angelia` user, an agent's script included, can open it and drive the desktop and the logged-in Chrome.
+   - Stop the desktop when you do not need it: `systemctl --user stop desktop vnc`.
 4. **The WhatsApp session** in `~/.angelia/wa/` is as good as the linked device. Reading it would mean getting past the deny floor (point 1). Hetzner snapshots copy it too.
 5. **Synced files are inputs.** Anything in `~/sync/in` can carry a prompt injection, like any other file. Do not put it in a bypass profile's `add_dirs`.
 6. **Other users' processes are visible.** By default `ps` shows `admin`'s processes too. `angelia` cannot touch them. To hide them, mount `/proc` with `hidepid=invisible`; that can upset polkit and logind, so test it before you rely on it.
