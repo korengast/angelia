@@ -218,7 +218,7 @@ For profiles with `sandbox: true`, Claude Code's sandbox on Linux is bubblewrap,
 sudo apt install -y bubblewrap socat
 ```
 
-Ubuntu 24.04+ restricts unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns = 1`). It also ships an AppArmor profile for `bwrap`, so `bwrap` still works. Check it as `angelia`: `bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all echo ok` must print `ok` (measured on 26.04).
+Ubuntu 24.04+ restricts unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns = 1`). It also ships an AppArmor profile for `bwrap`, so `bwrap` still works. Check it as `angelia`: `bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all echo ok` must print `ok` (measured on 26.04). That does not make the sandbox work yet: on 26.04 sandboxed commands also need the `bwrap` copy from [step 8](#sandbox-true-on-ubuntu-2604).
 
 The login prints a URL. Open it on your laptop and paste the code back. Credentials land in `~/.claude/.credentials.json`; make sure it is mode 600.
 
@@ -411,7 +411,7 @@ chmod 644 /etc/claude-code/managed-settings.json
 
 - **Why managed settings.** Claude Code reads `sandbox.bwrapPath` only from managed settings (`/etc/claude-code/managed-settings.json` on Linux), so no user, project or local file can point the sandbox at another binary. That is why the key did nothing in `~/.claude/settings.json` or `--settings`: the denial still named `unpriv_bwrap`. Root owns the file, so no agent can change it.
 - **Not a `bwrap` link in `~/.local/bin`.** That folder is on the service's `PATH`, and the agent of any profile without the sandbox can write there: it could swap the binary for every sandboxed profile.
-- **It applies to every Claude Code session on the box,** `admin`'s too. It only names the binary; it does not turn the sandbox on.
+- **It applies to every Claude Code session on the box,** `admin`'s too. It only names the binary; it does not turn the sandbox on. Only `angelia` and root can run the copy (mode 750, group `angelia`), so a sandboxed session of any other user, such as `admin`, fails.
 - **The cost:** that one binary may create user namespaces, as every program could before Ubuntu 24.04. Mode 750 and group `angelia` keep it to `angelia` and root.
 - **Check:** in a `claude` session as `angelia`, `/status` lists `Enterprise managed settings (file)` under setting sources. Then ask Claude, in a sandboxed profile, to run `touch ~/sandbox-probe`: it fails with `Read-only file system`, and `sudo dmesg | grep unpriv_bwrap` shows no new denial. The measurement below used a `PATH` link; the managed-settings route is from the [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference#sandbox-bwrappath), so run this check.
 
@@ -492,6 +492,8 @@ The workspace is the instance's memory: profiles, instructions and the table. A 
 gh repo create <org>/angelia-workspace --private
 ```
 
+That needs the `gh` login of a machine account. With deploy keys there is no `gh` login: create the private repo in the browser, and add the server's key there as a deploy key with write access.
+
 **The script**, `~/.local/bin/angelia-workspace-sync` (mode 700). It merges `origin/main` first, then lets Angelia commit and push. On a conflict, or when the merge would overwrite a change not yet saved, it stops and saves nothing:
 
 ```sh
@@ -520,8 +522,8 @@ systemctl --user enable --now angelia-workspace-sync.timer
 **A merged table does not take effect on its own.** A `routing.yaml` changed on GitHub and merged here still waits for `angelia accept` (or `/restart confirm`), because the daemon runs on the accepted copy.
 
 **Check:**
-- `systemctl --user start angelia-workspace-sync` exits without an error, and `journalctl --user -u angelia-workspace-sync -n 5` shows `saved N files, pushed` (or no line, when there was nothing new).
-- After a run that saved files, `git -C ~/.angelia/workspace log -1 --format=%s origin/main` shows `Workspace sync <date>: N files`.
+- `systemctl --user start angelia-workspace-sync` exits without an error, and `journalctl --user -u angelia-workspace-sync -n 5` shows `saved 1 file, pushed` or `saved N files, pushed` (or no line, when there was nothing new).
+- After a run that saved files, `git -C ~/.angelia/workspace log -1 --format=%s origin/main` shows `Workspace sync <date>: 1 file` or `Workspace sync <date>: N files`.
 - `systemctl --user list-timers` shows the next run.
 - `git -C ~/.angelia/workspace ls-tree -r --name-only origin/main | grep -E '(^|/)(\.state|\.inbox|secrets)/|(^|/)\.env'` prints nothing.
 
