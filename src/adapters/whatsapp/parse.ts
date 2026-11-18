@@ -96,7 +96,9 @@ export function parseMessage(m: WaMessageLike, us: string[]): ParsedMessage | nu
   const quotedBy = ctx?.participant ? bareId(String(ctx.participant)) : '';
   const mentioned = mentionedJids.some((j) => ours.has(bareId(String(j)))) || (!!quotedBy && ours.has(quotedBy));
   const q = ctx?.quotedMessage ? messageContent({ key: {}, message: ctx.quotedMessage }) : undefined;
-  const quoted = q ? String(q.conversation ?? q.extendedTextMessage?.text ?? q.imageMessage?.caption ?? q.videoMessage?.caption ?? q.documentMessage?.caption ?? '') || undefined : undefined;
+  // Strings only, as for the message itself: a field of another type is not text.
+  const quoted = q ? [q.conversation, q.extendedTextMessage?.text, q.imageMessage?.caption, q.videoMessage?.caption, q.documentMessage?.caption]
+    .find((v): v is string => typeof v === 'string' && v !== '') : undefined;
   return { chat, sender, senderName: m.pushName ?? undefined, text, ...(quoted ? { quoted } : {}), isGroup, mentioned, media };
 }
 

@@ -42,6 +42,11 @@ test('parse: text, mention by jid or by lid, reply to us, caption media, ignored
   assert.equal(quotedList.quoted, 'line 1\nline 2');
   assert.equal(toInbound(quotedList, '1555', []).quoted, 'line 1\nline 2');
   assert.equal(plain.quoted, undefined);
+  const notText = parseMessage(group({ extendedTextMessage: { text: '@bot', contextInfo: { quotedMessage: { conversation: 5 } } } }), US)!;
+  assert.equal(notText.quoted, undefined);
+  assert.equal('quoted' in toInbound(notText, '1555', []), false);
+  const caption = parseMessage(group({ extendedTextMessage: { text: '@bot', contextInfo: { quotedMessage: { imageMessage: { caption: 'the view', mimetype: 'image/jpeg' } } } } }), US)!;
+  assert.equal(caption.quoted, 'the view');
   const other = parseMessage(group({ extendedTextMessage: { text: 'no', contextInfo: { mentionedJid: ['5@s.whatsapp.net'] } } }), US)!;
   assert.equal(other.mentioned, false);
   const img = parseMessage(group({ imageMessage: { caption: 'look', mimetype: 'image/jpeg' } }), US)!;
