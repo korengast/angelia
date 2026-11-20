@@ -9,8 +9,8 @@ import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent } from '../core/types.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer } from './brain.js';
-import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadBuffer, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
-import { paneVerdict, PermissionRelay, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
+import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { readRecord } from '../capabilities/compile.js';
 
@@ -40,6 +40,20 @@ const STILL_MS = 30 * 60_000;
  *  is handled by the CLI itself and ends without a Stop event, so without this the turn would
  *  simply hang. */
 const QUIET_MS = 12_000;
+/** The same wait when the turn's last transcript row is the assistant's text. That is the answer of
+ *  a turn whose Stop hook failed, or text that a tool call still follows: the call's row is written
+ *  when its input is whole, which can take longer than QUIET_MS for a large file, and the rows do not
+ *  say which (stop_reason on a row is not measured). The Stop hook lands within a second of a real
+ *  end, so only a failed hook waits this long. Counted from the last transcript row of any kind.
+ *  BrainOptions.quietTextMs shortens it (tests). */
+const QUIET_TEXT_MS = 90_000;
+/** The same wait when the transcript shows the turn open (a tool runs, the model owes an answer): the
+ *  net under row shapes turnRows does not know, and under a turn that ended with no Stop hook and no
+ *  closing row. Counted from the last transcript row of any kind and from the last change of the
+ *  screen above the input box's foot: a working CLI redraws its spinner clock there every second, so
+ *  a turn at work is never ended by this, and a teammate's clock under the box does not hold a dead
+ *  one open. The orchestrator's stall clock does not run for a tmux turn, so this is the only bound. */
+const QUIET_OPEN_MS = 3 * 60_000;
 /** After a chat answer, a dialog that still asks the same thing this long is taken as asking again. */
 const REASK_MS = 2500;
 /** How long a request answered in the pane may go without a result in the transcript before it counts
@@ -182,6 +196,9 @@ export class TuiBrain extends EventEmitter implements Brain {
   private at = 0;
   /** Where this turn's rows begin in the transcript, for reading how a request answered in the pane went. */
   private from = 0;
+  /** Where the turn stands by the rows read from `from` on (turnRows): the second sign, next to the
+   *  screen, of whether the turn is over. */
+  private rows: TurnRows = 'none';
   /** One line for the chat before the next turn's answer, when the launch had to say something (a lost conversation). */
   private notice: string | null = null;
   lastUsedAt = Date.now();
@@ -425,6 +442,18 @@ export class TuiBrain extends EventEmitter implements Brain {
     return false;
   }
 
+  /** Keep the screen of a pane whose turn ended or was held on what the screen showed, next to its
+   *  settings: the one way to see what it showed, without a terminal open at the right second. One
+   *  file per reason, overwritten. In the pane's private folder, not the log: it can show the conversation. */
+  private keepScreen(file: string, why: string): void {
+    void (async () => {
+      try {
+        mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(this.dir, file), `${new Date().toISOString()} ${why}\n${await this.capture(40)}\n`, { mode: 0o600 });
+      } catch { /* the log line stands on its own */ }
+    })();
+  }
+
   async *turn(text: string): AsyncGenerator<BrainEvent> {
     this.lastUsedAt = Date.now();
     const problem = await (this.ready ?? Promise.resolve('brain not started'));
@@ -438,6 +467,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const gen = this.gen;
     const submit = () => {
       this.at = this.from = fileSize(this.transcript); // only rows written from here on are this turn's
+      this.rows = 'none';
       rmSync(this.markerPath, { force: true });
       sentAt = Date.now();
     };
@@ -446,7 +476,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       return;
     }
     this.turnSentAt = sentAt;
-    yield* this.watch(sentAt, false, gen);
+    yield* this.watch(sentAt, false, gen, text.trimStart().startsWith('/'));
   }
 
   /**
@@ -471,7 +501,11 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.up = true;
     this.ready = Promise.resolve(null);
     this.lastUsedAt = Date.now();
-    this.at = this.from = fileSize(this.transcript);
+    // The rows written while nobody read are not shown again (the events are dropped), but they say
+    // where the turn stands (a tool that runs still, an answer owed), so the quiet pane cannot end it
+    // early from here either. Read as every poll reads, so the turn's rows start on a whole line.
+    this.readTranscript();
+    this.from = this.at;
     return this.watch(this.turnSentAt ?? Date.now(), false, gen);
   }
 
@@ -486,8 +520,9 @@ export class TuiBrain extends EventEmitter implements Brain {
 
   /** The polling half of a turn. `background`: no permission book and no relay (nobody in the chat
    *  answers), and no hourly line. Ends early, as a failed result, once another reader takes the pane
-   *  (`gen` moved). */
-  private async *watch(sentAt: number, background: boolean, gen: number): AsyncGenerator<BrainEvent> {
+   *  (`gen` moved). `command`: the turn is a slash command typed as is, which the CLI may answer
+   *  itself, so an end with no answer is expected. */
+  private async *watch(sentAt: number, background: boolean, gen: number, command = false): AsyncGenerator<BrainEvent> {
     let pending: string | null = null;
     // Relayed requests by id, and those answered in the pane or the app whose outcome the transcript
     // has yet to show.
@@ -495,10 +530,15 @@ export class TuiBrain extends EventEmitter implements Brain {
     const deciding = new Map<string, { tool: string; input: unknown; since: number }>();
     const dialogs = new DialogWatch();
     const screen = new ScreenDialogs();
-    let quietSince = 0;
+    let quietSince = 0, held = false, grewAt = 0;
+    // The screen above the box's foot, and when it last changed.
+    let lastAbove = '', aboveAt = 0;
+    const quietMs = this.opts.quietMs ?? QUIET_MS, quietTextMs = this.opts.quietTextMs ?? QUIET_TEXT_MS, quietOpenMs = this.opts.quietOpenMs ?? QUIET_OPEN_MS;
     let hours = 0, lastPane = '', movedAt = Date.now();
     // A dialog still open when the turn ends can no longer be answered from the chat: its timer goes too.
     const over = (): void => { this.turnSentAt = undefined; this.lastUsedAt = Date.now(); this.permissions.clear(); if (!background) this.stopBeat(); };
+    // How the turn ended, for the log: which path, how long it ran and how long its answer is, never the words.
+    const ended = (how: string, answer: string): void => { this.emit('log', `tmux: turn ended by ${how} after ${Math.round((Date.now() - sentAt) / 1000)} s, answer ${answer.length} chars pane=${this.name}`); };
     if (!background) this.startBeat(gen);
     try {
       for (;;) {
@@ -513,7 +553,9 @@ export class TuiBrain extends EventEmitter implements Brain {
             ? `Nothing has moved in this turn for ${still} minutes; it may be stuck. /stop ends it.`
             : `Still working on this turn after ${h === 1 ? 'an hour' : `${h} hours`}. /stop ends it.` };
         }
+        const readTo = this.at;
         const rows = this.readTranscript();
+        if (this.at !== readTo) grewAt = Date.now(); // a row of any kind, bookkeeping too
         if (rows.length) { quietSince = 0; movedAt = Date.now(); }
         for (const ev of rows) {
           if (ev.kind === 'text') { if (pending) yield { kind: 'progress', text: pending }; pending = ev.text; }
@@ -523,6 +565,7 @@ export class TuiBrain extends EventEmitter implements Brain {
         if (deciding.size) yield* this.decide(deciding, done !== null);
         if (done !== null) {
           over();
+          ended('the Stop marker', done);
           yield { kind: 'result', text: done, isError: false };
           return;
         }
@@ -543,7 +586,11 @@ export class TuiBrain extends EventEmitter implements Brain {
           }
         }
         const pane = await this.capture(30);
-        if (pane !== lastPane) { lastPane = pane; movedAt = Date.now(); }
+        if (pane !== lastPane) {
+          lastPane = pane; movedAt = Date.now();
+          const above = paneAboveFoot(pane);
+          if (above !== lastAbove) { lastAbove = above; aboveAt = Date.now(); }
+        }
         const open = permissionDialog(pane);
         if (background) {
           // Told to the chat once, and answered in the app or the pane: nobody answers from the chat.
@@ -561,11 +608,33 @@ export class TuiBrain extends EventEmitter implements Brain {
         // A relayed request waits on the hook, and the pane may look idle while it does.
         if (paneIdle(pane) && !dialogs.open && !open && !this.permissions.size) {
           if (!quietSince) quietSince = Date.now();
-          else if (Date.now() - quietSince > QUIET_MS) {
+          else if (Date.now() - quietSince <= quietMs) { /* not quiet long enough yet */ }
+          else if (this.rows === 'open' && Date.now() - Math.max(quietSince, grewAt, aboveAt) <= quietOpenMs) {
+            // The screen reads idle, and the transcript says the turn is open: a tool runs, or the
+            // model owes its answer. The screen is a drawing that changes between versions: a foot it
+            // had not seen before read as idle and cut working turns (2.1.329). So the screen alone
+            // never ends an open turn: the Stop marker does, or rows that close it, or QUIET_OPEN_MS
+            // with no new row and nothing moving above the box's foot.
+            if (!held) {
+              held = true;
+              this.emit('log', `tmux: the pane reads idle ${Math.round((Date.now() - sentAt) / 1000)} s into the turn, but its transcript shows the turn open; waiting for the Stop marker (screen kept in idle-open.txt) pane=${this.name}`);
+              this.keepScreen('idle-open.txt', 'the pane read idle while the transcript showed the turn open');
+            }
+          } else if (this.rows === 'said' && Date.now() - Math.max(quietSince, grewAt) <= quietTextMs) {
+            // Text is the last row: a tool call may still follow it (QUIET_TEXT_MS).
+          } else {
             // No Stop event is coming: either the CLI answered the message itself, or the hook failed
             // and the transcript holds the answer.
             over();
-            yield { kind: 'result', text: pending ?? '', isError: false };
+            const stood = { none: 'has no turn', command: 'has a slash command only', said: 'ends with text', error: 'ends with an error row of the CLI',
+              open: `open, no new row and nothing moving above the input box for ${Math.round((Date.now() - Math.max(quietSince, grewAt, aboveAt)) / 1000)} s` }[this.rows];
+            const how = `the quiet pane (no Stop marker; transcript ${stood})`;
+            const answer = pending ?? '';
+            ended(how, answer);
+            // No answer at all, and not to a slash command: the chat may be told the agent gave none, so
+            // keep the screen that read as idle.
+            if (!answer && (!command || this.rows === 'open')) this.keepScreen('quiet-empty.txt', `the turn ended by ${how} with no answer`);
+            yield { kind: 'result', text: answer, isError: false };
             return;
           }
         } else quietSince = 0;
@@ -606,7 +675,9 @@ export class TuiBrain extends EventEmitter implements Brain {
       const cut = buf.lastIndexOf(10);
       if (cut < 0) return [];
       this.at += cut + 1;
-      return transcriptEvents(buf.subarray(0, cut).toString('utf8'));
+      const rows = buf.subarray(0, cut).toString('utf8');
+      this.rows = turnRows(rows, this.rows);
+      return transcriptEvents(rows);
     } catch {
       return [];
     } finally {
@@ -743,6 +814,70 @@ export function addDirListed(dir: string, addDirs: string[], home = homedir(), b
   };
   const want = forms(dir);
   return addDirs.some((d) => forms(d).some((f) => want.includes(f)));
+}
+
+/** Where a turn stands by its transcript rows. `none`: nothing of a turn was written (the CLI answered
+ *  the message itself), or the turn was cut short (Esc, a "No" in Claude Code's own dialog).
+ *  `command`: a slash command's row and nothing after it; the CLI may answer it itself, so it counts
+ *  as `none` until a prompt for the model follows. `open`: the last row is a prompt, a tool call,
+ *  thinking or a tool result, so a tool runs or the model owes an answer. `said`: the last row is the
+ *  assistant's text, which ends a finished turn, or comes before a tool call not written yet.
+ *  `error`: the last row is the CLI's own row for a failed API call or a usage limit
+ *  (`isApiErrorMessage`, or an `error` on the row), after which nothing follows; its text is the
+ *  turn's answer, as it was before. */
+export type TurnRows = 'none' | 'command' | 'open' | 'said' | 'error';
+
+/** A user row that is the CLI's record of a slash command, not a prompt for the model. */
+const COMMAND_ROW = /^<command-(name|message|args)>/;
+/** What the CLI wrote around a command it ran itself: its output, and the caveat before it. */
+const LOCAL_ROW = /^<local-command-[a-z]+>/;
+/** What Claude Code writes as a user row when a turn is cut short with Esc (with or without "for
+ *  tool use"); no Stop hook runs after it. Not measured on 2.1.329: the text is Claude Code's own. */
+const INTERRUPTED = '[Request interrupted by user';
+/** A tool result that says the person refused the call in Claude Code's own dialog (paneVerdict in
+ *  tui-permissions.ts reads the same two shapes). The turn stops there, with no Stop hook. */
+function refused(row: { toolUseResult?: unknown }, b: { is_error?: unknown; content?: unknown }): boolean {
+  return row.toolUseResult === REJECTED || (b.is_error === true && (typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? '')).startsWith("The user doesn't want to proceed"));
+}
+
+/**
+ * Where the turn stands after the rows in `chunk`, starting from `state`. The last row that counts
+ * decides. Rows that count are the session's own user and assistant message rows, as the other
+ * readers here take them (history.ts, the Stop hook's finalText): not a subagent's (isSidechain), not
+ * the bookkeeping Claude Code writes between them (system and queue-operation rows, snapshots). A row
+ * may hold one content block or several; they are read in order, so text followed by a tool call
+ * reads `open`. A meta row counts only right after a slash command's row: it is then the prompt the
+ * command made for the model (a skill's text), and the model works from there.
+ */
+export function turnRows(chunk: string, state: TurnRows = 'none'): TurnRows {
+  for (const line of chunk.split('\n')) {
+    if (!line.includes('"user"') && !line.includes('"assistant"')) continue; // most rows are bookkeeping
+    let row: { type?: unknown; isSidechain?: unknown; isMeta?: unknown; isCompactSummary?: unknown; isVisibleInTranscriptOnly?: unknown; isApiErrorMessage?: unknown; error?: unknown; toolUseResult?: unknown; message?: { content?: unknown } } | null;
+    try { row = JSON.parse(line); } catch { continue; }
+    if (!row || typeof row !== 'object' || row.isSidechain === true) continue;
+    const content = row.message?.content;
+    const blocks = (typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []) as { type?: unknown; text?: unknown; is_error?: unknown; content?: unknown }[];
+    if (row.type === 'assistant') {
+      if (row.isApiErrorMessage === true || (typeof row.error === 'string' && row.error.length > 0)) { state = 'error'; continue; }
+      for (const b of blocks) {
+        if (b?.type === 'text') { if (String(b.text ?? '').trim()) state = 'said'; }
+        // A tool call, or thinking: the model is at work.
+        else if (b?.type === 'tool_use' || b?.type === 'thinking' || b?.type === 'redacted_thinking') state = 'open';
+      }
+    } else if (row.type === 'user') {
+      if (row.isCompactSummary === true || row.isVisibleInTranscriptOnly === true) continue;
+      const text = blocks.map((b) => (b?.type === 'text' ? String(b.text ?? '') : '')).join('\n').trim();
+      if (row.isMeta === true) { if (state === 'command' && !LOCAL_ROW.test(text)) state = 'open'; continue; }
+      const results = blocks.filter((b) => b?.type === 'tool_result');
+      if (text.startsWith(INTERRUPTED) || results.some((b) => refused(row, b))) state = 'none';
+      else if (results.length) state = 'open';
+      else if (LOCAL_ROW.test(text)) { if (state === 'command') state = 'none'; }
+      else if (COMMAND_ROW.test(text)) { if (state === 'none') state = 'command'; }
+      // A prompt: typed, or one Claude Code wrote for the model (a hook's feedback, an image).
+      else if (text || blocks.length) state = 'open';
+    }
+  }
+  return state;
 }
 
 export type TranscriptEvent = { kind: 'text'; text: string } | { kind: 'tool' };
