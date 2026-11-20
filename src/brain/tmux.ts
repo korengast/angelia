@@ -69,10 +69,17 @@ export const PERMISSION_MARKER = 'Do you want to proceed?';
  *  characters used to count, which was loose both ways: a row such as "∴ Thinking…" or "! ls…" at the
  *  left edge read as a turn that never ends, and a spinner of several words read as idle. The
  *  one-word shape is measured (the fixtures); several words, as in "✻ Compacting conversation… (12s)",
- *  are allowed for but not measured on a live pane. */
-const SPIN = '[·✢✳✶✻✽]';
+ *  are allowed for but not measured on a live pane. `*` stands in for `✳` where the terminal is not
+ *  a Mac's (Linux), from Claude Code's source as remembered, not measured: without it one frame in
+ *  six of a working pane would read idle there.
+ *
+ *  The done row is the verb, "for", and a time ("for 14s", "for 1m 2s"). What follows the time varies
+ *  ("· done", "· 1 shell still running…"), so it is not asked for: a done row that ends in "…" would
+ *  otherwise read as a turn that never ends. A spinner text such as "Searching for 2 patterns…" has
+ *  no time unit after the number and stays a spinner. */
+const SPIN = '[·✢✳✶✻✽*]';
 const BUSY_RE = new RegExp(`^${SPIN} [^…]{1,60}…`);
-const DONE_RE = new RegExp(`^${SPIN} \\S+ for \\S+.* · done`);
+const DONE_RE = new RegExp(`^${SPIN} \\S+ for \\d+[smh]( |$)`);
 /** The spinner is always drawn just above the input box, so only the foot of the pane counts.
  *  Further up it would be scrollback — an old assistant line ending in "…" would otherwise read
  *  as a turn that never finishes, and nothing could ever be typed again. Used when the screen has

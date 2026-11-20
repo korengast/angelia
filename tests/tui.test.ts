@@ -64,6 +64,12 @@ test('busy above the box: the last spinner row decides, and a row of the convers
   assert.equal(paneBusy(`- Loading…\n\n${box}`), false);
   // A spinner of several words (drawn by hand: not measured on a live pane).
   assert.equal(paneBusy(`✻ Compacting conversation… (12s)\n\n${box}`), true);
+  // Off a Mac the spinner draws `*` for one of its frames (from Claude Code's source, not measured).
+  assert.equal(paneBusy(`* Wibbling… (2m 2s · ↓ 8k tokens)\n\n${box}`), true);
+  // A done row is done whatever follows its time, "…" too; a spinner text with "for" and a number is not one.
+  assert.equal(paneBusy(`✻ Brewed for 7s · 1 shell still running…\n\n${box}`), false);
+  assert.equal(paneBusy(`✻ Churned for 1m 2s\n\n${box}`), false);
+  assert.equal(paneBusy(`✻ Searching for 2 patterns… (5s)\n\n${box}`), true);
   assert.equal(paneIdle(`✻ Compacting conversation… (12s)\n\n${box}`), false);
   for (const glyph of '·✢✳✶✻✽') assert.equal(paneBusy(`${glyph} Pondering… (3s)\n\n${box}`), true, glyph);
   // No input box on screen (a dialog): the foot of the capture decides, as before.
