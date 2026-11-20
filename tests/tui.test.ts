@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
+import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, paneAboveFoot, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
 import { addDirListed, hookSettings, transcriptEvents, transcriptPath } from '../src/brain/tui.js';
 
 const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`./fixtures/pane-${name}.txt`, import.meta.url)), 'utf8');
@@ -58,9 +58,29 @@ test('busy above the box: the last spinner row decides, and a row of the convers
   assert.equal(paneBusy(`✻ Wibbling… (2m 2s · ↓ 8k tokens)\n⏺ Answer.\n\n✻ Crunched for 14s · done\n\n${box}`), false);
   assert.equal(paneBusy(`✻ Wibbling… (2m 2s · ↓ 8k tokens)\n${'  a line of an old answer\n'.repeat(30)}\n${box}`), false);
   assert.equal(paneBusy(`✻ Wibbling… (2m 2s · ↓ 8k tokens)\n\n${box}`), true);
+  // Only the spinner's own glyphs open a spinner row: other marks at the left edge are not a turn.
+  assert.equal(paneBusy(`∴ Thinking…\n\n${box}`), false);
+  assert.equal(paneBusy(`! ls…\n\n${box}`), false);
+  assert.equal(paneBusy(`- Loading…\n\n${box}`), false);
+  // A spinner of several words (drawn by hand: not measured on a live pane).
+  assert.equal(paneBusy(`✻ Compacting conversation… (12s)\n\n${box}`), true);
+  assert.equal(paneIdle(`✻ Compacting conversation… (12s)\n\n${box}`), false);
+  for (const glyph of '·✢✳✶✻✽') assert.equal(paneBusy(`${glyph} Pondering… (3s)\n\n${box}`), true, glyph);
   // No input box on screen (a dialog): the foot of the capture decides, as before.
   assert.equal(paneBusy('⏺ Reading.\n\n✽ Actioning…\n'), true);
   assert.equal(paneBusy(`✽ Actioning…\n${'x\n'.repeat(20)}`), false);
+});
+
+test('the screen above the foot: rows under the input box are left out, a screen with no box is whole', () => {
+  const four = fixture('busy-teammates-4');
+  const above = paneAboveFoot(four);
+  assert.ok(above.includes('✶ Synthesizing…') && above.trimEnd().endsWith('─'.repeat(20)), 'down to the box\'s bottom rule');
+  assert.ok(!above.includes('◯ pane-probe') && !above.includes('bypass permissions'));
+  // A teammate's clock ticks: the part above the foot is the same.
+  assert.equal(paneAboveFoot(four.replace('21s · ↓ 87.0k tokens', '22s · ↓ 87.4k tokens')), above);
+  // The spinner's clock ticks: it is not.
+  assert.notEqual(paneAboveFoot(four.replace('(4m 44s', '(4m 45s')), above);
+  assert.equal(paneAboveFoot(fixture('permission')), fixture('permission'));
 });
 
 test('the permission dialog is read from the box, not from the transcript above it', () => {
