@@ -41,6 +41,7 @@ first and refuses a broken one.
 |---|---|
 | ids, counts, turn failures, restarts | `~/.angelia/daemon.log`, then `daemon.log.1` (no message text except a dying CLI's last error line) |
 | the screen of a tmux pane that never reached a prompt | `~/.angelia/tui/<pane>/screen.txt` |
+| how a tmux turn ended, and the screen of one that ended with no answer | `tmux: turn ended by …` in `daemon.log`; `~/.angelia/tui/<pane>/quiet-empty.txt`, `idle-open.txt` |
 | the daemon's own stdout and stderr | `~/.angelia/daemon.out` |
 | what the service does | `angelia service status`; `launchctl print gui/$(id -u)/angelia.daemon` (macOS), `systemctl --user status angelia` (Linux) |
 | a job timer's output | `~/.angelia/jobs.log`, `~/.angelia/jobs.out` |
@@ -66,6 +67,27 @@ that is stuck on a dialog. Treat a folder move as a migration, not a rename.
 **"the session never reached a prompt".** A tui pane sat on a dialog for 90 s. The daemon keeps the
 screen it saw in `~/.angelia/tui/<session>/screen.txt` and logs that path. Attach to the pane and
 answer it once; the next launch is clean.
+
+**"The agent ended its turn without an answer."** The turn ended and the agent wrote nothing for the
+chat. The log has `no answer key=<chat>` for each such line. For a tui profile, find the line
+`tmux: turn ended by ...` of the same chat (`key=`) near it: it says how the turn ended. By the Stop
+marker: the agent itself said nothing. By the quiet pane with no Stop marker: the pane read idle and
+no Stop hook answered. That is right for a slash command the CLI answers itself and for a turn cut
+short (Esc, or "No" in Claude Code's own dialog). The line also says what the transcript showed:
+
+- `has no turn`, `has a slash command only`: ended after 12 s of an idle pane.
+- `ends with text`: ended after 90 s of an idle pane with no new transcript row; that text is the answer.
+  This line on every turn means the Stop hook does not run (hooks turned off, or the hook script
+  fails); each answer then comes 90 s late.
+- `open, no new row and nothing moving above the input box`: a tool ran or the model owed an answer,
+  and then nothing changed for 3 minutes. Before that the daemon waits for the Stop marker and logs
+  `the pane reads idle ... but its transcript shows the turn open` once.
+- `ends with an error row of the CLI`: the last row is Claude Code's own line for a failed API call
+  or a usage limit; ended after 12 s of an idle pane, with that line as the answer.
+
+A turn that ended on the quiet pane with no answer keeps the screen it ended on in
+`~/.angelia/tui/<pane>/quiet-empty.txt`. `idle-open.txt` is the screen of the last turn whose pane
+read idle while its transcript showed the turn open. Read them to see what the pane showed then.
 
 **"This chat's agent was not started: ...".** The launch check refused. "Its profile was never
 compiled": run `angelia compile <profile> --write` once. "N of its protections were changed outside

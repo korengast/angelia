@@ -7,6 +7,12 @@ export type BackendName = Profile['backend'];
 export interface BrainOptions {
   bin?: string;
   permissionTimeoutMs?: number;
+  /** tmux mode: how long a pane must read idle before a turn with no Stop marker ends (tui.ts:
+   *  QUIET_MS; QUIET_TEXT_MS when the last transcript row is the assistant's text; QUIET_OPEN_MS when
+   *  the transcript shows the turn open). Tests shorten them. */
+  quietMs?: number;
+  quietTextMs?: number;
+  quietOpenMs?: number;
   /** The agent's environment: no secret except the ones its profile was given (core/env.ts). */
   env?: NodeJS.ProcessEnv;
   /** tmux mode: the environment of Angelia's tmux server, which every profile's panes share. No

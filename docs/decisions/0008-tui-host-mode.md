@@ -49,7 +49,10 @@ warm between turns, background tasks outlive a turn, and slash commands behave a
   relay (one left open while nobody read the chat) is announced, and never answered from the chat.
 - **No Stop event for a CLI-handled message.** `/compact` ends without one. Mitigation: an idle
   pane with nothing new in the transcript for 12 s ends the turn with whatever text the transcript
-  holds (empty for `/compact`, which the router confirms itself).
+  holds (empty for `/compact`, which the router confirms itself). Since 2026-11-20 the wait depends
+  on the turn's transcript rows: 12 s when they show no turn or a command the CLI ran itself, 90 s
+  when the last row is the assistant's text, and 3 minutes with no new row and nothing moving above
+  the input box when they show the turn open (a tool runs, or the model owes an answer).
 - **The trust dialog.** A directory Claude Code has not seen opens "Is this a project you trust?"
   with "No, exit" preselected; print mode never shows it. Angelia moves the cursor, checks it is on
   the yes row, and presses Enter — routing.yaml already declared that directory and its permission

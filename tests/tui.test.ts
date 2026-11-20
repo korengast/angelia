@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
+import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, paneAboveFoot, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
 import { addDirListed, hookSettings, transcriptEvents, transcriptPath } from '../src/brain/tui.js';
 
 const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`./fixtures/pane-${name}.txt`, import.meta.url)), 'utf8');
@@ -19,6 +19,74 @@ test('pane states come from real Claude Code frames', () => {
   assert.equal(paneIdle(fixture('permission')), false);
   assert.equal(paneIdle(fixture('trust')), false);
   assert.equal(paneIdle(''), false);
+});
+
+test('busy is read above the input box: rows under the box (status, one per teammate) never hide the spinner (claude 2.1.329)', () => {
+  // A capture of a working pane with one teammate, measured on claude 2.1.329; only the conversation
+  // above the spinner was replaced with filler.
+  const one = fixture('busy-teammates');
+  assert.equal(paneBusy(one), true);
+  assert.equal(paneIdle(one), false);
+  // The same capture with three more teammate rows added by hand, drawn as the measured one is. The
+  // spinner is then more than 14 lines from the end of the screen, which read as idle mid-turn.
+  const four = fixture('busy-teammates-4');
+  assert.ok(four.trimEnd().split('\n').length - four.split('\n').findIndex((l) => l.startsWith('✶ Synthesizing…')) > 14, 'the fixture has the spinner outside the old foot');
+  assert.equal(paneBusy(four), true);
+  assert.equal(paneIdle(four), false);
+  // Any number of them: nothing under the box is read.
+  const many = four.trimEnd() + '\n' + Array.from({ length: 20 }, (_, n) => `  ◯ worker-${n}  More work${' '.repeat(150)}5s · ↓ 1.0k tokens`).join('\n') + '\n';
+  assert.equal(paneBusy(many), true);
+  // Rows between the spinner and the box do not hide it either (a task list, drawn by hand here).
+  const tasks = four.replace(/^(  ⎿\s+Tip: .*)$/m, `$1\n${Array.from({ length: 10 }, (_, n) => `     ☐ Task number ${n}`).join('\n')}`);
+  assert.equal(tasks.split('\n').length, four.split('\n').length + 10);
+  assert.equal(paneBusy(tasks), true);
+  // The turn over, teammates still listed: the spinner row is gone, or redrawn as done.
+  const over = four.replace(/^✶ Synthesizing….*\n  ⎿\s+Tip: .*\n/m, '');
+  assert.equal(paneBusy(over), false);
+  assert.equal(paneIdle(over), true);
+  assert.equal(paneIdle(four.replace(/^✶ Synthesizing….*$/m, '✻ Crunched for 4m 44s · done')), true);
+});
+
+test('busy above the box: the last spinner row decides, and a row of the conversation is never the spinner', () => {
+  const idle = fixture('idle');
+  const box = idle.slice(idle.indexOf('─'.repeat(20)));
+  // An old answer that opens with a word and "…" sits in the rows above the box: not a running turn.
+  assert.equal(paneBusy(`⏺ Hmm… that file is not there.\n\n  It was moved last week.\n\n${box}`), false);
+  assert.equal(paneIdle(`⏺ Hmm… that file is not there.\n\n  It was moved last week.\n\n${box}`), true);
+  assert.equal(paneBusy(`❯ wait… one more thing\n\n⏺ Yes.\n\n${box}`), false);
+  // A spinner row above a later "done" row is history; a spinner row far above the box is scrollback.
+  assert.equal(paneBusy(`✻ Wibbling… (2m 2s · ↓ 8k tokens)\n⏺ Answer.\n\n✻ Crunched for 14s · done\n\n${box}`), false);
+  assert.equal(paneBusy(`✻ Wibbling… (2m 2s · ↓ 8k tokens)\n${'  a line of an old answer\n'.repeat(30)}\n${box}`), false);
+  assert.equal(paneBusy(`✻ Wibbling… (2m 2s · ↓ 8k tokens)\n\n${box}`), true);
+  // Only the spinner's own glyphs open a spinner row: other marks at the left edge are not a turn.
+  assert.equal(paneBusy(`∴ Thinking…\n\n${box}`), false);
+  assert.equal(paneBusy(`! ls…\n\n${box}`), false);
+  assert.equal(paneBusy(`- Loading…\n\n${box}`), false);
+  // A spinner of several words (drawn by hand: not measured on a live pane).
+  assert.equal(paneBusy(`✻ Compacting conversation… (12s)\n\n${box}`), true);
+  // Off a Mac the spinner draws `*` for one of its frames (from Claude Code's source, not measured).
+  assert.equal(paneBusy(`* Wibbling… (2m 2s · ↓ 8k tokens)\n\n${box}`), true);
+  // A done row is done whatever follows its time, "…" too; a spinner text with "for" and a number is not one.
+  assert.equal(paneBusy(`✻ Brewed for 7s · 1 shell still running…\n\n${box}`), false);
+  assert.equal(paneBusy(`✻ Churned for 1m 2s\n\n${box}`), false);
+  assert.equal(paneBusy(`✻ Searching for 2 patterns… (5s)\n\n${box}`), true);
+  assert.equal(paneIdle(`✻ Compacting conversation… (12s)\n\n${box}`), false);
+  for (const glyph of '·✢✳✶✻✽') assert.equal(paneBusy(`${glyph} Pondering… (3s)\n\n${box}`), true, glyph);
+  // No input box on screen (a dialog): the foot of the capture decides, as before.
+  assert.equal(paneBusy('⏺ Reading.\n\n✽ Actioning…\n'), true);
+  assert.equal(paneBusy(`✽ Actioning…\n${'x\n'.repeat(20)}`), false);
+});
+
+test('the screen above the foot: rows under the input box are left out, a screen with no box is whole', () => {
+  const four = fixture('busy-teammates-4');
+  const above = paneAboveFoot(four);
+  assert.ok(above.includes('✶ Synthesizing…') && above.trimEnd().endsWith('─'.repeat(20)), 'down to the box\'s bottom rule');
+  assert.ok(!above.includes('◯ pane-probe') && !above.includes('bypass permissions'));
+  // A teammate's clock ticks: the part above the foot is the same.
+  assert.equal(paneAboveFoot(four.replace('21s · ↓ 87.0k tokens', '22s · ↓ 87.4k tokens')), above);
+  // The spinner's clock ticks: it is not.
+  assert.notEqual(paneAboveFoot(four.replace('(4m 44s', '(4m 45s')), above);
+  assert.equal(paneAboveFoot(fixture('permission')), fixture('permission'));
 });
 
 test('the permission dialog is read from the box, not from the transcript above it', () => {

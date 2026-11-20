@@ -7,6 +7,7 @@
 //                               with "PERMQUIET" the result after the answer is empty (Grok Build ends a denied turn so)
 //   text contains "CRASH"    -> exit 1 mid-turn
 //   text contains "EMPTY"    -> empty result
+//   text contains "LIMITOK"  -> a usage-limit line as an ordinary answer (no error)
 //   text contains "SLOW"     -> the answer takes 3s, so a turn can be interrupted mid-flight
 //   text contains "HANG"     -> no output at all, ever (a stuck CLI)
 //   text contains "GRANDCHILD" -> starts `sleep 300` (a long tool), answers with its pid, then ignores EOF
@@ -130,6 +131,11 @@ rl.on('line', (line) => {
   }
   if (text.includes('SLOW')) {
     setTimeout(() => out({ type: 'result', subtype: 'success', is_error: false, result: 'slow answer', session_id: sid }), 3000);
+    return;
+  }
+  if (text.includes('LIMITOK')) {
+    // Some CLIs give the limit as an ordinary answer, not an error.
+    out({ type: 'result', subtype: 'success', is_error: false, result: "You've reached your usage limit. Switch to another model to continue.", session_id: sid });
     return;
   }
   if (text.includes('LIMIT')) {

@@ -18,7 +18,9 @@ async function turnWith(rows: string[], said: string | null) {
   const { TuiBrain } = await import('../src/brain/tui.js');
   const cwd = mkdtempSync(join(tmpdir(), 'angelia-tuilimit-cwd-'));
   const profile = Config.parse({ profiles: { x: { cwd, tui: true } }, routes: [] }).profiles.x;
-  const brain = new TuiBrain(profile, { id: crypto.randomUUID(), started: true }, { bin: '/bin/false' });
+  // The short wait of the quiet path, shortened (12 s in the daemon); the waits for a last row of text
+  // (90 s) and for an open turn (3 minutes) stay as they are, so only the short one can end the turn here.
+  const brain = new TuiBrain(profile, { id: crypto.randomUUID(), started: true }, { bin: '/bin/false', quietMs: 1000 });
   const b = brain as any;
   b.ready = Promise.resolve(null);
   b.up = true;
