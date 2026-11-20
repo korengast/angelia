@@ -732,29 +732,44 @@ export class Orchestrator {
     // Delivery can fail on its own - a platform hiccup, a chat that no longer exists. That must not
     // escape the turn: the queue entry would reject and the agent child would be left running with
     // nobody holding it.
+    // Set before a line of Angelia's own is sent (the no-answer line, "Denied", "/x done.", the usage
+    // limit and its hint): when that send fails, the line is not kept for later.
+    let own = false, limited = false;
+    const status = (line: string): Promise<void> => { own = true; return this.reply(i, line); };
+    // The CLI often sends its answer as a last progress line too: never deliver it twice.
+    const tail = unsent.length && unsent[unsent.length - 1] === result.text ? unsent.slice(0, -1) : unsent;
+    const fresh = unsent.length > 0 || result.text !== progress.lastSent;
     try {
-      // The CLI often sends its answer as a last progress line too: never deliver it twice.
-      const tail = unsent.length && unsent[unsent.length - 1] === result.text ? unsent.slice(0, -1) : unsent;
-      const fresh = unsent.length > 0 || result.text !== progress.lastSent;
       if (result.text && isLimitText(result.text)) {
+        limited = true;
         this.log(`usage limit key=${key}`);
         if (tail.length) await this.replyFromAgent(i, tail.join('\n\n'), profile);
+        own = true; // the limit is the CLI's line, not the agent's answer
         if (fresh) await this.reply(i, result.text);
-        await this.reply(i, limitHint(profile.backend));
+        await status(limitHint(profile.backend));
       } else if (result.text && fresh) await this.replyFromAgent(i, [...tail, result.text].join('\n\n'), profile);
       else if (tail.length) await this.replyFromAgent(i, tail.join('\n\n'), profile);
-      else if (!result.text && !progress.lastSent && bare) await this.reply(i, `${i.text.trim().split(/\s/)[0]} done.`);
+      else if (!result.text && !progress.lastSent && bare) await status(`${i.text.trim().split(/\s/)[0]} done.`);
       // Nothing new for the chat at all. After a denial the chat is told whatever was said before it; with
       // no denial, only when nothing at all reached the chat this turn (a progress line is an answer of
       // sorts).
-      else if (!result.text && !bare && this.denied.has(key)) await this.reply(i, DENIED_LINE);
-      else if (!result.text && !bare && !progress.lastSent) await this.reply(i, NO_ANSWER_LINE);
+      else if (!result.text && !bare && this.denied.has(key)) await status(DENIED_LINE);
+      else if (!result.text && !bare && !progress.lastSent) {
+        // Counted in the log: the line means a turn ended with nothing for the chat, which is either an
+        // agent that said nothing or a turn whose end was read wrong (tmux mode logs how it ended).
+        this.log(`no answer key=${key}`);
+        await status(NO_ANSWER_LINE);
+      }
     } catch (err) {
       // Kept, and sent with the next thing this chat is told: the answer exists, the platform was down.
-      this.log(`deliver failed key=${key} ${(err as Error).message}`);
+      // Only the agent's words are kept. A line of Angelia's own described the turn as it ended; sent
+      // later, under "An answer that could not be delivered earlier", it reads as the agent's answer.
+      this.log(`deliver failed key=${key} ${(err as Error).message}${own ? ' (a status line of Angelia: dropped, not kept for later)' : ''}`);
       const owed = this.owed.get(key) ?? [];
-      const rest = (err as { unsent?: string }).unsent ?? result.text;
-      if (rest && owed.length < OWED_MAX) this.owed.set(key, [...owed, rest]);
+      // A send that failed before any part went out says nothing of what is left: then it is the whole
+      // answer. Never the usage limit: of a limited turn only the agent's lines before it are kept.
+      const rest = (err as { unsent?: string }).unsent ?? (limited ? tail.join('\n\n') : result.text);
+      if (rest && !own && owed.length < OWED_MAX) this.owed.set(key, [...owed, rest]);
     }
     return undefined;
   }
@@ -1324,7 +1339,10 @@ export class Orchestrator {
       try { await this.sendMediaTo(sessionKey(i), req); }
       catch (e) {
         this.log(`media failed key=${sessionKey(i)} ${(e as Error).message}`);
-        await this.reply(i, e instanceof MediaError ? `Could not attach that file: ${e.message}` : 'Could not attach that file.');
+        // Angelia's own line: when it cannot be sent either it is logged and dropped. Thrown on, it
+        // would be kept as an answer the chat is owed, and posted later as the agent's words.
+        await this.reply(i, e instanceof MediaError ? `Could not attach that file: ${e.message}` : 'Could not attach that file.')
+          .catch((err) => this.log(`media failure line not sent key=${sessionKey(i)} ${(err as Error).message}`));
       }
     }
   }
