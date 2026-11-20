@@ -77,6 +77,8 @@ short (Esc, or "No" in Claude Code's own dialog). The line also says what the tr
 
 - `has no turn`, `has a slash command only`: ended after 12 s of an idle pane.
 - `ends with text`: ended after 90 s of an idle pane with no new transcript row; that text is the answer.
+  This line on every turn means the Stop hook does not run (hooks turned off, or the hook script
+  fails); each answer then comes 90 s late.
 - `open, no new row and nothing moving above the input box`: a tool ran or the model owed an answer,
   and then nothing changed for 3 minutes. Before that the daemon waits for the Stop marker and logs
   `the pane reads idle ... but its transcript shows the turn open` once.
