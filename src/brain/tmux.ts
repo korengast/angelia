@@ -69,16 +69,32 @@ const BUSY_RE = /^\S{1,2} \S+…/;
 const DONE_RE = /^\S{1,2} \S+ for \S+.* · done/;
 /** The spinner is always drawn just above the input box, so only the foot of the pane counts.
  *  Further up it would be scrollback — an old assistant line ending in "…" would otherwise read
- *  as a turn that never finishes, and nothing could ever be typed again. */
+ *  as a turn that never finishes, and nothing could ever be typed again. Used when the screen has
+ *  no input box to measure from. */
 const TAIL_LINES = 14;
+/** How many rows above the input box may hold the spinner. Claude Code draws rows between the two
+ *  (a tip, a progress bar, the task list), and rows under the box that grow with the work: two
+ *  status rows, then one row per running teammate. Counted from the screen's end, as TAIL_LINES is,
+ *  three teammates pushed the spinner out of sight and a working pane read as idle (measured on
+ *  claude 2.1.329, fixture pane-busy-teammates.txt). So the box is the anchor, and what is under it
+ *  is never read. */
+const ABOVE_BOX = 16;
+/** Rows of the conversation, never the spinner: an answer or a tool row opens with ⏺, an echoed
+ *  prompt with ❯. With more rows read above the box, an old answer that opens "⏺ Hmm… " would
+ *  otherwise hold the pane busy for good. */
+const TALK_RE = /^[⏺❯]/;
 /** Claude collapses a long paste into a chip like `[Pasted text +12 lines]`. */
 export const PASTED_MARKER = '[Pasted text';
 
 export function paneBusy(pane: string): boolean {
+  const lines = pane.replace(/\n+$/, '').split('\n');
+  const box = boxSpan(lines);
+  // No box (a dialog, an older drawing cut off): the foot of the capture, as before.
+  const foot = box ? lines.slice(Math.max(0, box.top - ABOVE_BOX), box.top) : pane.split('\n').slice(-TAIL_LINES);
   let busy = false;
-  for (const line of pane.split('\n').slice(-TAIL_LINES)) {
+  for (const line of foot) {
     if (DONE_RE.test(line)) busy = false;
-    else if (BUSY_RE.test(line)) busy = true;
+    else if (BUSY_RE.test(line) && !(box && TALK_RE.test(line))) busy = true;
   }
   return busy;
 }
@@ -294,11 +310,17 @@ export function inputBox(pane: string): string {
  *  drawing, inside the last `╭…╰` frame. A dialog draws neither. */
 function inputBoxStrict(pane: string): string | null {
   const lines = pane.replace(/\n+$/, '').split('\n');
+  const box = boxSpan(lines);
+  return box ? lines.slice(box.top + 1, box.bottom).join('\n') : null;
+}
+
+/** Where the input box is drawn: the lines of its top and bottom border, or null without a box. */
+function boxSpan(lines: string[]): { top: number; bottom: number } | null {
   const rules = lines.flatMap((l, i) => (RULE_RE.test(l) ? [i] : []));
-  if (rules.length >= 2) return lines.slice(rules[rules.length - 2] + 1, rules[rules.length - 1]).join('\n');
+  if (rules.length >= 2) return { top: rules[rules.length - 2], bottom: rules[rules.length - 1] };
   const bottom = lastLine(lines, /^\s*╰/, lines.length);
   const top = bottom > 0 ? lastLine(lines, /^\s*╭/, bottom) : -1;
-  return top >= 0 ? lines.slice(top + 1, bottom).join('\n') : null;
+  return top >= 0 ? { top, bottom } : null;
 }
 
 function lastLine(lines: string[], re: RegExp, before: number): number {

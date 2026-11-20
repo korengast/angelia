@@ -1,0 +1,50 @@
+  """
+  An example of the text a person pasted into the message, first quoted block.
+
+  A second line of the quoted block, as plain filler text for this fixture.
+  """
+  And
+  """
+  A second quoted block of plain filler text, with no real words from any chat.
+  """
+
+  The rest of the example message: a few sentences of filler that stand for a question.
+
+  One long line of the example message that stands for the request itself, long enough to look like a real paragraph on a wide pane, with filler words to the end of the row.
+
+  /remote-control is active · Continue here, on your phone, or at https://claude.ai/code/session_01ExampleExampleExample
+
+  Read 2 files, ran 11 shell commands
+
+⏺ Found the lines in the stored notes. Now reading the files of those turns to see what was written there.
+
+  Listed 2 directories, ran 6 shell commands
+  ⎿  2 actions not run · permission denied
+
+⏺ A first finding, as one line of filler text that stands for the summary the agent wrote here. · summary
+
+  Ran 8 shell commands
+
+⏺ Confirmed in the code. Now measuring on a live pane what makes a busy pane look idle.
+
+⏺ Agent(Slow no-op for pane test) Haiku 5.5
+
+⏺ Running 1 shell command · 11s…
+  ⎿  $ cd "/tmp/example/scratchpad" && python3 - <<'EOF'
+     import subprocess,time
+     for n in range(4):
+     out=subprocess.run(['tmux','-L','example','capture-pane','-p','-t','example-pane','-S','-30'],ca… (11s)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+✶ Synthesizing… (4m 44s · ↓ 14.2k tokens)
+  ⎿  Tip: Use /btw to ask a side question without interrupting Claude
+● ████████▌                                                                                                                                                                                                             [-]
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Fable 5.2·high·1m | 5h:26%(0h14m) | wk:27%(3d10h) | fab:25%(3d10h) | ctx:[▰▰▱▱▱▱▱▱▱▱]▮15%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ↓ to manage
+
+  ⏺ main
+  ◯ pane-probe  Slow no-op for pane test                                                                                                                                                              21s · ↓ 87.0k tokens
