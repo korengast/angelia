@@ -1,6 +1,6 @@
 import { join, resolve } from 'node:path';
 import { request } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { STATE_DIR } from '../daemon.js';
 import { API_SOCKET, readApiToken } from './server.js';
 
@@ -42,14 +42,35 @@ export function post(path: string, body: Record<string, unknown>, socket = apiSo
   });
 }
 
+/** The text of send, turn and ask: `-` reads standard input, and `@file` reads that file, but only
+ *  when it is the whole text, one word, and names a file that exists. Anything else is the text as
+ *  written, so a message that starts with a WhatsApp tag (`@15551234567 hello`) is sent as it is. */
+export function textArg(rest: string[]): string {
+  const text = rest.join(' ');
+  if (text === '-') return readFileSync(0, 'utf8');
+  if (rest.length === 1 && /^@\S+$/.test(text)) {
+    const path = text.slice(1);
+    let file = false;
+    try { file = statSync(path).isFile(); } catch {}
+    if (file) return readFileSync(path, 'utf8');
+  }
+  return text;
+}
+
+/** A failure as one short first line: what did not happen and why, never the whole message. */
+function failed(what: string, e: unknown): Error {
+  const why = String((e as Error)?.message ?? e).split('\n')[0].slice(0, 200);
+  return new Error(`${what}: ${why}`);
+}
+
 /** `angelia send <platform:chat> <text>` and `angelia turn <platform:chat> <text | - | @file>`: talk to the running daemon. */
 export async function localCall(kind: 'send' | 'turn', argv: string[]): Promise<void> {
   const [key, ...rest] = argv;
-  if (!key || !rest.length) throw new Error(`usage: angelia ${kind} <platform:chat> <text | - | @file>`);
-  let text = rest.join(' ');
-  if (text === '-') text = readFileSync(0, 'utf8');
-  else if (text.startsWith('@')) text = readFileSync(text.slice(1), 'utf8');
-  await apiCall(kind, key, text);
+  if (!key || !rest.length) throw new Error(`usage: angelia ${kind} <platform:chat> <text | - | @file> (@file: the whole text is @ and a path to an existing file)`);
+  const what = kind === 'send' ? 'not sent' : 'not queued';
+  let text: string;
+  try { text = textArg(rest); } catch (e) { throw failed(what, e); }
+  try { await apiCall(kind, key, text); } catch (e) { throw failed(what, e); }
   console.log(kind === 'send' ? 'sent' : 'queued');
 }
 
@@ -58,9 +79,8 @@ export async function localCall(kind: 'send' | 'turn', argv: string[]): Promise<
 export async function askCall(argv: string[]): Promise<string> {
   const [key, ...rest] = argv;
   if (!key || !rest.length) throw new Error('usage: angelia ask <platform:chat> <question | - | @file>');
-  let text = rest.join(' ');
-  if (text === '-') text = readFileSync(0, 'utf8');
-  else if (text.startsWith('@')) text = readFileSync(text.slice(1), 'utf8');
+  let text: string;
+  try { text = textArg(rest); } catch (e) { throw failed('not asked', e); }
   const from = process.env.ANGELIA_API_TOKEN ? process.env.ANGELIA_SESSION_KEY : undefined;
   const r = await post('/ask', { token: token(), key, text, ...(from && from !== key ? { from } : {}) });
   return String(r.answer ?? '');
