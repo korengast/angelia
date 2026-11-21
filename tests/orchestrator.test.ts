@@ -611,6 +611,7 @@ function limited(opts: { def?: number; a?: number } = {}) {
     routes: [
       { platform: 'whatsapp', chat: 'g@g.us', profile: 'a', mention: 'required', owners: ['u1'], allow_from: ['*'] },
       { platform: 'whatsapp', chat: 'h@g.us', profile: 'b', mention: 'required', owners: ['u1'], allow_from: ['*'] },
+      { platform: 'whatsapp', chat: 'k@g.us', profile: 'a', mention: 'any', owners: ['u1'], allow_from: ['*'] },
     ],
     defaults: { max_out_per_min: 1000, ...(opts.def !== undefined ? { max_in_per_hour: opts.def } : {}) },
   });
@@ -693,5 +694,22 @@ test('a sliding window does not tell the sender again within the hour after the 
   await o.handle(msg('m1', 'd'));          // 60 min: "a" left the window, passes
   await o.handle(msg('m1', 'e'));          // blocked again, within the hour after the line
   assert.equal(told(sent), 1);
+  assert.equal(echoes(sent), 3);
+});
+
+test('in a mention: any group, the line goes only to a message that addresses the bot', async (t) => {
+  const { o, sent, msg } = limited({ def: 1 }); t.after(() => o.shutdown());
+  for (let n = 0; n < 3; n++) await o.handle(msg('m1', `chat ${n}`, 'k@g.us', false));
+  assert.equal(echoes(sent), 1);
+  assert.equal(told(sent), 0);
+  await o.handle(msg('m1', 'bot?', 'k@g.us', true));
+  assert.equal(told(sent), 1);
+  assert.equal(echoes(sent), 1);
+});
+
+test('an empty sender (a channel post) is not counted', async (t) => {
+  const { o, sent, msg } = limited({ def: 1 }); t.after(() => o.shutdown());
+  for (let n = 0; n < 3; n++) await o.handle(msg('', `post ${n}`, 'k@g.us', false));
+  assert.equal(told(sent), 0);
   assert.equal(echoes(sent), 3);
 });

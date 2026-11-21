@@ -263,7 +263,7 @@ export class Orchestrator {
 
   constructor(private readonly cfg: Config, private readonly senders: Partial<Record<Platform, Sender>>, private readonly opts: OrchestratorOptions = {}) {
     this.now = opts.now ?? Date.now;
-    this.inQuota = new SenderQuota(50, this.now);
+    this.inQuota = new SenderQuota(undefined, this.now);
     const dir = opts.stateDir ?? join(homedir(), '.angelia');
     this.log = opts.log ?? (() => {});
     this.map = new SessionMap(join(dir, 'sessions.json'), (line) => this.log(line));
@@ -296,12 +296,17 @@ export class Orchestrator {
     // A sender who is not an owner gets max_in_per_hour messages to this profile, every kind counted:
     // a flood of /help or `yes` lines must not make the bot answer each one (a WhatsApp ban).
     const limit = profile.max_in_per_hour ?? this.cfg.defaults.max_in_per_hour;
-    if (limit > 0 && !isOwner(i, route)) {
+    // An empty sender (a Telegram channel post has no `from`) is no one to count: all such posts would share one count.
+    // On WhatsApp a sender seen first by lid and later by phone (once the lid map learns it) is two keys: at most twice the limit.
+    if (limit > 0 && i.sender !== '' && !isOwner(i, route)) {
       const qk = `${route.profile} ${i.platform}:${i.sender}`;
       if (!this.inQuota.take(qk, limit)) {
         this.dropped(key, `reason=sender-limit sender=${i.sender}`);
         const at = this.now(), toldAt = this.limitTold.get(qk);
-        if (toldAt === undefined || at - toldAt >= 3600_000) {
+        // In a `mention: any` group most messages are not to the bot: the line goes out only to one that is
+        // (or in a DM), so the bot does not post into a conversation it was not part of.
+        const addressed = !i.isGroup || i.mentioned;
+        if (addressed && (toldAt === undefined || at - toldAt >= 3600_000)) {
           if (this.limitTold.size >= 1000) this.limitTold.clear();
           // Marked before the send: messages that arrive together must not each send the line.
           this.limitTold.set(qk, at);
