@@ -35,16 +35,16 @@ In `Orchestrator.handle()`, directly after `gate()` returns `ok`, and before the
 3. Call `take(key)` on the sender quota. The key is `<profile> <platform>:<sender>`.
 4. If `take` returns false:
    1. Call `dropped(sessionKey, 'reason=sender-limit sender=<sender>')`. This function already merges repeated log lines.
-   2. If the key is not in `limitTold`, add the key and send one line to the chat. The line is: "Too many messages. Wait up to one hour, then try again."
+   2. If the key is not in `limitTold`, or its last line is one hour old or more, store the time and send one line to the chat. The line is: "Too many messages. Wait up to one hour, then try again."
    3. Return. Angelia does not start a turn and does not send other replies.
-5. If `take` returns true, remove the key from `limitTold` and continue as today.
+5. If `take` returns true, continue as today.
 
-Angelia sends one line for each block. The next block, after a message gets through again, sends one line again. This keeps replies to an attacker at a minimum.
+Angelia sends at most one line to each sender for each profile in one hour. The window slides: one message gets through each time an old one leaves it. So the line cannot follow each message that gets through. This keeps replies to an attacker at a minimum.
 
 ## Components
 
 - **Quota.** Make `SenderQuota` in `src/adapters/inbox.ts` take the limit for each call: `take(key, perHour)`. The file download quota keeps its current limit. The window stays one hour. The class already deletes keys with no timestamps in the window.
-- **State in the orchestrator.** One `SenderQuota` for inbound messages, and one `limitTold: Set<string>`. Clear `limitTold` when it reaches 1000 keys, as the code does for `drops`.
+- **State in the orchestrator.** One `SenderQuota` for inbound messages, and one `limitTold: Map<string, number>` (the time of the last line). Clear `limitTold` when it reaches 1000 keys, as the code does for `drops`.
 - **Schema.** Add `max_in_per_hour` to `defaults` and to `Profile` in `src/instance/config/schema.ts`.
 - **Docs.** Add the field to `docs/reference.md` and add one line in `docs/security.md`.
 

@@ -207,8 +207,10 @@ export class Orchestrator {
   private busyTold = new Set<string>();
   /** Messages in for each profile and non-owner sender in the last hour (max_in_per_hour). */
   private inQuota: SenderQuota;
-  /** Profile and sender keys told they are over the limit, until one message gets in again. */
-  private limitTold = new Set<string>();
+  /** When each profile and sender key was last told it is over the limit. Told again only an hour
+   *  later: with a sliding window, one message gets through each time an old one leaves it. */
+  private limitTold = new Map<string, number>();
+  private readonly now: () => number;
   /** One outbound bucket per platform: a busy Telegram chat must not slow WhatsApp down. */
   private rates = new Map<Platform, RateLimiter>();
   private unmatchedNotified = new Map<string, number>();
@@ -260,7 +262,8 @@ export class Orchestrator {
   private log: (line: string) => void;
 
   constructor(private readonly cfg: Config, private readonly senders: Partial<Record<Platform, Sender>>, private readonly opts: OrchestratorOptions = {}) {
-    this.inQuota = new SenderQuota(50, opts.now ?? Date.now);
+    this.now = opts.now ?? Date.now;
+    this.inQuota = new SenderQuota(50, this.now);
     const dir = opts.stateDir ?? join(homedir(), '.angelia');
     this.log = opts.log ?? (() => {});
     this.map = new SessionMap(join(dir, 'sessions.json'), (line) => this.log(line));
@@ -297,15 +300,15 @@ export class Orchestrator {
       const qk = `${route.profile} ${i.platform}:${i.sender}`;
       if (!this.inQuota.take(qk, limit)) {
         this.dropped(key, `reason=sender-limit sender=${i.sender}`);
-        if (!this.limitTold.has(qk)) {
+        const at = this.now(), toldAt = this.limitTold.get(qk);
+        if (toldAt === undefined || at - toldAt >= 3600_000) {
           if (this.limitTold.size >= 1000) this.limitTold.clear();
           // Marked before the send: messages that arrive together must not each send the line.
-          this.limitTold.add(qk);
+          this.limitTold.set(qk, at);
           await this.reply(i, SENDER_LIMIT_LINE).catch((e: unknown) => this.log(`sender-limit line not sent key=${key}: ${String((e as Error)?.message ?? e)}`));
         }
         return;
       }
-      this.limitTold.delete(qk);
     }
     const perm = parsePermissionReply(i.text);
     if (perm) {

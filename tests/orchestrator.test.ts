@@ -681,3 +681,17 @@ test('a message the gate drops does not count', async (t) => {
   assert.equal(told(sent), 0);
   assert.equal(echoes(sent), 1);
 });
+
+test('a sliding window does not tell the sender again within the hour after the last line', async (t) => {
+  const { o, sent, msg, tick } = limited({ def: 2 }); t.after(() => o.shutdown());
+  await o.handle(msg('m1', 'a'));          // 0
+  tick(30 * 60_000);
+  await o.handle(msg('m1', 'b'));          // 30 min
+  tick(60_000);
+  await o.handle(msg('m1', 'c'));          // 31 min: blocked, told
+  tick(29 * 60_000 + 1);
+  await o.handle(msg('m1', 'd'));          // 60 min: "a" left the window, passes
+  await o.handle(msg('m1', 'e'));          // blocked again, within the hour after the line
+  assert.equal(told(sent), 1);
+  assert.equal(echoes(sent), 3);
+});
