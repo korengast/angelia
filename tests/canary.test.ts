@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { parseCommand } from '../src/core/commands.js';
 import { tmp } from './tmp.js';
+// @ts-expect-error: a plain script, no types
+import { turnOrigin } from '../scripts/turn-origin.mjs';
 
 // Own state dir before tui.js reads it at import, so nothing here can touch a live Angelia.
 const ownState = process.env.ANGELIA_STATE_DIR = mkdtempSync(join(tmpdir(), 'angelia-canary-test-'));
@@ -54,6 +56,8 @@ interface Fault {
   toolReadsIdle?: boolean;
   /** The slash command opens a panel that replaces the input box. */
   commandOpensDialog?: boolean;
+  /** Claude Code stores the multi-line paste in a way the Stop hook does not read: its key misses. */
+  pasteNewWrapper?: boolean;
 }
 
 /**
@@ -93,7 +97,16 @@ async function rigWith(t: { after(fn: () => unknown): void }, fault: Fault = {})
     wait();
   };
   const enter = () => {
-    if (pasted.includes('pong')) {
+    if (pasted.includes('single word pasted')) {
+      screen = 'busy';
+      later(300, () => {
+        // As 2.1.330 writes a paste of several lines (measured live), or in a wrapper the hook does not know.
+        const row = fault.pasteNewWrapper ? `<paste-v2 n="1">\n${pasted}\n</paste-v2>` : `<pasted_content id="3f0a">\n${pasted}\n</pasted_content id="3f0a">\n`;
+        rows(R.prompt(row), R.text('pasted'));
+        writeFileSync(join(b.dir, 'turn.json'), JSON.stringify({ text: 'pasted', at: Date.now(), ...turnOrigin(jsonl([R.prompt(row), R.text('pasted')])) }));
+        screen = 'idle';
+      });
+    } else if (pasted.includes('pong')) {
       screen = 'busy';
       later(300, () => {
         if (fault.pongApiError) { rows(R.prompt(pasted), R.apiError(fault.pongApiError)); return stop(fault.pongApiError); }
@@ -139,14 +152,15 @@ async function rigWith(t: { after(fn: () => unknown): void }, fault: Fault = {})
 
 // Each run waits on real (short) timers, so they run side by side.
 describe('the canary\'s checks, on the real TuiBrain with a pretend pane', { concurrency: true }, () => {
-  test('a Claude Code that tmux mode reads right passes all five', async (t) => {
+  test('a Claude Code that tmux mode reads right passes all six', async (t) => {
     const { checks, kept } = await rigWith(t);
     assert.deepEqual(checks.map((c) => c.name), [...CHECKS]);
     assert.deepEqual(checks.filter((c) => !c.ok), []);
     assert.match(checks[1].detail, /^answered pong, ended by the Stop marker$/);
-    assert.match(checks[2].detail, /^answered done after a 1 s command \(asked once, allowed by the relay\), ended by the Stop marker; (\d+) of \1 screens read busy$/);
-    assert.match(checks[4].detail, new RegExp(`^${SLASH_COMMAND} ended by the quiet pane after \\d+ s$`));
-    assert.ok(checks[2].ms >= 1000 && checks.every((c) => c.ms >= 0));
+    assert.equal(checks[2].detail, 'answered pasted, ended by the Stop marker, its prompt key matched');
+    assert.match(checks[3].detail, /^answered done after a 1 s command \(asked once, allowed by the relay\), ended by the Stop marker; (\d+) of \1 screens read busy$/);
+    assert.match(checks[5].detail, new RegExp(`^${SLASH_COMMAND} ended by the quiet pane after \\d+ s$`));
+    assert.ok(checks[3].ms >= 1000 && checks.every((c) => c.ms >= 0));
     assert.deepEqual(kept, {}, 'a pass keeps no screen');
   });
 
@@ -164,6 +178,14 @@ describe('the canary\'s checks, on the real TuiBrain with a pretend pane', { con
     assert.deepEqual(checks.filter((c) => !c.ok).map((c) => c.name), ['pong']);
     assert.equal(by('pong').detail, 'the turn ended by the quiet pane, not by the Stop marker');
     assert.ok('pong.txt' in kept);
+  });
+
+  test('a build that stores a multi-line paste in a way the hook does not read fails the paste check: the turn drops its own answer', async (t) => {
+    const { checks, kept, by } = await rigWith(t, { pasteNewWrapper: true });
+    assert.deepEqual(checks.filter((c) => !c.ok).map((c) => c.name), ['multi-line paste']);
+    assert.match(by('multi-line paste').detail, /^the Stop hook's key of the typed prompt did not match what was typed, so the turn dropped its own answer .*; the turn ended by the quiet pane, not by the Stop marker$/);
+    assert.ok('multi-line-paste.txt' in kept);
+    assert.ok(by('tool run').ok && by('slash command').ok, 'the later checks still ran');
   });
 
   test('a slash command that opens a panel never ends: the pane is stopped, with the screen from before the stop', async (t) => {
@@ -196,7 +218,7 @@ describe('the canary\'s checks, on the real TuiBrain with a pretend pane', { con
   test('the plan\'s limit or a lost login is no verdict on the build: could not judge, and the rest is not run', async (t) => {
     const [limit, login] = await Promise.all([rigWith(t, { pongSays: "You've reached your usage limit. Your limit resets at 9pm." }), rigWith(t, { pongApiError: 'Not logged in · Please run /login' })]);
     assert.match(limit.unjudged!, /^the plan's usage limit was reached \("You've reached your usage limit\./);
-    assert.deepEqual(limit.checks.map((c) => [c.name, c.ok, c.skipped ?? false]), [['start', true, false], ['pong', false, false], ['tool run', false, true], ['idle after', false, true], ['slash command', false, true]]);
+    assert.deepEqual(limit.checks.map((c) => [c.name, c.ok, c.skipped ?? false]), [['start', true, false], ['pong', false, false], ['multi-line paste', false, true], ['tool run', false, true], ['idle after', false, true], ['slash command', false, true]]);
     assert.match(limit.by('pong').detail, /^could not judge: the plan's usage limit was reached/);
     assert.match(limit.by('tool run').detail, /^not run: this build could not be judged/);
     assert.deepEqual(limit.kept, {}, 'no screen is kept: it shows nothing of the build');
@@ -205,7 +227,7 @@ describe('the canary\'s checks, on the real TuiBrain with a pretend pane', { con
 
   test('a pane that never starts fails the start, and the rest is not run', async (t) => {
     const { checks } = await rigWith(t, { start: 'the session never reached a prompt (look with: tmux attach)' });
-    assert.deepEqual(checks.map((c) => [c.name, c.ok, c.skipped ?? false]), [['start', false, false], ['pong', false, true], ['tool run', false, true], ['idle after', false, true], ['slash command', false, true]]);
+    assert.deepEqual(checks.map((c) => [c.name, c.ok, c.skipped ?? false]), [['start', false, false], ['pong', false, true], ['multi-line paste', false, true], ['tool run', false, true], ['idle after', false, true], ['slash command', false, true]]);
     assert.match(checks[0].detail, /never reached a prompt/);
     assert.equal(checks[1].detail, 'not run: the pane did not start');
   });
@@ -255,10 +277,10 @@ test('a pass is remembered by build, and --if-new-build runs only on another', a
   let ran = 0;
   const run = async () => { ran++; return { checks: PASS }; };
   const first = await canary({ stateDir, ifNewBuild: true, now: new Date('2030-03-10T06:00:00.000Z'), deps: deps({ run }) });
-  assert.equal(first?.line, 'Claude Code 2.1.330: tmux mode canary passed (5 of 5).');
+  assert.equal(first?.line, 'Claude Code 2.1.330: tmux mode canary passed (6 of 6).');
   assert.equal(first?.screens, null);
   assert.deepEqual(readCanaryState(stateDir).passed, { version: '2.1.330', at: '2030-03-10T06:00:00.000Z' });
-  assert.match(canaryText(first!), /^ok {4}start +1\.2 s {2}fine\n[\s\S]*\nClaude Code 2\.1\.330: tmux mode canary passed \(5 of 5\)\.$/);
+  assert.match(canaryText(first!), /^ok {4}start +1\.2 s {2}fine\n[\s\S]*\nClaude Code 2\.1\.330: tmux mode canary passed \(6 of 6\)\.$/);
   // The same build the next day: nothing runs, nothing is asked of the CLI but its version.
   assert.equal(await canary({ stateDir, ifNewBuild: true, deps: deps({ run, loggedIn: async () => { throw new Error('not asked'); } }) }), null);
   assert.equal(ran, 1);

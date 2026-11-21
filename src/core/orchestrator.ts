@@ -3,7 +3,7 @@ import { createReadStream, existsSync, mkdirSync, mkdtempSync, rmSync, writeFile
 import { dirname, extname, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import type { Config, Profile, Route } from '../instance/config/schema.js';
-import type { Inbound, BrainEvent, Platform, SessionRow } from './types.js';
+import type { Inbound, BrainEvent, Platform, SessionRow, UnaskedAnswer } from './types.js';
 import { cleanName, cleanText, isGroupChat, parseSessionKey, sessionKey } from './types.js';
 import { matchRoute } from './router/match.js';
 import { gate, isOwner, OWNER_COMMANDS } from './router/gate.js';
@@ -22,7 +22,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
+import { failureLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, selfCapLine } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -156,6 +156,10 @@ const BARE_ANSWER_MIN_MS = 3000;
 const BARE_AFTER_CLOSE_MS = 3 * 60_000;
 /** Request lines remembered per chat, so a reply to one is known for what it is. */
 const LINES_MAX = 100;
+/** Answers to turns an agent started by itself (tmux mode: a background task ended) that one chat gets
+ *  in an hour. Past it they are held back, and the chat is told once: a loop of notifications in a
+ *  session must not flood a group. */
+const SELF_PER_HOUR = 6;
 const BUSY_LINE = 'Still working through earlier messages in this chat, so this one was not taken. Send it again when I have answered.';
 /** More chunks than this and an answer goes as its start plus a file. */
 const LONG_ANSWER_PARTS = 4;
@@ -219,6 +223,11 @@ export class Orchestrator {
   /** Chats whose running turn had a permission request denied (from the chat, the app, the pane, or by
    *  the timeout): a turn that then ends with nothing to say is told so, not left silent. */
   private denied = new Set<string>();
+  /** The message each chat's last turn answered: where a late answer of that turn goes (unasked). */
+  private lastTurn = new Map<string, Inbound>();
+  /** When each chat got an answer to a turn its agent started by itself, in the last hour, and when it
+   *  was last told that more are held back (SELF_PER_HOUR). */
+  private selfSent = new Map<string, { at: number[]; toldAt: number }>();
   /** Each chat's open permission requests by full id, so an answer by prefix (the chat's `y abcde`)
    *  is evented under the id the client was given, and a client that connects later can list them. */
   private asks = new Map<string, Map<string, WaitingPermission>>();
@@ -678,6 +687,8 @@ export class Orchestrator {
       if (this.running.get(key)?.surface === 'app') return;
       void this.notify(key, `${PERMISSION_TIMEOUT_LINE} (${shortId(id)})`).catch((e) => this.log(`permission timeout note: ${(e as Error).message}`));
     });
+    // tmux mode, between turns: an answer no turn waits for (a late one, or to a turn the agent started itself).
+    b.on('unasked', (a: UnaskedAnswer) => { void this.unasked(key, a); });
     return b;
   }
 
@@ -699,6 +710,7 @@ export class Orchestrator {
         for (const ask of this.asks.get(key)?.values() ?? []) { this.askOver(key, ask); if (this.posted.has(ask)) this.closed.set(key, Date.now()); }
         this.asks.delete(key);
       }
+      this.lastTurn.set(key, i);
       this.emit(key, { type: 'turn-end', turn, ok: !failed, ...(failed ? { reason: failed } : {}), queued: this.queue.queued(key) });
     }
   }
@@ -811,6 +823,8 @@ export class Orchestrator {
           this.answered(key, e.id, e.allow, 'terminal');
           if (!app) await this.reply(i, `Permission ${e.allow ? 'allowed' : 'denied'} in the Claude app or the pane.`).catch(() => {});
         }
+        // Found as this turn was typed: it goes out here, so the chat reads it before this turn's answer.
+        else if (e.kind === 'unasked') await this.unasked(key, e);
         else result = e;
       }
     } catch (err) {
@@ -908,6 +922,56 @@ export class Orchestrator {
       if (rest && !own && owed.length < OWED_MAX) this.owed.set(key, [...owed, rest]);
     }
     return undefined;
+  }
+
+  /**
+   * An answer of a tmux session that no turn is waiting for (UnaskedAnswer; brain/tui.ts decides which
+   * markers are one, and logs the ones that are not). `late`: the turn was closed without it and the
+   * chat was told so, or got only its last line; it goes where that turn's answer went. `self`: the
+   * agent was woken by background work a turn of the chat started; it goes to the chat, at most
+   * SELF_PER_HOUR an hour. Both are the agent's words, sent as an answer is. Never throws.
+   */
+  private async unasked(key: string, a: UnaskedAnswer): Promise<void> {
+    const what = a.answer === 'late' ? 'late answer' : 'self-started answer';
+    const text = a.text.trim();
+    const no = (why: string): void => this.log(`${what} not delivered key=${key} reason=${why} chars=${text.length}`);
+    try {
+      const profile = this.profileFor(key);
+      if (!profile) return no('not-routed');
+      if (!text || text === '[SILENT]') return no(text ? 'silent' : 'empty');
+      // The chat itself, as a line posted into it is addressed (notify): no message is being answered.
+      const k = parseSessionKey(key);
+      const chat: Inbound = { ...k, sender: '', text: '', isGroup: isGroupChat(k.platform, k.chat), mentioned: false, media: [] };
+      let to = chat;
+      if (a.answer === 'late') {
+        // Where the turn's own answer went: the chat, or the app for a turn typed there.
+        const prev = this.lastTurn.get(key);
+        if (prev) to = prev;
+      } else {
+        const now = Date.now();
+        const sent = this.selfSent.get(key) ?? { at: [], toldAt: 0 };
+        sent.at = sent.at.filter((t) => t > now - 3600_000);
+        this.selfSent.set(key, sent);
+        if (sent.at.length >= SELF_PER_HOUR) {
+          no('hourly-limit');
+          if (now - sent.toldAt < 3600_000) return;
+          sent.toldAt = now;
+          await this.reply(chat, selfCapLine(SELF_PER_HOUR)).catch((e) => this.log(`self-started limit line failed key=${key} ${(e as Error).message}`));
+          return;
+        }
+        sent.at.push(now);
+      }
+      try {
+        await this.replyFromAgent(to, text, profile);
+        this.log(`${what} delivered key=${key} chars=${text.length}`);
+      } catch (err) {
+        // The platform was down: kept, and sent with the next thing this chat is told, as an answer is.
+        this.log(`${what} deliver failed key=${key} ${(err as Error).message}`);
+        const rest = (err as { unsent?: string }).unsent ?? text;
+        const owed = this.owed.get(key) ?? [];
+        if (rest && owed.length < OWED_MAX) this.owed.set(key, [...owed, rest]);
+      }
+    } catch (err) { this.log(`${what} failed key=${key} ${(err as Error).message}`); }
   }
 
   /** Is this key a routed chat? */

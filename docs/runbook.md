@@ -45,6 +45,7 @@ first and refuses a broken one.
 | the screen of a tmux pane that never reached a prompt | `~/.angelia/tui/<pane>/screen.txt` |
 | how a tmux turn ended, and the screen of one that ended with no answer | `tmux: turn ended by …` in `daemon.log`; `~/.angelia/tui/<pane>/quiet-empty.txt`, `idle-open.txt` |
 | the screens of a canary that failed, and the last build that passed | `~/.angelia/tui/canary/<time>/`; `~/.angelia/canary.json` |
+| an answer sent with no message waiting for it (tmux), or held back | `late answer delivered`, `self-started answer delivered`, `... not delivered ... reason=`, `tmux: a turn ended between turns and its answer is not delivered: <why>` in `daemon.log` |
 | the daemon's own stdout and stderr | `~/.angelia/daemon.out` |
 | what the service does | `angelia service status`; `launchctl print gui/$(id -u)/angelia.daemon` (macOS), `systemctl --user status angelia` (Linux) |
 | a job timer's output | `~/.angelia/jobs.log`, `~/.angelia/jobs.out` |
@@ -64,7 +65,8 @@ put them in jobs, and the chat of the job's profile gets a line only when there 
 day: turns that ended with no answer, failed, stalled or threw, answers that could not be delivered,
 tmux turns that ended by the quiet pane (all of them, and the ones with no answer for a message),
 panes that read idle with the turn open, retries with a fresh session, permissions
-auto-denied, and for the daemon as a whole its starts, WhatsApp drops and send retries (each `send
+auto-denied, markers a tmux turn dropped on a prompt key miss (`tmux: marker dropped, prompt key
+miss:`), and for the daemon as a whole its starts, WhatsApp drops and send retries (each `send
 failed, again in N s` line is one more try of a send, not a lost message). A failure that the daemon
 tried again (a retry with a fresh session) is not counted as failed: only the end of the
 retry is. The window is the last 24 hours, or the last N days (at most 30), split by your local
@@ -75,7 +77,10 @@ a print-mode turn writes no line in the log, so there is no total of all turns.
 
 `--alert` prints nothing when every profile is within the limits, else one line for a chat. The
 limits, per profile in the window: 2 turns with no answer, 3 failed turns (a turn stopped with
-`/stop` is not one), 1 stalled turn, 2 tmux turns that the quiet pane ended with no answer.
+`/stop` is not one), 1 stalled turn, 2 tmux turns that the quiet pane ended with no answer, 1 prompt key miss. A key
+miss means the Stop hook read the typed prompt differently from what Angelia typed, so that turn
+dropped its own answer; when a new Claude Code stores a prompt another way, every turn of several
+lines does so. `angelia canary` checks for it (its multi-line paste check).
 
 **`angelia canary [--if-new-build] [--json]`** tries tmux mode for real on the Claude Code build
 installed now. tmux mode reads Claude Code's screen and transcript, and a new build can change
@@ -215,6 +220,47 @@ short (Esc, or "No" in Claude Code's own dialog). The line also says what the tr
 A turn that ended on the quiet pane with no answer keeps the screen it ended on in
 `~/.angelia/tui/<pane>/quiet-empty.txt`. `idle-open.txt` is the screen of the last turn whose pane
 read idle while its transcript showed the turn open. Read them to see what the pane showed then.
+
+When the Stop marker of such a turn comes after all, its answer is sent then: `late answer delivered
+key=<chat> chars=<n>` in the log. Not when the chat already has those words, not once someone
+typed another turn in the Claude app in between, and not when the turn's typed prompt is not the
+one Angelia typed (someone typed into it): `late, but the prompt the hook read is not the one
+Angelia typed`.
+
+**A message from the agent that nobody asked for (tui profiles).** A background task or a subagent
+that a turn of the chat started ended; Claude Code woke the agent, and Angelia sent what the agent
+said: `self-started answer delivered key=<chat> chars=<n>`. At most 6 an hour per chat; then the
+chat hears once that more are held back (`reason=hourly-limit`), and those are not kept. To stop a
+loop, `/stop` or `/new` in the chat ends the session and its tasks. The count is kept in the
+daemon's memory, so a restart starts it again; a Stop marker on disk when the daemon restarts is
+not read by the new one (its reader starts at the chat's next turn), so that answer stays in the
+Claude app: lost to the chat, never sent twice. A restarted daemon also does not know which tasks
+the chat's turns started before it: the end of such a task is not sent (`the work it reports was
+not started by a turn of this chat`).
+
+**The agent finished background work and the chat heard nothing (tui profiles).** Look for
+`tmux: a turn ended between turns and its answer is not delivered: <why>` with the chat's `key=`:
+
+- `a person typed it in the Claude app or the pane`: the turn was typed there, or someone typed into
+  it; it stays in the app.
+- `nothing ties it to work a turn of this chat started`, or `the work it reports was not started by
+  a turn of this chat`: the turn was woken by something that names no task a turn of the chat
+  started: a task the owner started in the app, a prompt the session scheduled for itself, a
+  teammate's message, or a task started while nobody read the session. It stays in the app.
+- `what started it is not known (...)`: the Stop hook could not tell what started the turn (a
+  teammate's or another agent's message is one, until its row is measured); a kind
+  of row it does not know is named in the brackets. Such an answer is never sent: the agent posts
+  it with `angelia send`. A new Claude Code may write its rows another way: `LIVE_ROWS=1 npx tsx
+  tests/live-tui-origin.mts` in the source tree runs a scratch session and prints the shape of the
+  rows (types and flags, no words), which `scripts/turn-origin.mjs` reads.
+- `it ended before this session was read`, or no line at all: nobody was reading the session.
+  Angelia reads it between turns from the chat's last turn until `defaults.idle_exit_minutes` (30)
+  pass with no message and no turn woken by the end of the chat's own work (each one starts the
+  time again); `reap key=<chat>` in
+  the log is where the reading stopped; not after a daemon restart
+  until the chat's next message. The answer is in the Claude app and in the session: ask the agent.
+- `no text`, `[SILENT]`, `an API error of the CLI`, `a usage limit of the CLI`: nothing to send.
+
 
 **"This chat's agent was not started: ...".** The launch check refused. "Its profile was never
 compiled": run `angelia compile <profile> --write` once. "N of its protections were changed outside

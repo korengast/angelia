@@ -82,7 +82,18 @@ export type BrainEvent =
   | { kind: 'permission'; id: string; tool: string; preview: string; /** The whole request, when the preview had to cut it. */ detail?: string }
   /** A request given to the chat was answered outside Angelia: in the CLI's own dialog (its pane or app). */
   | { kind: 'permission-answered'; id: string; allow: boolean }
+  /** An answer of the session that this turn did not ask for, found as the turn was typed: told to the
+   *  chat before the turn's own answer (UnaskedAnswer). Between turns a brain emits it as `unasked`. */
+  | ({ kind: 'unasked' } & UnaskedAnswer)
   | { kind: 'result'; text: string; isError: boolean; reason?: string };
+
+/**
+ * An answer of a session that no turn of Angelia's is waiting for (tmux mode, brain/tui.ts).
+ * `late`: the answer of a turn Angelia typed and closed without it, come after all.
+ * `self`: the answer of a turn the CLI started by itself: the end of a background task that a turn of
+ * Angelia's started. Never a turn a person typed in the CLI's own app or pane.
+ */
+export interface UnaskedAnswer { answer: 'late' | 'self'; text: string }
 
 export function sessionKey(i: Pick<Inbound, 'platform' | 'chat' | 'thread'>): string {
   return i.thread ? `${i.platform}:${i.chat}:${i.thread}` : `${i.platform}:${i.chat}`;

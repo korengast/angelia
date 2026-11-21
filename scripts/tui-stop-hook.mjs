@@ -8,10 +8,16 @@
  * file — delivers it to the chat. Unlike the gateway this replaces, the hook itself sends nothing:
  * delivery, chunking and the session map stay in one place.
  *
+ * The marker also says what started the turn (turn-origin.mjs): `origin`, `origin_why`, `prompt_at`,
+ * `prompt_key`, `prompts`, `origin_ids`. The daemon reads those for a turn it did not type itself: the
+ * end of a background task that a turn of the chat started wakes the agent, and its answer reaches the
+ * chat; a turn a person typed in the Claude app never does.
+ *
  * With no marker in the environment the session belongs to whoever started it by hand, so the
  * hook does nothing at all.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { rowShapes, turnOrigin } from './turn-origin.mjs';
 
 const marker = process.env.ANGELIA_TUI_MARKER;
 if (!marker) process.exit(0);
@@ -51,7 +57,17 @@ for (let i = 0; i < 40 && !text && transcript; i++) {
   if (!text) sleep(250);
 }
 
+const read = (path) => { try { return readFileSync(path, 'utf8'); } catch { return ''; } };
+
 try {
-  writeFileSync(marker, JSON.stringify({ text, transcript_path: transcript, session_id: payload.session_id ?? '', at: Date.now() }));
+  // What started the turn, for the daemon's reader between turns. A transcript that cannot be read
+  // or parsed says `unknown`, which is never delivered; the marker is written either way.
+  let origin = { origin: 'unknown', origin_why: 'no transcript' };
+  try { if (transcript) origin = turnOrigin(read(transcript)); } catch { origin = { origin: 'unknown', origin_why: 'the transcript could not be read' }; }
+  // For measuring a new Claude Code: the shape of the last rows, names and flags only (rowShapes).
+  if (process.env.ANGELIA_TUI_ORIGIN_DEBUG && transcript) { try { origin = { ...origin, origin_rows: rowShapes(read(transcript)) }; } catch { /* a measurement only */ } }
+  // Written whole, then moved into place: the daemon reads this file between turns too, at any moment.
+  writeFileSync(`${marker}.tmp`, JSON.stringify({ text, transcript_path: transcript, session_id: payload.session_id ?? '', at: Date.now(), ...origin }));
+  renameSync(`${marker}.tmp`, marker);
 } catch { /* the daemon falls back to its own timeout */ }
 process.exit(0);

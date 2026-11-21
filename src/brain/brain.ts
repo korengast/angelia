@@ -13,6 +13,8 @@ export interface BrainOptions {
   quietMs?: number;
   quietTextMs?: number;
   quietOpenMs?: number;
+  /** tmux mode: how often the Stop marker is looked for between turns (tui.ts: IDLE_POLL_MS). Tests shorten it. */
+  idlePollMs?: number;
   /** The agent's environment: no secret except the ones its profile was given (core/env.ts). */
   env?: NodeJS.ProcessEnv;
   /** tmux mode: the environment of Angelia's tmux server, which every profile's panes share. No
@@ -88,6 +90,9 @@ export interface Brain extends EventEmitter {
   adopt?(turnSentAt: number): Promise<boolean>;
   /** When the running turn was typed in, for a background row that must survive a restart. */
   turnSentAt?: number;
+  // A backend that reads its session between turns (a tui pane) also emits `unasked` with an
+  // UnaskedAnswer (core/types.ts): a late answer, or the answer of a turn the CLI started by itself.
+  // Only from the end of its first turn until it is released, stopped or handed off.
   kill(): void;
 }
 

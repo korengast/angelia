@@ -4,7 +4,8 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Config } from '../src/instance/config/schema.js';
-import { ALERT_FAILED, ALERT_NO_ANSWER, ALERT_QUIET_EMPTY, ALERT_STALLED, alertLine, health, healthText, rowOf, shortKey } from '../src/daemon/health.js';
+import { ALERT_FAILED, ALERT_KEY_MISS, ALERT_NO_ANSWER, ALERT_QUIET_EMPTY, ALERT_STALLED, alertLine, HealthCount, health, healthText, rowOf, shortKey } from '../src/daemon/health.js';
+import { KEY_MISS_LINE } from '../src/brain/tui.js';
 import { tmp } from './tmp.js';
 
 // Days are the owner's local days. One zone for the file, so a count lands on the same day wherever
@@ -217,4 +218,16 @@ test('every text counted is one the daemon still writes', () => {
   assert.ok(src('daemon/daemon.ts').includes('logLine(`daemon up pid='));
   assert.ok(src('adapters/whatsapp/adapter.ts').includes('`whatsapp: closed code='));
   assert.ok(src('core/orchestrator.ts').includes('`send failed, again in '));
+});
+
+test('a marker dropped on a prompt key miss is counted per profile and day, and one is enough for --alert', () => {
+  const c = new HealthCount();
+  const ms = Date.parse('2026-11-21T08:00:00.000Z');
+  // As the orchestrator writes the brain's line: the chat's key at the end.
+  c.line(ms, `${KEY_MISS_LINE} prompts=1 chars=17 pane=angelia-x-00000000 key=telegram:1`);
+  c.line(ms + 1000, `${KEY_MISS_LINE} prompts=1 chars=4 pane=angelia-x-00000000 key=telegram:1`);
+  c.line(ms + 2000, `${KEY_MISS_LINE} prompts=1 chars=4 pane=angelia-x-00000000`); // no chat: not counted
+  assert.deepEqual(c.totals.profiles, { 'telegram:1': { keyMiss: 2 } });
+  assert.equal(ALERT_KEY_MISS, 1);
+  assert.equal(alertLine({ profiles: { family: { keyMiss: 1 } }, daemon: {} }, 1), 'Angelia health, last 24 h: family 1 tmux turn dropped a marker on a prompt key miss. See: angelia health');
 });

@@ -18,6 +18,11 @@ export const PERMISSION_TIMEOUT_LINE = 'No answer to the permission request in t
  *  and pi can all end a turn with an empty final too. One line, so the chat knows the turn is over. */
 export const DENIED_LINE = 'Denied; the agent stopped.';
 export const NO_ANSWER_LINE = 'The agent ended its turn without an answer. Send your message again, or /new for a fresh session.';
+/** tmux mode: the agent's answers to turns it started by itself (the end of a background task), past
+ *  the hourly cap for one chat. Said at most once an hour; the answers past the cap are not kept. */
+export function selfCapLine(max: number): string {
+  return `The agent keeps reporting by itself, as its background work ends: ${max} such messages reached this chat in the last hour, so more are held back. Ask it for what you miss.`;
+}
 export const UNMATCHED_LINE = '[Angelia] This chat is not routed to a profile.';
 export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
 /** A chat answer to a request no hook waits for any more (it stepped aside when the chat stopped

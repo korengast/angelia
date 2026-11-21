@@ -18,7 +18,7 @@ import type { Config } from '../instance/config/schema.js';
  */
 
 /** Counted per chat, and so per profile. */
-export const COUNTERS = ['turns', 'noAnswer', 'failed', 'stalled', 'errors', 'deliverFailed', 'quietEnds', 'quietEmpty', 'heldOpen', 'freshRetries', 'autoDenied'] as const;
+export const COUNTERS = ['turns', 'noAnswer', 'failed', 'stalled', 'errors', 'deliverFailed', 'quietEnds', 'quietEmpty', 'heldOpen', 'freshRetries', 'autoDenied', 'keyMiss'] as const;
 export type Counter = (typeof COUNTERS)[number];
 /** Counted for the daemon as a whole: its lines name no chat. */
 export const DAEMON_COUNTERS = ['starts', 'whatsappDrops', 'sendRetries'] as const;
@@ -27,7 +27,7 @@ export type DaemonCounter = (typeof DAEMON_COUNTERS)[number];
 /** A column's head in the table. `turns` are tmux-mode turns only: see TURNS_NOTE. */
 const LABEL: Record<Counter, string> = {
   turns: 'tmux turns', noAnswer: 'no answer', failed: 'failed', stalled: 'stalled', errors: 'errors', deliverFailed: 'deliver failed',
-  quietEnds: 'quiet ends', quietEmpty: 'quiet, empty', heldOpen: 'held open', freshRetries: 'fresh retries', autoDenied: 'auto-denied',
+  quietEnds: 'quiet ends', quietEmpty: 'quiet, empty', heldOpen: 'held open', freshRetries: 'fresh retries', autoDenied: 'auto-denied', keyMiss: 'key miss',
 };
 const DAEMON_LABEL: Record<DaemonCounter, [one: string, many: string]> = {
   // `send failed, again in N s`: the daemon tries the same send again, so each line is a retry, not a lost message.
@@ -43,11 +43,15 @@ export const ALERT_NO_ANSWER = 2;
 export const ALERT_FAILED = 3;
 export const ALERT_STALLED = 1;
 export const ALERT_QUIET_EMPTY = 2;
+/** A turn that dropped a marker as not its own (a prompt key miss): one is enough. When Claude Code
+ *  changes how it stores a typed prompt, every turn drops its own answer this way. */
+export const ALERT_KEY_MISS = 1;
 const ALERTS: [Counter, number, (n: number) => string][] = [
   ['noAnswer', ALERT_NO_ANSWER, (n) => `${n} turn${n === 1 ? '' : 's'} ended without an answer`],
   ['failed', ALERT_FAILED, (n) => `${n} turn${n === 1 ? '' : 's'} failed`],
   ['stalled', ALERT_STALLED, (n) => `${n} turn${n === 1 ? '' : 's'} stalled`],
   ['quietEmpty', ALERT_QUIET_EMPTY, (n) => `${n} tmux turn${n === 1 ? '' : 's'} ended by the quiet pane with no answer`],
+  ['keyMiss', ALERT_KEY_MISS, (n) => `${n} tmux turn${n === 1 ? '' : 's'} dropped a marker on a prompt key miss`],
 ];
 
 export const MAX_DAYS = 30;
@@ -78,7 +82,7 @@ export interface HealthReport {
   totals: HealthDay;
   /** The one line `--alert` prints, or null when every profile is within the limits. */
   alert: string | null;
-  limits: { noAnswer: number; failed: number; stalled: number; quietEmpty: number };
+  limits: { noAnswer: number; failed: number; stalled: number; quietEmpty: number; keyMiss: number };
   note: string;
 }
 
@@ -175,6 +179,7 @@ export class HealthCount {
     else if (text.startsWith('deliver failed key=')) this.add(day, row, 'deliverFailed');
     else if (text.startsWith('retry with fresh session key=')) { this.add(day, row, 'freshRetries'); this.retried(ms, key); }
     else if (text.startsWith('permission auto-denied ')) this.add(day, row, 'autoDenied');
+    else if (text.startsWith('tmux: marker dropped, prompt key miss:')) this.add(day, row, 'keyMiss');
   }
 
   /** `tmux: turn ended by <how> after N s, answer N chars pane=<pane> key=<chat>`: every tmux turn
@@ -253,7 +258,7 @@ export async function health(o: { days?: number; stateDir?: string; cfg?: Config
   return {
     since: since.toISOString(), until: now.toISOString(), days, logs, logStart: logStart ?? null, byDay, totals: count.totals,
     alert: alertLine(count.totals, days),
-    limits: { noAnswer: ALERT_NO_ANSWER, failed: ALERT_FAILED, stalled: ALERT_STALLED, quietEmpty: ALERT_QUIET_EMPTY },
+    limits: { noAnswer: ALERT_NO_ANSWER, failed: ALERT_FAILED, stalled: ALERT_STALLED, quietEmpty: ALERT_QUIET_EMPTY, keyMiss: ALERT_KEY_MISS },
     note: TURNS_NOTE,
   };
 }

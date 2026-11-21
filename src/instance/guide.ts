@@ -114,6 +114,18 @@ lines and Angelia's own lines never tag.
 A turn whose CLI gives no output for defaults.turn_stall_minutes (60; 0 for never) is stopped and the
 chat told; at half of it the chat hears that it may be stuck. tmux turns are not stopped.
 
+What reaches the chat is the answer to a message. On a tmux profile (tui: true) one more thing does:
+when a background task or a subagent you started in a turn of the chat ends and Claude Code wakes
+you with its notification, what you answer then is sent to the chat as your message. Do not also post that
+result with \`angelia send\`: the chat would get it twice. Answer [SILENT] when there is nothing to
+tell. At most 6 such messages an hour reach one chat; past that the chat is told that more are held
+back. Only while Angelia reads the session: until defaults.idle_exit_minutes (30) pass with no
+message from the chat and no turn woken by the end of such work. It does not hold for a prompt you scheduled inside the
+session, a teammate's message, in print mode, or when the daemon restarted while the
+task ran: there your words stay in the session, so post the result with \`angelia send\`. For work
+on a schedule use a job (\`angelia guide jobs\`). A turn typed in the Claude app is never sent to
+the chat.
+
 An unknown chat is dropped (defaults.unmatched), or with unmatched: onboard an owner's first message
 there (in a group, one that mentions the bot) makes its profile (\`angelia guide onboard\`). The daemon reads the table only at start:
 after any edit run \`angelia check-config\`, then an owner sends /restart in the chat (it checks the

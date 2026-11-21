@@ -13,7 +13,7 @@ import { catalog } from './catalog.js';
 import { DEFAULT_BIN, locateBin } from './locate.js';
 import { paneBusy, paneIdle, tmux, tmuxSocketPath } from './tmux.js';
 import { projectFolder, projectsDir } from './transcripts.js';
-import { QUIET_MS, TuiBrain, tmuxVersion } from './tui.js';
+import { KEY_MISS_LINE, QUIET_MS, TuiBrain, tmuxVersion } from './tui.js';
 
 /**
  * `angelia canary`: tmux mode tried for real against the Claude Code build installed now, in a pane
@@ -26,11 +26,11 @@ import { QUIET_MS, TuiBrain, tmuxVersion } from './tui.js';
  * command comes to the canary as a permission request through the relay hook, and the canary allows
  * that exact command and nothing else; and no MCP server, the owner's own included.
  *
- * It costs a few model calls on the owner's plan each time (two short turns on the cheapest model), so
+ * It costs a few model calls on the owner's plan each time (three short turns on the cheapest model), so
  * `--if-new-build` runs it only when `claude --version` is not the build that last passed.
  */
 
-export const CHECKS = ['start', 'pong', 'tool run', 'idle after', 'slash command'] as const;
+export const CHECKS = ['start', 'pong', 'multi-line paste', 'tool run', 'idle after', 'slash command'] as const;
 export type CheckName = (typeof CHECKS)[number];
 export interface CanaryCheck { name: CheckName; ok: boolean; ms: number; detail: string; skipped?: true }
 /** What a run of the checks gives. `unjudged`: why the build could not be judged (the plan's limit, a
@@ -51,6 +51,11 @@ export const toolCommand = (sleepS: number): string => `touch ${STARTED} && slee
  *  Measured on 2.1.329: ended by the quiet pane after 14 s. `/cost` and `/status` open a panel there
  *  that only Esc closes, so a turn with either never ends. */
 export const SLASH_COMMAND = '/clear';
+/** A chat turn as Angelia types one: several lines, Hebrew, an envelope and a quoted line. Claude Code
+ *  stores a paste of several lines in the transcript another way than a one-line one (2.1.330 wraps it
+ *  in tags), and the Stop hook's key of the typed prompt must still be the key of what was typed: on a
+ *  miss the turn drops its own marker (KEY_MISS_LINE) and the chat gets no answer. */
+export const PASTE_TEXT = ['[canary chat · Owner · a check of the build]', 'Replying to (quoted by the sender\'s app; author not verified):', '> שורה מצוטטת', '', 'שלום. Reply with the single word pasted'].join('\n');
 /** How long the pane may take to read idle after a turn's answer: the owner's own Stop hooks, which
  *  Claude Code runs beside Angelia's, hold the spinner until they end. */
 const IDLE_LIMIT_MS = 30_000;
@@ -206,6 +211,21 @@ export async function runChecks(rig: CanaryRig, waits: Partial<CanaryWaits> = {}
       if (t.end?.by !== 'stop') t.problems.push(`the turn ended by ${endedBy(t.end?.by)}, not by the Stop marker`);
     }
     done('pong', t0, t.problems, 'answered pong, ended by the Stop marker', 'pong.txt', t.screen);
+  }
+
+  // b2. A multi-line paste (a chat turn's shape), ended by the Stop marker with its prompt key matched.
+  if (gone()) skip('multi-line paste');
+  else {
+    t0 = Date.now();
+    const from = logs.length;
+    const t = await turn('multi-line paste', PASTE_TEXT, w.turnMs, 'multi-line-paste.txt');
+    const missed = logs.slice(from).some((l) => l.startsWith(KEY_MISS_LINE));
+    if (!t.problems.length) {
+      if (missed) t.problems.push('the Stop hook\'s key of the typed prompt did not match what was typed, so the turn dropped its own answer (this build stores a pasted prompt in a way the hook does not read)');
+      else if (word(t.result!.text) !== 'pasted') t.problems.push(`the answer was ${JSON.stringify(t.result!.text.slice(0, 60))}, not pasted`);
+      if (t.end?.by !== 'stop') t.problems.push(`the turn ended by ${endedBy(t.end?.by)}, not by the Stop marker`);
+    }
+    done('multi-line paste', t0, t.problems, 'answered pasted, ended by the Stop marker, its prompt key matched', 'multi-line-paste.txt', t.screen);
   }
 
   // c. One tool run longer than the quiet wait. Its command comes as a permission request through the
@@ -542,7 +562,7 @@ export async function canary(o: { ifNewBuild?: boolean; stateDir?: string; now?:
 }
 
 export function canaryText(r: CanaryReport): string {
-  const rows = r.checks.map((c) => `${c.ok ? 'ok  ' : c.skipped ? 'skip' : r.unjudged ? '?   ' : 'FAIL'}  ${c.name.padEnd(13)}  ${(c.ms / 1000).toFixed(1).padStart(5)} s  ${c.detail}`);
+  const rows = r.checks.map((c) => `${c.ok ? 'ok  ' : c.skipped ? 'skip' : r.unjudged ? '?   ' : 'FAIL'}  ${c.name.padEnd(Math.max(...CHECKS.map((n) => n.length)))}  ${(c.ms / 1000).toFixed(1).padStart(5)} s  ${c.detail}`);
   // A pass can keep one screen too (the one frame that did not read busy): say where it is.
   return [...rows, r.line, ...(r.passed && r.screens ? [`One screen is kept in ${home(r.screens)}.`] : [])].join('\n');
 }
