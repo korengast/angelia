@@ -18,6 +18,11 @@ export interface BrainOptions {
   /** tmux mode: the environment of Angelia's tmux server, which every profile's panes share. No
    *  secret at all. Default: this process's environment without the billing variables. */
   hostEnv?: NodeJS.ProcessEnv;
+  /** tmux mode: another tmux server than Angelia's (`tmux -L <name>`), and another folder than the
+   *  instance's for the pane's private files. The canary's throwaway pane sets both (canary.ts); the
+   *  daemon sets neither. */
+  tmuxSocket?: string;
+  stateDir?: string;
   /** tmux mode: names in `env` that are secrets this profile was given. They reach the pane through
    *  a mode-600 file that is deleted once read, never through a tmux command line or the session's
    *  environment, where any process of this user could list them. */

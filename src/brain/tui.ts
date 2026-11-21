@@ -39,7 +39,7 @@ const STILL_MS = 30 * 60_000;
  *  from the Stop hook, before the turn counts as over anyway. A slash command such as `/compact`
  *  is handled by the CLI itself and ends without a Stop event, so without this the turn would
  *  simply hang. */
-const QUIET_MS = 12_000;
+export const QUIET_MS = 12_000;
 /** The same wait when the turn's last transcript row is the assistant's text. That is the answer of
  *  a turn whose Stop hook failed, or text that a tool call still follows: the call's row is written
  *  when its input is whole, which can take longer than QUIET_MS for a large file, and the rows do not
@@ -167,9 +167,10 @@ export function hookSettings(hook = HOOK, permission = PERMISSION_HOOK): unknown
   };
 }
 
-/** For a dialog on the pane that did not come through the hook (tui-permissions.ts, ScreenDialogs). */
-export function screenOnlyLine(pane: string): string {
-  return `A permission dialog is open that did not come through Angelia, so only the screen says what it asks and it cannot be answered from here. Answer it in the Claude app, or in the pane (tmux -L ${TMUX_SOCKET} attach -t ${pane}); /stop ends the turn.`;
+/** For a dialog on the pane that did not come through the hook (tui-permissions.ts, ScreenDialogs).
+ *  `socket`: the tmux server the pane is on, when not Angelia's own. */
+export function screenOnlyLine(pane: string, socket = TMUX_SOCKET): string {
+  return `A permission dialog is open that did not come through Angelia, so only the screen says what it asks and it cannot be answered from here. Answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t ${pane}); /stop ends the turn.`;
 }
 
 /**
@@ -228,16 +229,19 @@ export class TuiBrain extends EventEmitter implements Brain {
   get pendingPermissionCount(): number { return this.permissions.size; }
   hasPendingPermission(id: string): boolean { return this.permissions.has(id); }
 
-  private get dir(): string { return join(process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia'), 'tui', this.name); }
+  private get dir(): string { return join(this.opts.stateDir ?? process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia'), 'tui', this.name); }
   private get settingsPath(): string { return join(this.dir, 'settings.json'); }
   private get markerPath(): string { return join(this.dir, 'turn.json'); }
   private get launchPath(): string { return join(this.dir, 'launch.sha256'); }
   private get envPath(): string { return join(this.dir, 'env'); }
 
+  /** The tmux server this pane is on: Angelia's own, unless the caller named another (the canary). */
+  private get socket(): string { return this.opts.tmuxSocket ?? TMUX_SOCKET; }
+
   /** Every tmux call runs with the server's environment, never the agent's: the first call starts the
    *  server, and every profile's panes inherit what it started with. */
   private tm(args: string[], o: { scope?: boolean } = {}) {
-    return tmux(args, { env: this.opts.hostEnv ?? childEnv(process.env), ...o });
+    return tmux(args, { env: this.opts.hostEnv ?? childEnv(process.env), socket: this.socket, ...o });
   }
 
   /** The launch, plus what decides the agent's environment and permissions: a change in any of them
@@ -251,6 +255,10 @@ export class TuiBrain extends EventEmitter implements Brain {
   }
 
   start(): void { this.ready = this.ensure(); }
+
+  /** The start's outcome, for a caller that wants it apart from the first turn (canary.ts): null once
+   *  the pane is at a prompt, else the line that says why it is not. */
+  whenReady(): Promise<string | null> { return this.ready ?? Promise.resolve('brain not started'); }
 
   /** Attach to the pane if it is already there (a restarted daemon finds its agents alive),
    *  otherwise start one. Resolves to an error line, or null when the session is usable.
@@ -367,7 +375,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     } catch { this.emit('log', `pane ${this.name} never reached a prompt`); }
     // Named, so the owner sees which folder to list (or why claude asks about it) without the log.
     if (unlisted !== undefined) return `the session did not start: claude asks to add the folder ${unlisted}, which is not in this profile's add_dirs`;
-    return `the session never reached a prompt (look with: tmux -L angelia attach -t ${this.name})`;
+    return `the session never reached a prompt (look with: tmux -L ${this.socket} attach -t ${this.name})`;
   }
 
   private argv(resume: boolean): string[] {
@@ -597,7 +605,7 @@ export class TuiBrain extends EventEmitter implements Brain {
           const seen = dialogs.see(open, () => true);
           if (seen.announce && open) yield { kind: 'permission', id: seen.announce, tool: open.tool, preview: open.preview };
         } else if (screen.see(open ? `${open.tool}\n${open.preview}` : null, this.permissions.size > 0 || Date.now() - this.relayedAt < REASK_MS)) {
-          yield { kind: 'notice', text: screenOnlyLine(this.name) };
+          yield { kind: 'notice', text: screenOnlyLine(this.name, this.socket) };
         }
         if (!pane && (await this.tm(['has-session', '-t', this.name])).code !== 0) {
           if (!background) this.up = false;

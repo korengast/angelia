@@ -28,6 +28,8 @@ or `angelia restart`, which starts it detached.
 | run a prompt in a chat's session | `angelia turn <platform:chat> <text>` |
 | scheduled work | `angelia-jobs.yaml` in the profile folder, then `angelia jobs install` |
 | read a chat's history | `angelia export <platform:chat> [--all] [--tools]` |
+| see trouble before the chats do | `angelia health [--days N]`; `angelia health --alert` from a daily job (see "Watching for trouble") |
+| try tmux mode on the installed Claude Code | `angelia canary`; `angelia canary --if-new-build` from a daily job |
 | link or unlink WhatsApp | `angelia pair`, `angelia unpair` |
 | version-control the profiles | `angelia workspace sync` (put it in a job to run it nightly) |
 | the manual an agent reads | `angelia guide [topic]` |
@@ -42,6 +44,7 @@ first and refuses a broken one.
 | ids, counts, turn failures, restarts | `~/.angelia/daemon.log`, then `daemon.log.1` (no message text except a dying CLI's last error line) |
 | the screen of a tmux pane that never reached a prompt | `~/.angelia/tui/<pane>/screen.txt` |
 | how a tmux turn ended, and the screen of one that ended with no answer | `tmux: turn ended by …` in `daemon.log`; `~/.angelia/tui/<pane>/quiet-empty.txt`, `idle-open.txt` |
+| the screens of a canary that failed, and the last build that passed | `~/.angelia/tui/canary/<time>/`; `~/.angelia/canary.json` |
 | the daemon's own stdout and stderr | `~/.angelia/daemon.out` |
 | what the service does | `angelia service status`; `launchctl print gui/$(id -u)/angelia.daemon` (macOS), `systemctl --user status angelia` (Linux) |
 | a job timer's output | `~/.angelia/jobs.log`, `~/.angelia/jobs.out` |
@@ -52,7 +55,131 @@ The first thing to read when a chat says "Something broke on my side" is the `tu
 `daemon.log`. It carries the reason: the CLI not found, a session that did not resume, a pane that
 never reached a prompt. The chat line carries the same reason.
 
+## Watching for trouble
+
+Two commands tell you of trouble before a chat does. Both are plain commands with no daemon part:
+put them in jobs, and the chat of the job's profile gets a line only when there is something to say.
+
+**`angelia health [--days N] [--json] [--alert]`** counts trouble in `daemon.log`, per profile and
+day: turns that ended with no answer, failed, stalled or threw, answers that could not be delivered,
+tmux turns that ended by the quiet pane (all of them, and the ones with no answer for a message),
+panes that read idle with the turn open, retries with a fresh session, permissions
+auto-denied, and for the daemon as a whole its starts, WhatsApp drops and send retries (each `send
+failed, again in N s` line is one more try of a send, not a lost message). A failure that the daemon
+tried again (a retry with a fresh session) is not counted as failed: only the end of the
+retry is. The window is the last 24 hours, or the last N days (at most 30), split by your local
+calendar day; when the log holds less than that, the first line says where the log starts. A chat is shown as its
+profile; a chat no route names is shown by the first eight characters of its id. It reads the log
+only, so it works with the daemon down. `tmux turns` is the count of turns that ended in tmux mode;
+a print-mode turn writes no line in the log, so there is no total of all turns.
+
+`--alert` prints nothing when every profile is within the limits, else one line for a chat. The
+limits, per profile in the window: 2 turns with no answer, 3 failed turns (a turn stopped with
+`/stop` is not one), 1 stalled turn, 2 tmux turns that the quiet pane ended with no answer.
+
+**`angelia canary [--if-new-build] [--json]`** tries tmux mode for real on the Claude Code build
+installed now. tmux mode reads Claude Code's screen and transcript, and a new build can change
+either. The canary starts Claude Code in a tmux server of its own (`angelia-canary-<pid>`, not the
+`angelia` one), in a folder of its own in the system temp folder, with the cheapest model, and checks:
+
+1. `start`: the pane reaches a prompt (the trust dialog and the add-dir dialog are answered).
+2. `pong`: a one-word turn is answered, and ends by the Stop marker.
+3. `tool run`: a turn with one 20 s shell command is not cut. The command comes to the canary as a
+   permission request through the relay hook, as it would come to a chat, and the canary allows it;
+   then the screens read while it runs must read busy, and the answer must come by the Stop marker.
+   One screen that does not read busy passes (a frame caught half drawn) and is kept; two in a row
+   fail the check.
+4. `idle after`: the pane then reads idle.
+5. `slash command`: `/clear`, which Claude Code answers itself, ends by the quiet pane soon after
+   its 12 s wait.
+
+The pane is held as a chat's pane is. Its permission mode is `default`, not bypass: the canary says
+yes to one request only, its own command to the letter (`touch canary-started && sleep 20 && touch
+canary-finished`), and no to any other, which also fails the check and names what was asked. It is
+started with no MCP server, yours included (`--strict-mcp-config` with an empty list, as a profile
+that is given none). What still loads is what loads in every pane: your own hooks, settings and
+`CLAUDE.md` in `~/.claude`. When your settings already allow the command, Claude Code does not ask,
+and the check's line says "not asked".
+
+It prints one line per check and a verdict with the Claude Code version, and exits 0 (passed), 1 (a
+check failed) or 2 (it could not run, or could not judge the build; see below). It takes one to
+three minutes and costs a few model calls on your Claude plan each time (two short turns on the
+cheapest model). The pane, its tmux server, the temp folder and the session's transcript are removed
+at the end, also when it is stopped (Ctrl-C, a closed terminal, a job's time limit). What a run that
+was killed outright left behind is removed by the next run that starts a pane (a run with
+`--if-new-build` on a build that already passed starts none): the tmux servers and temp folders named
+`angelia-canary-<pid>` whose process is gone. Two things stay: the session shows in the Claude app
+while the canary runs (the pane is started as a chat's pane is, with Remote Control), and Claude
+Code keeps one line per temp folder in its own `~/.claude.json`.
+
+`--if-new-build` runs the checks only when `claude --version` is not the build that last passed
+(`~/.angelia/canary.json`), and then says one line: `Claude Code 2.1.330: tmux mode canary passed
+(5 of 5).` or `... FAILED: <check>: <what>. Screens: <folder>.` On the build that passed it prints
+nothing. A build that failed, or one it could not judge, is tried again at the next run.
+
+As jobs, in `angelia-jobs.yaml` of a profile of your own that has `shell: true` and whose agent is
+not sandboxed (a sandboxed profile's job writes only in the agent's folders, and the canary keeps its
+state and its screens in `~/.angelia`):
+
+```yaml
+jobs:
+  health-alert:
+    schedule: "0 8 * * *"
+    run: angelia health --alert
+  claude-canary:
+    schedule: "30 7 * * *"
+    run: angelia canary --if-new-build
+```
+
+Then `angelia jobs install <profile>`. A canary that fails exits 1, so its line reaches the chat as
+the job's failure line: `Scheduled job claude-canary failed (exit 1): Claude Code 2.1.330: tmux mode
+canary FAILED: ...`. The same for exit 2: `... could not judge this build: ...` or `angelia canary
+could not run: ...`.
+
+Claude Code updates itself in the background, so by default a new build is in use before the canary
+sees it: panes on an older build are ended when idle and start again on the new one. To try a build
+before the chats use it, turn the background update off: set `DISABLE_AUTOUPDATER` to `"1"` in the
+`env` key of `~/.claude/settings.json`. Then update by hand at a quiet hour (`claude update`), run
+`angelia canary`, and go back if it fails (below).
+
 ## Known failures and their fixes
+
+**"tmux mode canary FAILED".** The Claude Code build installed now does something tmux mode does not
+read right. Until it is fixed, chats on tmux profiles may get no answer or a cut one. Do this:
+
+1. Read the screens. The line names the folder (`~/.angelia/tui/canary/<time>/`): one file per
+   failed check with the screen it failed on, `tool-run-not-busy.txt` (the first screen that did not
+   read busy while the command ran; kept on a pass too, when it was the only one), `final.txt` (the
+   last screen, when the pane was still up), the pane's own `pane-screen.txt`,
+   `pane-idle-open.txt`, `pane-quiet-empty.txt` or `pane-paste-failed.txt` when it kept one, and
+   `brain.log` (what tmux mode logged; no message text). `start` failed: a new dialog before the
+   prompt. `tool run` failed with screens that did not read busy: the spinner row or the rows under
+   the input box changed. `tool run` failed with a permission request that got a no: the model asked
+   to run something other than the canary's command, and the line names it. `slash command` did not end: the command opens a panel now.
+2. Keep the build that passed. `~/.angelia/canary.json` names it under `passed`. Install it again:
+   `curl -fsSL https://claude.ai/install.sh | bash -s <version>`, and set `DISABLE_AUTOUPDATER` to
+   `"1"` in the `env` key of `~/.claude/settings.json` so the new one does not come back. A pane
+   that runs now keeps the new build until it is ended: when the chats are quiet, run
+   `tmux -L angelia kill-server` (every pane resumes on its next message, on the build you installed).
+3. Run `angelia canary` again. Passed: the chats are safe on this build. Report the failing screen
+   (it shows the temp folder's path and your plan's name, no chat) so the reader can be fixed; after
+   `angelia update` brings the fix, take `DISABLE_AUTOUPDATER` out, `claude update`, and run the
+   canary once more.
+
+A check can also fail for a reason of the hour: the model answered slowly (`the turn did not end in
+180 s`). Run it again before you change a build.
+
+**"tmux mode canary could not judge this build".** Exit 2. A turn ended with the plan's usage limit
+or a lost login, which says nothing about the build: any build ends such a turn
+the same way. The line says which. Nothing is recorded, no screen is kept, and the next run tries
+again; with `--if-new-build` that is the next day's job. For a lost login run `claude` and `/login`.
+
+**`angelia canary could not run`.** Exit 2, with the reason: tmux is not installed, `claude` is not
+on PATH or in the usual install folders, `claude auth status` says it is not logged in (run `claude`
+and `/login`), or the state folder cannot be written (a job of a sandboxed profile: move the job to
+a profile that is not). It is checked before any model call. Nothing was tried and nothing is
+recorded.
+
 
 **"This chat's agent (claude) is not installed where Angelia can find it."** The CLI is not on the
 daemon's PATH. `angelia service install` rewrites the plist with a PATH that includes the folder of

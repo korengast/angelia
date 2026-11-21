@@ -36,6 +36,8 @@ const L = {
   transcribe: '  transcribe <audio> [--language xx] [--model name]   the bundled transcriber (run by agents)',
   speak: '  speak <text> [--voice name] [--rate n] [--out path]   the bundled voice (run by agents)',
   update: '  update [--check] [--from <git URL|folder>] [--head] [--force]   install the newest signed release',
+  health: '  health [--days N] [--json] [--alert]   trouble counted from the daemon log, per profile and day',
+  canary: '  canary [--if-new-build] [--json]       try tmux mode on the installed Claude Code, in a throwaway pane',
   guide: '  guide [topic]                          the manual agents read before changing the setup',
   version: '  version | --version                    the installed version and the commit it was built from',
 };
@@ -68,6 +70,23 @@ export const COMMANDS: Record<string, Spec> = {
   transcribe: { line: L.transcribe, flags: { '--language': true, '--lang': true, '--model': true } },
   speak: { line: L.speak, flags: { '--voice': true, '--out': true, '--rate': true } },
   update: { line: L.update, flags: { '--check': false, '--from': true, '--head': false, '--force': false } },
+  health: { line: L.health, usage: [
+    'usage: angelia health [--days N] [--json] [--alert] [--config <routing.yaml>]',
+    '  Counts trouble in the daemon log per profile and day: turns with no answer, failed, stalled,',
+    '  tmux turns ended by the quiet pane, daemon starts, WhatsApp drops. --days: 1 (the last 24 h) to 30.',
+    '  --alert: for a scheduled job. Prints nothing within the limits, else one line for a chat.',
+  ].join('\n'), flags: { '--days': true, '--json': false, '--alert': false, '--config': true } },
+  canary: { line: L.canary, usage: [
+    'usage: angelia canary [--if-new-build] [--json]',
+    '  Starts Claude Code in a tmux pane of its own, in a temp folder of its own, and checks that tmux mode',
+    '  still reads it: the start, a one-word turn, a 20 s shell command, the idle screen, a slash command.',
+    '  The pane runs in permission mode default with no MCP server; the canary allows its one command only.',
+    '  Each run costs a few model calls on your Claude plan (two short turns on the cheapest model).',
+    '  --if-new-build: for a daily job. Runs only when claude --version is not the build that last',
+    '  passed, and prints one line for a chat; silent otherwise.',
+    '  Exit 0: passed (or nothing ran). 1: a check failed. 2: it could not run (no tmux, no CLI, not logged in,',
+    '  a state folder it cannot write) or could not judge the build (the plan\'s limit or a lost login).',
+  ].join('\n'), flags: { '--if-new-build': false, '--json': false } },
   guide: { line: L.guide },
   version: { line: L.version },
 };
