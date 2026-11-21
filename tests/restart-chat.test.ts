@@ -53,6 +53,21 @@ test('/restart: owners only in a group; the table is checked before anything sto
   assert.deepEqual(launched, ['whatsapp:g@g.us'], 'launched once, for the chat that asked, after the reply');
 });
 
+test('/restart still restarts when its reply cannot be sent (the chat dropped just then)', async (t) => {
+  const launched: string[] = [];
+  const cfg = Config.parse({
+    profiles: { a: { cwd: here } },
+    routes: [{ platform: 'whatsapp', chat: 'g@g.us', profile: 'a', mention: 'any', owners: ['boss'], allow_from: ['*'] }],
+    defaults: { max_out_per_min: 1000 },
+  });
+  const sender = { send: async () => { throw new Error('Connection Closed'); } };
+  const stateDir = mkdtempSync(join(tmpdir(), 'angelia-rst-'));
+  const o = new Orchestrator(cfg, { telegram: sender, whatsapp: sender }, { stateDir, bins: { 'claude-code': join(here, 'fake-claude.mjs') }, restart: { check: () => undefined, launch: (k) => launched.push(k) }, sendRetryMs: [] });
+  t.after(() => o.shutdown());
+  await o.handle(msg('boss')).catch(() => {});
+  assert.deepEqual(launched, ['whatsapp:g@g.us']);
+});
+
 test('/restart without a restarter says to use a terminal', async (t) => {
   const { o, sent } = rig();
   t.after(() => o.shutdown());

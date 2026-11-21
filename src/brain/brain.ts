@@ -4,6 +4,9 @@ import type { BrainEvent } from '../core/types.js';
 
 export type BackendName = Profile['backend'];
 
+/** What a brain may need to know of a turn besides its text. */
+export interface TurnFlags { app?: boolean }
+
 export interface BrainOptions {
   bin?: string;
   permissionTimeoutMs?: number;
@@ -13,11 +16,18 @@ export interface BrainOptions {
   quietMs?: number;
   quietTextMs?: number;
   quietOpenMs?: number;
+  /** tmux mode: how often the Stop marker is looked for between turns (tui.ts: IDLE_POLL_MS). Tests shorten it. */
+  idlePollMs?: number;
   /** The agent's environment: no secret except the ones its profile was given (core/env.ts). */
   env?: NodeJS.ProcessEnv;
   /** tmux mode: the environment of Angelia's tmux server, which every profile's panes share. No
    *  secret at all. Default: this process's environment without the billing variables. */
   hostEnv?: NodeJS.ProcessEnv;
+  /** tmux mode: another tmux server than Angelia's (`tmux -L <name>`), and another folder than the
+   *  instance's for the pane's private files. The canary's throwaway pane sets both (canary.ts); the
+   *  daemon sets neither. */
+  tmuxSocket?: string;
+  stateDir?: string;
   /** tmux mode: names in `env` that are secrets this profile was given. They reach the pane through
    *  a mode-600 file that is deleted once read, never through a tmux command line or the session's
    *  environment, where any process of this user could list them. */
@@ -63,7 +73,9 @@ export interface Brain extends EventEmitter {
   backendSessionId?: string;
   readonly alive: boolean;
   start(): void;
-  turn(text: string): AsyncGenerator<BrainEvent>;
+  /** `o.app`: the turn was typed in the desk app, not the chat. A tmux pane then takes none of the
+   *  turn's background tasks for the chat's: the answer to their end must not reach the chat. */
+  turn(text: string, o?: TurnFlags): AsyncGenerator<BrainEvent>;
   /** `id` may be a prefix of a pending request id (the chat sees the first 8 chars). `how.message`
    *  is what the agent hears with a refusal, where the backend can pass one; the others ignore it. */
   answerPermission(id: string, allow: boolean, how?: PermissionAnswer): boolean;
@@ -83,6 +95,9 @@ export interface Brain extends EventEmitter {
   adopt?(turnSentAt: number): Promise<boolean>;
   /** When the running turn was typed in, for a background row that must survive a restart. */
   turnSentAt?: number;
+  // A backend that reads its session between turns (a tui pane) also emits `unasked` with an
+  // UnaskedAnswer (core/types.ts): a late answer, or the answer of a turn the CLI started by itself.
+  // Only from the end of its first turn until it is released, stopped or handed off.
   kill(): void;
 }
 

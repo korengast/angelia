@@ -197,6 +197,15 @@ try {
       await updateCommand(rest);
       break;
     }
+    case 'health': {
+      const { healthCommand } = await import('../daemon/health.js');
+      await healthCommand(rest);
+      break;
+    }
+    case 'canary': {
+      const { canaryCommand } = await import('../brain/canary.js');
+      process.exit(await canaryCommand(rest));
+    }
     case 'service': {
       const { serviceCommand } = await import('../daemon/service.js');
       await serviceCommand(rest);

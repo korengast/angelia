@@ -68,6 +68,17 @@ test('toInbound writes the sender the way routing.yaml expects', () => {
   assert.equal(i.platform, 'whatsapp'); assert.equal(i.sender, '15551111111'); assert.deepEqual(i.media, ['/x/.inbox/a.jpg']);
 });
 
+test('a message carries the time WhatsApp says it was sent, in ms, whatever shape the seconds come in; none when there is none', () => {
+  const at = (messageTimestamp?: unknown) => toInbound(parseMessage({ ...group({ conversation: 'hi' }), ...(messageTimestamp === undefined ? {} : { messageTimestamp }) }, US)!, '1555', []).at;
+  assert.equal(at(1795000000), 1795000000000);
+  assert.equal(at('1795000000'), 1795000000000);
+  assert.equal(at({ low: 1795000000, high: 0, unsigned: true }), 1795000000000, 'a protobuf Long');
+  assert.equal(at(), undefined);
+  assert.equal(at(0), undefined);
+  assert.equal(at('soon'), undefined);
+  assert.equal('at' in toInbound(parseMessage(group({ conversation: 'hi' }), US)!, '1555', []), false);
+});
+
 test('media size: read from fileLength in every shape Baileys uses, before any download', async () => {
   const { byteLength } = await import('../src/adapters/whatsapp/parse.js');
   assert.equal(byteLength(123), 123);

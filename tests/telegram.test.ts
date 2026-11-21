@@ -41,6 +41,8 @@ test('a DM is delivered as a dm from its own user; a group message carries the g
     ['telegram', '7', '7', 'Sam', 'hello', false, false, []],
     ['telegram', '-100', '7', 'Sam', 'hi all', true, false, []],
   ]);
+  // The time Telegram dates the message, in ms (the helper dates every message second 1).
+  assert.deepEqual(got.map((i) => i.at), [1000, 1000]);
 });
 
 test('mentioned: an @mention of the bot (any case) or a reply to it; another bot\'s name is not', async () => {
@@ -65,6 +67,9 @@ test('a reply carries what it quotes: the selected part, else the text, else the
   await tg.bot.handleUpdate(group('no reply'));
   assert.deepEqual(got.map((i) => i.quoted), ['line 1\nline 2', 'the view', undefined, 'a part', 'quoted elsewhere', 'whole', undefined]);
   assert.deepEqual(got.map((i) => 'quoted' in i), [true, true, false, true, true, true, false]);
+  // What it replies to, as a fact apart from the text: the message's id, and not ours (Ann wrote it).
+  // A reply into another chat names no message of this one.
+  assert.deepEqual(got.map((i) => i.reply), [{ id: '1', ours: false }, { id: '1', ours: false }, { id: '1', ours: false }, { id: '1', ours: false }, { ours: false }, { id: '1', ours: false }, undefined]);
 });
 
 test('a topic message carries its thread; a plain group message does not', async () => {
@@ -196,4 +201,254 @@ test('#35: a failed download is said to the agent, with or without a caption; so
   await noPath.bot.handleUpdate(dm('', { voice: { file_id: 'v', file_unique_id: 'u3', duration: 3, file_size: 5 } }));
   await noPath.drained();
   assert.deepEqual(got.map((i) => [i.text, i.media]), [['[the file sent could not be downloaded]', []]]);
+});
+
+test('reply facts and the bot\'s own mention: a reply to the bot\'s message is ours; a topic\'s first message is no reply; only the bot\'s @name is listed', async () => {
+  const { tg, got } = rig();
+  const bots = { message_id: 501, date: 1, chat: { id: -100, type: 'supergroup', title: 'Trip' }, from: { id: ME.id, is_bot: true, first_name: 'Angelia' }, text: 'a request' };
+  await tg.bot.handleUpdate(group('yes', { reply_to_message: bots }));
+  // In a forum topic a message that replies to nothing still names the topic's first message.
+  await tg.bot.handleUpdate(group('yes', { message_thread_id: 55, is_topic_message: true, reply_to_message: { ...bots, message_id: 55, forum_topic_created: { name: 'Plans', icon_color: 1 } } }));
+  await tg.bot.handleUpdate(group('yes', { message_thread_id: 55, is_topic_message: true, reply_to_message: { ...bots, message_id: 77 } }));
+  await tg.bot.handleUpdate(group('@ann @Angelia_BOT yes', { entities: [{ type: 'mention', offset: 0, length: 4 }, { type: 'mention', offset: 5, length: 12 }] }));
+  await tg.bot.handleUpdate(group('@ann yes', { entities: [{ type: 'mention', offset: 0, length: 4 }] }));
+  assert.deepEqual(got.map((i) => i.reply), [{ id: '501', ours: true }, undefined, { id: '77', ours: true }, undefined, undefined]);
+  assert.deepEqual(got.map((i) => i.botMentions), [undefined, undefined, undefined, ['@Angelia_BOT'], undefined]);
+});
+
+/**
+ * The adapter in front of an orchestrator whose chat asks for permission (tests/asker.ts): what the Bot
+ * API was sent, and a way to wait for it. Messages the bot sends get ids from 501 and Telegram's date
+ * for them (`lineDate`, in seconds; default two seconds behind this machine's clock, as a platform a
+ * little behind would give).
+ */
+async function asking(t: { after(fn: () => unknown): void }, opts: Record<string, unknown> = {}, rigged: { route?: Record<string, unknown>; chatKind?: string; lineDate?: () => number; hold?: Promise<void> } = {}) {
+  const { Config } = await import('../src/instance/config/schema.js');
+  const { Orchestrator } = await import('../src/core/orchestrator.js');
+  const { asker, openAsks } = await import('./asker.js');
+  const calls: { method: string; payload: Record<string, any> }[] = [];
+  const logs: string[] = [];
+  let o: InstanceType<typeof Orchestrator> | undefined;
+  const tg = new TelegramAdapter({ token: '000:fake', botInfo: ME, inboxFor: () => undefined, onInbound: (i) => o!.handle(i), onPress: (i, id, allow) => o!.pressed(i, id, allow), log: (l) => logs.push(l) });
+  const route = { platform: 'telegram', chat: -100, profile: 'a', mention: 'required', owners: ['7'], allow_from: ['*'], ...rigged.route };
+  let sentId = 500;
+  tg.bot.api.config.use(async (_prev, method, payload) => {
+    calls.push({ method, payload: payload as Record<string, any> });
+    if (method === 'sendMessage') {
+      if (rigged.hold && String((payload as { text: string }).text).startsWith('🔐')) await rigged.hold;
+      return { ok: true, result: { message_id: ++sentId, date: (rigged.lineDate ?? (() => Math.floor(Date.now() / 1000) - 2))(), chat: { id: route.chat, type: 'supergroup', title: 'Trip' } } } as never;
+    }
+    if (method === 'getChat') return { ok: true, result: { id: route.chat, type: rigged.chatKind ?? 'supergroup', title: 'Trip' } } as never;
+    return { ok: true, result: true } as never;
+  });
+  const cfg = Config.parse({ profiles: { a: { cwd: mkdtempSync(join(tmpdir(), 'angelia-tg-ask-')) } }, routes: [route], defaults: { max_out_per_min: 1000 } });
+  o = new Orchestrator(cfg, { telegram: tg }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-tg-orch-')), bareAnswerMinMs: 0, log: (l) => logs.push(l), ...opts });
+  t.after(async () => { await o!.shutdown(); await tg.stop(); });
+  const key = `telegram:${route.chat}`;
+  const f = asker(o, key);
+  const texts = () => calls.filter((c) => c.method === 'sendMessage').map((c) => String(c.payload.text));
+  const until = async (cond: () => boolean, what: string) => {
+    const end = Date.now() + 5000;
+    while (!cond()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await new Promise((r) => setTimeout(r, 5)); }
+  };
+  const open = () => openAsks(o!, key);
+  return { tg, o, f, calls, logs, texts, until, open };
+}
+const A = 'aaaa1111-0000-4000-8000-000000000001', B = 'bbbb2222-0000-4000-8000-000000000002';
+const LINE = { [A]: '🔐 Bash: touch aaaa\nReply "yes" or "no". (request aaaa1111)', [B]: '🔐 Bash: touch bbbb\nReply "yes" or "no". (request bbbb2222)' };
+const SAM = { id: 7, is_bot: false, first_name: 'Sam' }, ANN = { id: 9, is_bot: false, first_name: 'Ann' };
+const nowSec = () => Math.floor(Date.now() / 1000);
+/** A message that names the bot, dated now by Telegram unless said otherwise. */
+const toBot = (text: string, date = nowSec() + 1) => group(`@Angelia_bot ${text}`, { date, entities: [{ type: 'mention', offset: 0, length: 12 }] });
+/** A reply to message `id` of this chat, as Telegram sends it: the message replied to rides along whole. */
+const replyTo = (text: string, id: number, quoted: string, extra: Record<string, unknown> = {}, author: Record<string, unknown> = { id: ME.id, is_bot: true, first_name: 'Angelia' }) =>
+  group(text, { date: nowSec() + 1, reply_to_message: { message_id: id, date: 1, chat: { id: -100, type: 'supergroup', title: 'Trip' }, from: author, text: quoted }, ...extra });
+/** A press on a button under message `message` of the bot's, as Telegram sends it. */
+const press = (data: string | undefined, from: Record<string, unknown> = SAM, message = 501, chat: Record<string, unknown> = { id: -100, type: 'supergroup', title: 'Trip' }): Update =>
+  ({ update_id: ++n, callback_query: { id: `cq${n}`, from, chat_instance: 'ci', ...(data === undefined ? {} : { data }), message: { message_id: message, date: 1, chat, from: { id: ME.id, is_bot: true, first_name: 'Angelia' }, text: 'a request' } } } as unknown as Update);
+const of = (calls: { method: string; payload: Record<string, any> }[], method: string) => calls.filter((c) => c.method === method).map((c) => c.payload);
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test('a reply "yes" answers the request whose message it replies to, by that message\'s id, through grammY\'s own update path; a reply to anything else is a message for the agent', async (t) => {
+  const { tg, f, texts, until, open } = await asking(t);
+  await tg.bot.handleUpdate(toBot(`ASK:${A},${B}`));
+  await until(() => texts().length === 2, 'two request lines');
+  assert.deepEqual(texts(), [LINE[A], LINE[B]]);
+  // Not answers, each a message for the agent behind the running turn: a member who is no owner
+  // replies yes to B's line; the owner replies yes to a person's message that quotes B's line word
+  // for word; to another message of the bot's; to B's line's id under another author.
+  await tg.bot.handleUpdate(replyTo('yes', 502, LINE[B], { from: ANN }));
+  await tg.bot.handleUpdate(replyTo('@Angelia_bot yes', 400, LINE[B], { entities: [{ type: 'mention', offset: 0, length: 12 }] }, ANN));
+  await tg.bot.handleUpdate(replyTo('yes', 499, 'Shall I book the table for 8?'));
+  await tg.bot.handleUpdate(replyTo('@Angelia_bot yes', 502, LINE[B], { entities: [{ type: 'mention', offset: 0, length: 12 }] }, ANN));
+  await tg.drained();
+  await pause(30);
+  assert.deepEqual(f.answers, []);
+  assert.deepEqual(texts(), [LINE[A], LINE[B]], 'and nothing was said about them');
+  // The owner replies to B's line, quoting only a part of it that names nothing: B, by the message.
+  await tg.bot.handleUpdate(replyTo('yes', 502, LINE[B], { quote: { text: 'touch', position: 9 } }));
+  await until(() => f.answers.length === 1, 'the answer');
+  assert.deepEqual(f.answers, [[B, true]]);
+  assert.deepEqual(open(), [A]);
+  await tg.bot.handleUpdate(replyTo('לא', 501, LINE[A]));
+  await until(() => f.turns.length === 5, 'the four that were no answers, as turns after the turn');
+  assert.deepEqual(f.answers, [[B, true], [A, false]]);
+  assert.ok(f.turns.slice(1).every((x) => x.endsWith('yes')), f.turns.join(' | '));
+});
+
+test('a bare answer is held to Telegram\'s own clock: the request\'s line by the date its send returned, the answer by its message\'s date; "@someone yes" is said to someone', async (t) => {
+  const { READ_FIRST_LINE } = await import('../src/core/deliver/text.js');
+  // Telegram's clock is 100 s behind this machine's: by ours the line would look long read.
+  const line = nowSec() - 100;
+  const { tg, f, texts, until, logs } = await asking(t, { bareAnswerMinMs: undefined }, { lineDate: () => line });
+  await tg.bot.handleUpdate(toBot(`ASK:${A}`));
+  await until(() => texts().length === 1, 'the request line');
+  // "@ann @Angelia_bot yes" reaches the agent (it names the bot) and is no answer (it names Ann).
+  await tg.bot.handleUpdate(group('@ann @Angelia_bot yes', { date: line + 30, entities: [{ type: 'mention', offset: 0, length: 4 }, { type: 'mention', offset: 5, length: 12 }] }));
+  // Dated two seconds after the line: not read yet.
+  await tg.bot.handleUpdate(toBot('yes', line + 2));
+  await until(() => texts().at(-1) === READ_FIRST_LINE, 'the read-it-first line');
+  // Dated in the line's own second plus three: the line's second may have been at its end.
+  await tg.bot.handleUpdate(toBot('yes', line + 3));
+  await until(() => texts().filter((x) => x === READ_FIRST_LINE).length === 2, 'the second read-it-first line');
+  assert.deepEqual(f.answers, []);
+  assert.equal(logs.filter((l) => l.includes('reason=request-just-posted id=aaaa1111')).length, 2, logs.join('\n'));
+  await tg.bot.handleUpdate(toBot('yes', line + 4));
+  await until(() => f.answers.length === 1, 'the answer');
+  assert.deepEqual(f.answers, [[A, true]]);
+  await until(() => texts().includes('Allowed: Bash: touch aaaa (request aaaa1111)'), 'what the bare word was taken for');
+  await until(() => f.turns.length === 2, 'the word said to Ann, as a turn');
+  assert.match(f.turns[1], /@ann @Angelia_bot yes$/);
+});
+
+test('a permission request goes out with Yes and No buttons; the owner\'s press answers it and the buttons go; anyone else\'s, a forged one and one too soon do not', async (t) => {
+  const { NOT_OWNER_LINE, BUTTON_GONE_LINE, READ_FIRST_LINE } = await import('../src/core/deliver/text.js');
+  const { tg, f, calls, logs, texts, until, open } = await asking(t, { bareAnswerMinMs: 150 });
+  await tg.bot.handleUpdate(toBot(`ASK:${A}`));
+  await until(() => texts().length === 1, 'the request line');
+  const sent = of(calls, 'sendMessage')[0];
+  assert.equal(sent.text, LINE[A], 'the text still says how to answer by typing');
+  assert.deepEqual(sent.reply_markup, { inline_keyboard: [[{ text: 'Yes', callback_data: 'ask:y:aaaa1111' }, { text: 'No', callback_data: 'ask:n:aaaa1111' }]] });
+  const answers = () => of(calls, 'answerCallbackQuery').map((p) => p.text);
+  const pressed = async (u: Update) => { const n0 = answers().length; await tg.bot.handleUpdate(u); await until(() => answers().length === n0 + 1, 'the press answered'); return answers().at(-1); };
+  // The owner, at once: a second request can take the first one's place under a finger.
+  assert.equal(await pressed(press('ask:y:aaaa1111')), READ_FIRST_LINE);
+  await pause(170);
+  // A member who is no owner: told so in the press's own answer.
+  assert.equal(await pressed(press('ask:y:aaaa1111', ANN)), NOT_OWNER_LINE);
+  // An anonymous admin stands for many people. Data that is not one of this message's two buttons: of
+  // some other kind, none, another request's id, a shorter id that a prefix match would take.
+  assert.equal(await pressed(press('ask:y:aaaa1111', { id: 1087968824, is_bot: true, first_name: 'Group' })), undefined);
+  for (const data of ['yes aaaa1111', undefined, 'ask:y:zzzz9999', 'ask:y:a', 'ask:y:aaaa111', 'ask:y:aaaa1111-0000']) assert.equal(await pressed(press(data, data === 'ask:y:a' ? ANN : SAM)), undefined, String(data));
+  assert.deepEqual(f.answers, []);
+  assert.deepEqual(open(), [A]);
+  assert.deepEqual(of(calls, 'editMessageReplyMarkup'), [], 'the open request keeps its buttons through all of it');
+  assert.equal(logs.filter((l) => l === 'telegram: drop press chat=-100 reason=not-this-message\'s-button').length, 3, logs.join('\n'));
+  // The owner presses No: the press's own answer says what was denied.
+  assert.equal(await pressed(press('ask:n:aaaa1111')), 'Denied: Bash: touch aaaa');
+  await until(() => texts().at(-1) === 'done: aaaa=no', 'the turn\'s answer');
+  assert.deepEqual(f.answers, [[A, false]]);
+  assert.deepEqual(texts(), [LINE[A], 'done: aaaa=no'], 'no line in the chat for a press');
+  assert.deepEqual(of(calls, 'editMessageReplyMarkup'), [{ chat_id: '-100', message_id: 501, reply_markup: { inline_keyboard: [] } }], 'the buttons went, once');
+  // Buttons still on some screen, or from before a restart: nothing is answered, no turn starts, they go.
+  assert.equal(await pressed(press('ask:y:aaaa1111')), BUTTON_GONE_LINE);
+  assert.equal(await pressed(press('ask:y:cccc3333', SAM, 444)), BUTTON_GONE_LINE);
+  await until(() => of(calls, 'editMessageReplyMarkup').length === 3, 'the stale buttons removed');
+  assert.deepEqual(f.answers, [[A, false]]);
+  assert.equal(f.turns.length, 1, 'a press is never a message for the agent');
+  // Unknown buttons go only for someone a routed chat hears. A stranger pressing in a chat that is not
+  // routed, as often as they like, gets the bare answer every press gets and no other Bot API call.
+  const before = calls.length;
+  for (let k = 0; k < 5; k++) assert.equal(await pressed(press('ask:y:cccc3333', { id: 666, is_bot: false, first_name: 'Stranger' }, 9, { id: -999, type: 'supergroup', title: 'Elsewhere' })), undefined);
+  assert.deepEqual(calls.slice(before).map((c) => c.method), Array(5).fill('answerCallbackQuery'));
+  assert.equal(of(calls, 'editMessageReplyMarkup').length, 3);
+});
+
+test('unknown buttons in a routed chat go only at a press by someone the chat hears', async (t) => {
+  const { BUTTON_GONE_LINE } = await import('../src/core/deliver/text.js');
+  // This group hears its owner only (no allow_from).
+  const { tg, calls, until } = await asking(t, {}, { route: { allow_from: [] } });
+  const answers = () => of(calls, 'answerCallbackQuery').map((p) => p.text);
+  await tg.bot.handleUpdate(press('ask:y:cccc3333', ANN, 444));
+  await until(() => answers().length === 1, 'the member\'s press answered');
+  assert.deepEqual(answers(), [undefined]);
+  assert.deepEqual(of(calls, 'editMessageReplyMarkup'), []);
+  await tg.bot.handleUpdate(press('ask:y:cccc3333', SAM, 444));
+  await until(() => of(calls, 'editMessageReplyMarkup').length === 1, 'the owner\'s press removed them');
+  assert.deepEqual(answers(), [undefined, BUTTON_GONE_LINE]);
+  assert.deepEqual(of(calls, 'editMessageReplyMarkup'), [{ chat_id: '-100', message_id: 444, reply_markup: { inline_keyboard: [] } }]);
+});
+
+test('a channel gets no buttons, and a press there is nobody\'s yes: every subscriber is not an owner', async (t) => {
+  const { NOT_OWNER_LINE } = await import('../src/core/deliver/text.js');
+  // A channel routed for a job's lines: nobody writes there, a scheduled turn asks.
+  const { tg, o, f, calls, until, open } = await asking(t, {}, { route: { chat: -1005 }, chatKind: 'channel' });
+  const turn = o.injectTurn('telegram:-1005', `ASK:${A}`, false, undefined, 'job nightly');
+  await until(() => of(calls, 'sendMessage').length === 1, 'the request line in the channel');
+  assert.equal(of(calls, 'sendMessage')[0].reply_markup, undefined, 'no buttons');
+  assert.deepEqual(of(calls, 'getChat'), [{ chat_id: '-1005' }], 'the chat\'s kind was asked of Telegram');
+  const channel = { id: -1005, type: 'channel', title: 'Job log' };
+  await tg.bot.handleUpdate(press('ask:y:aaaa1111', { id: 666, is_bot: false, first_name: 'Subscriber' }, 501, channel));
+  await until(() => of(calls, 'answerCallbackQuery').length === 1, 'the press answered');
+  assert.deepEqual(f.answers, [], 'nothing approved');
+  assert.deepEqual(open(), [A]);
+  // And were there buttons on a channel's message, the one who pressed is held to the owners list: a
+  // channel is no private chat, where the chat's own user is the owner.
+  assert.deepEqual(o.pressed({ platform: 'telegram', chat: '-1005', sender: '666', isGroup: true }, A, true), { text: NOT_OWNER_LINE, over: false });
+  f.end();
+  await turn;
+});
+
+test('a press in a chat that is not private is held to the owners list whatever kind the chat is', async (t) => {
+  const { NOT_OWNER_LINE } = await import('../src/core/deliver/text.js');
+  const { tg, f, calls, texts, until } = await asking(t);
+  await tg.bot.handleUpdate(toBot(`ASK:${A}`));
+  await until(() => texts().length === 1, 'the request line');
+  // The message with the buttons is in a chat Telegram calls a channel.
+  await tg.bot.handleUpdate(press('ask:y:aaaa1111', ANN, 501, { id: -100, type: 'channel', title: 'Trip' }));
+  await until(() => of(calls, 'answerCallbackQuery').length === 1, 'the press answered');
+  assert.equal(of(calls, 'answerCallbackQuery')[0].text, NOT_OWNER_LINE);
+  assert.deepEqual(f.answers, []);
+  await tg.bot.handleUpdate(press('ask:y:aaaa1111', SAM, 501, { id: -100, type: 'channel', title: 'Trip' }));
+  await until(() => f.answers.length === 1, 'the owner\'s press');
+});
+
+test('a press while a request\'s line is still on its way out removes nothing: its message is not known yet', async (t) => {
+  let release!: () => void;
+  const hold = new Promise<void>((r) => { release = r; });
+  const { tg, f, calls, texts, until } = await asking(t, {}, { hold });
+  await tg.bot.handleUpdate(toBot(`ASK:${A}`));
+  await until(() => texts().length === 1, 'the send started');
+  // Telegram already shows message 501 to the chat; this adapter has not heard its id yet.
+  await tg.bot.handleUpdate(press('ask:y:aaaa1111'));
+  await until(() => of(calls, 'answerCallbackQuery').length === 1, 'the press answered');
+  assert.equal(of(calls, 'answerCallbackQuery')[0].text, undefined);
+  assert.deepEqual(of(calls, 'editMessageReplyMarkup'), []);
+  release();
+  await pause(30);
+  await tg.bot.handleUpdate(press('ask:y:aaaa1111'));
+  await until(() => f.answers.length === 1, 'the press after the send');
+  assert.deepEqual(f.answers, [[A, true]]);
+});
+
+test('the buttons go when the request is answered by typing, and when its turn ends with it still open; a failed removal is only logged', async (t) => {
+  const { tg, f, calls, logs, texts, until, open } = await asking(t);
+  tg.bot.api.config.use(async (prev, method, payload, signal) => {
+    if (method === 'editMessageReplyMarkup' && (payload as { message_id: number }).message_id === 502) return { ok: false, error_code: 400, description: 'Bad Request: message to edit not found' } as never;
+    return prev(method, payload, signal);
+  });
+  await tg.bot.handleUpdate(toBot(`ASK:${A},${B}`));
+  await until(() => texts().length === 2, 'two request lines');
+  assert.deepEqual(of(calls, 'sendMessage').map((p) => p.reply_markup.inline_keyboard[0][0].callback_data), ['ask:y:aaaa1111', 'ask:y:bbbb2222']);
+  await tg.bot.handleUpdate(toBot('yes aaaa1111'));
+  await until(() => f.answers.length === 1, 'the typed answer');
+  await until(() => of(calls, 'editMessageReplyMarkup').length === 1, 'the answered request\'s buttons removed');
+  assert.deepEqual(of(calls, 'editMessageReplyMarkup')[0], { chat_id: '-100', message_id: 501, reply_markup: { inline_keyboard: [] } });
+  assert.deepEqual(open(), [B]);
+  // The turn ends with B never answered (a /stop, a crash).
+  f.end();
+  await until(() => texts().at(-1) === 'done: aaaa=yes', 'the turn\'s end');
+  await until(() => logs.some((l) => l.startsWith('telegram: buttons not removed chat=-100: ')), 'the logged failure');
+  assert.deepEqual(open(), []);
+  assert.match(logs.find((l) => l.startsWith('telegram: buttons not removed'))!, /message to edit not found/);
 });

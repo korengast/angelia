@@ -54,7 +54,7 @@ test('grok: handshake, turn, progress before a tool call, permission relay both 
   assert.equal(b.version, '1.0.30');
   assert.deepEqual(await collect(b, 'PROGRESS'), [{ kind: 'progress', text: 'working on it' }, { kind: 'result', text: 'all done', isError: false }]);
   const ev = await collect(b, 'PERM', true);
-  assert.deepEqual(ev, [{ kind: 'permission', id: 'call-7f3a', tool: 'run_terminal_command', preview: 'rm -rf /tmp/x' }, { kind: 'result', text: 'tool allowed', isError: false }]);
+  assert.deepEqual(ev, [{ kind: 'permission', id: 'call-7f3a', tool: 'run_terminal_command', preview: 'rm -rf /tmp/x', request: { tool: 'Bash', input: { command: 'rm -rf /tmp/x' } } }, { kind: 'result', text: 'tool allowed', isError: false }]);
   const no = await collect(b, 'PERM', false);
   assert.equal((no[1] as any).text, 'tool denied');
   await b.stop();

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse, stringify } from 'yaml';
@@ -616,4 +616,68 @@ test('the deny floor covers Linux credential stores and both service folders', a
   assert.ok(deny.includes(pathRule('Read', join(home, '.claude/.credentials.json'), 'claude-code', home)));
   for (const d of ['.config/systemd/user', 'Library/LaunchAgents', '.local/share/keyrings', '.config/google-chrome', '.config/chromium', '.mozilla'])
     for (const tool of ['Read', 'Edit'] as const) assert.ok(deny.includes(pathRule(tool, `${join(home, d)}/**`, 'claude-code', home)), `${tool} ${d}`);
+});
+
+test('a profile key folder under keys/ is denied to every profile that does not name it', async () => {
+  const { Config } = await import('../src/instance/config/schema.js');
+  const home = mkdtempSync(join(tmpdir(), 'angelia-keys-home-'));
+  const state = join(home, '.angelia');
+  const cwd = (n: string) => join(state, 'workspace', 'profiles', n);
+  const cfg = Config.parse({
+    profiles: {
+      a: { cwd: cwd('a'), add_dirs: [join(state, 'keys', 'a')] },
+      b: { cwd: cwd('b'), add_dirs: [join(state, 'keys', 'b'), join(home, 'shared')] },
+      c: { cwd: cwd('c') },
+      all: { cwd: cwd('all'), add_dirs: [join(state, 'keys')] },
+    },
+    routes: [],
+  });
+  const has = (n: string, d: string) => profileFloor(cfg, n, state, home).some((r) => r.startsWith('Read(') && r.includes(join('keys', d)));
+  assert.ok(!has('a', 'a') && has('a', 'b'), 'a keeps its own, is denied b');
+  assert.ok(has('b', 'a') && !has('b', 'b'), 'b keeps its own, is denied a');
+  assert.ok(has('c', 'a') && has('c', 'b'), 'c names none: denied both');
+  assert.ok(!has('all', 'a') && !has('all', 'b'), 'a profile that names keys/ itself keeps both');
+  assert.ok(!profileFloor(cfg, 'c', state, home).some((r) => r.includes(join(home, 'shared'))), 'other add_dirs stay shared');
+});
+
+test('keys/: every entry on disk is denied too, relative add_dirs are read from the profile folder, a directory capability counts', async () => {
+  const { Config } = await import('../src/instance/config/schema.js');
+  const home = mkdtempSync(join(tmpdir(), 'angelia-keys2-home-'));
+  const state = join(home, '.angelia');
+  const cwd = (n: string) => join(state, 'workspace', 'profiles', n);
+  mkdirSync(join(state, 'keys', 'loose'), { recursive: true });
+  writeFileSync(join(state, 'keys', 'token.txt'), 'x');
+  for (const n of ['a', 'b']) mkdirSync(cwd(n), { recursive: true });
+  const cfg = Config.parse({
+    profiles: {
+      a: { cwd: cwd('a'), add_dirs: ['../../../keys/a'] },
+      b: { cwd: cwd('b') },
+    },
+    routes: [],
+  });
+  const rules = (n: string) => profileFloor(cfg, n, state, home).filter((r) => r.startsWith('Read('));
+  const has = (n: string, d: string) => rules(n).some((r) => r.includes(join('keys', d)));
+  assert.ok(has('b', 'loose') && has('b', 'token.txt'), 'entries nobody names in the table: denied to all');
+  assert.ok(rules('b').some((r) => r.includes('token.txt') && !r.includes('token.txt/**')), 'a file is denied as itself');
+  assert.ok(has('b', 'a'), 'a relative add_dirs entry is read from its profile folder');
+  assert.ok(!has('a', 'a') && has('a', 'loose'), 'a keeps its own, by its relative add_dirs');
+});
+
+test('keys/: a wider grant does not lift it, a link is denied by name and target, a key folder made after the compile is flagged', async () => {
+  const { Config } = await import('../src/instance/config/schema.js');
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'angelia-keys3-home-')));
+  const state = join(home, '.angelia');
+  const cwd = join(state, 'workspace', 'profiles', 'w');
+  mkdirSync(join(cwd, '.claude'), { recursive: true });
+  mkdirSync(join(state, 'keys'), { recursive: true });
+  mkdirSync(join(home, 'elsewhere'));
+  symlinkSync(join(home, 'elsewhere'), join(state, 'keys', 'linked'));
+  const cfg = Config.parse({ profiles: { w: { cwd, add_dirs: [home, '/'] } }, routes: [] });
+  const rules = profileFloor(cfg, 'w', state, home).filter((r) => r.startsWith('Read('));
+  assert.ok(rules.some((r) => r.includes(join('keys', 'linked'))), 'home and / in add_dirs do not lift keys/');
+  assert.ok(rules.some((r) => r.includes('elsewhere')), 'the link target is denied too');
+  writeFileSync(join(cwd, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: profileFloor(cfg, 'w', state, home) } }));
+  assert.deepEqual(floorWarnings(cfg, state, home), [], 'compiled: no warning');
+  mkdirSync(join(state, 'keys', 'new'));
+  assert.match(floorWarnings(cfg, state, home).join('\n'), /profiles\.w: .*deny rules missing/, 'a key folder made after the compile is flagged');
 });

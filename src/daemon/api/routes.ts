@@ -104,7 +104,7 @@ const ProfileSchema = z.object({
   model: z.string().nullable(),
   folder: z.string(),
   chats: z.array(z.object({ chat: z.string(), session: z.string().nullable(), sessions: z.array(z.string()) })),
-  settings: z.record(z.string(), z.unknown()).describe('The table\'s settings for the profile. Its keys may grow.'),
+  settings: z.record(z.string(), z.unknown()).describe('The table\'s settings for the profile. Its keys may grow. `permission_prompts`: `chat` (requests are asked, or approved by a rule) or `deny` (the default refuses: refused at once, nothing to answer). `permissions`: `{ default, refuse, ask, approve }`, the default (refuse | ask | approve) and the rules that beat it, in Claude Code\'s rule syntax.'),
 });
 
 const JobsSchema = z.object({

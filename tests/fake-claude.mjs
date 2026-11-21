@@ -154,7 +154,7 @@ rl.on('line', (line) => {
     out({ type: 'result', subtype: 'success', is_error: false, result: `env: ${seen.join(' ') || 'none'}`, session_id: sid });
     return;
   }
-  const result = text.includes('EMPTY') ? '' : process.env.FAKE_CLAUDE_ECHO_ARGV ? `argv: ${process.argv.slice(2).join(' ')}` : `echo: ${text}`;
+  const result = text.includes('SAYSILENT') ? '[SILENT]' : text.includes('EMPTY') ? '' : process.env.FAKE_CLAUDE_ECHO_ARGV ? `argv: ${process.argv.slice(2).join(' ')}` : `echo: ${text}`;
   out({ type: 'assistant', message: { content: [{ type: 'text', text: result }] } });
   out({ type: 'result', subtype: 'success', is_error: false, result, session_id: sid });
 });

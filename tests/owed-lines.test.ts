@@ -91,3 +91,11 @@ test('"Could not attach that file" that cannot be sent either is dropped, not ke
   assert.equal(sent.length, 1, 'the status answer alone');
   assert.ok(!sent.some((s) => s.includes('could not be delivered earlier') || s.includes('Could not attach')), sent.join('\n'));
 });
+
+test('an answer that is exactly [SILENT] posts nothing, not even the no-answer line', async (t) => {
+  const { o, sent, log } = setupWithLog(); t.after(() => o.shutdown());
+  await o.handle(dm('1', 'SAYSILENT'));
+  assert.deepEqual(sent, []);
+  assert.ok(log.includes('silent key=telegram:1'));
+  assert.ok(!log.some((l) => l.startsWith('no answer')));
+});

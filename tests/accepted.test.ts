@@ -147,3 +147,13 @@ test('compile --write works only from an accepted table, and accepts nothing its
   assert.match(r.stderr, /not written: the routing table has 1 change\(s\) not accepted yet:\n  profiles\.other\.shell: false → true\n.*angelia accept/s);
   assert.equal(readAccepted(state)!.profiles.other.shell, false);
 });
+
+test('a table accepted with permission_prompts: chat written out is no change against one without it', async () => {
+  const { Config } = await import('../src/instance/config/schema.js');
+  const { tableChanges } = await import('../src/instance/accepted.js');
+  const was = Config.parse({ profiles: { a: { cwd: '/x', permission_prompts: 'chat' } }, routes: [] });
+  const now = Config.parse({ profiles: { a: { cwd: '/x' } }, routes: [] });
+  assert.deepEqual(tableChanges(was, now), []);
+  const deny = Config.parse({ profiles: { a: { cwd: '/x', permission_prompts: 'deny' } }, routes: [] });
+  assert.deepEqual(tableChanges(deny, now), ['profiles.a.permission_prompts: removed'], 'deny to nothing is a real change');
+});

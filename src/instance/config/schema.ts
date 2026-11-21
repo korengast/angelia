@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseRule, type PermissionPolicy } from '../../core/permission-rules.js';
 
 export const PermissionMode = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan']);
 export const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -29,10 +30,38 @@ export const Capability = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('directory'), path: z.string().min(1), when: z.string().optional() }).strict(),
 ]);
 
+/** One permission rule, in Claude Code's own syntax (`Bash(git push *)`, `Read(~/.ssh/**)`, `mcp__gh`):
+ *  a fixed pattern Angelia matches in code (core/permission-rules.ts). One it cannot check fails the load. */
+const PermissionRule = z.string().superRefine((s, ctx) => {
+  const r = parseRule(s);
+  if (typeof r === 'string') ctx.addIssue({ code: 'custom', message: r });
+});
+const PermissionRules = z.array(PermissionRule).default([]);
+export const PermissionLevel = z.enum(['refuse', 'ask', 'approve']);
+/** What Angelia does with a request the CLI asks about (docs/reference.md, Permission levels). A word
+ *  alone is the default with no rules. Rules beat the default; refuse is checked first, then ask, then
+ *  approve. Named levels: refuse all = refuse; refuse some = ask + refuse rules; ask all = ask; ask
+ *  some = ask + approve rules; approve all = approve. */
+export const Permissions = z.union([
+  PermissionLevel,
+  z.object({ default: PermissionLevel.default('ask'), refuse: PermissionRules, ask: PermissionRules, approve: PermissionRules }).strict(),
+]);
+
+/** The profile's permission levels, from `permissions` or the older `permission_prompts` (chat is
+ *  ask, deny is refuse). The load refuses a profile whose two disagree (Profile's check). */
+export function permissionPolicy(p: { permissions?: z.infer<typeof Permissions>; permission_prompts?: 'chat' | 'deny' }): PermissionPolicy {
+  const v = p.permissions;
+  if (typeof v === 'string') return { default: v, refuse: [], ask: [], approve: [] };
+  if (v) return { default: v.default, refuse: v.refuse, ask: v.ask, approve: v.approve };
+  return { default: p.permission_prompts === 'deny' ? 'refuse' : 'ask', refuse: [], ask: [], approve: [] };
+}
+
 export const BACKENDS = ['claude-code', 'grok', 'pi', 'codex'] as const;
 // One word that cannot pass for a flag: it goes on the CLI's command line, and needs no confirm (accepted.ts).
 const Model = z.string().regex(/^[^\s-]\S*$/, 'a model name: one word, not starting with -');
 
+const SessionPrefix = z.string().regex(/^angelia(-[A-Za-z0-9]+)*$/, 'session_prefix: angelia, or angelia- and letters, digits and dashes (angelia-vps): Angelia finds its own panes by that start')
+  .refine((s) => !/^angelia-canary(-|$)/i.test(s), 'session_prefix: angelia-canary is the self-test\'s own');
 export const Profile = z.object({
   cwd: z.string(),
   /** Capabilities this profile gets on top of defaults.capabilities; they also lift a default deny. */
@@ -42,9 +71,11 @@ export const Profile = z.object({
   /** Denied on top of defaults.deny. A profile's own deny beats everything. */
   deny: z.array(z.string()).default([]),
   permission_mode: PermissionMode.default('acceptEdits'),
-  /** What a permission request does. chat: ask the owners in the chat (yes/no <code>). deny: refuse it
-   *  at once without asking; the agent hears "not permitted" and tells the chat in its own words. */
-  permission_prompts: z.enum(['chat', 'deny']).default('chat'),
+  /** The older form of `permissions`. chat: ask the owners in the chat (yes or no), as `permissions: ask`.
+   *  deny: refuse it at once without asking, as `permissions: refuse`; the agent hears "not permitted". */
+  permission_prompts: z.enum(['chat', 'deny']).optional(),
+  /** Per request the CLI asks about: refuse it, ask the chat, or approve it, by rules and a default. */
+  permissions: Permissions.optional(),
   model: Model.optional(),
   effort: Effort.optional(),
   add_dirs: z.array(z.string()).default([]),
@@ -53,6 +84,9 @@ export const Profile = z.object({
   shell_timeout_seconds: z.number().positive().max(2_000_000).default(60),
   /** Launch the agent with Claude in Chrome (--chrome): browser tools inside the user's everyday Chrome. */
   chrome: z.boolean().default(false),
+  /** The start of this profile's tmux pane and Remote Control name: <prefix>-<folder>-<id>. Unset:
+   *  defaults.session_prefix, else angelia. Tells several instances apart in the Claude app. */
+  session_prefix: SessionPrefix.optional(),
   /** Which local CLI answers this profile. claude-code: Claude Code. grok: Grok Build. pi: pi. codex: Codex. */
   backend: z.enum(BACKENDS).default('claude-code'),
   /** The backend's executable, when it is not `claude` / `grok` / `pi` / `codex` on PATH or in the usual
@@ -97,7 +131,13 @@ export const Profile = z.object({
    *  _capabilities/ (the skills and tools every profile runs). Default no: an agent that could edit
    *  them would reach every other profile. Give it to the one profile that keeps the instance. */
   shared_write: z.boolean().default(false),
-}).strict();
+}).strict().superRefine((p, ctx) => {
+  if (!p.permission_prompts || !p.permissions) return;
+  const said = p.permission_prompts === 'deny' ? 'refuse' : 'ask';
+  if (permissionPolicy({ permissions: p.permissions }).default !== said) {
+    ctx.addIssue({ code: 'custom', path: ['permissions'], message: `permission_prompts: ${p.permission_prompts} means a default of ${said}, and permissions says ${permissionPolicy({ permissions: p.permissions }).default}. Keep one: permissions replaces permission_prompts` });
+  }
+});
 
 const Id = z.union([z.string(), z.number()]).transform(String);
 
@@ -169,6 +209,9 @@ export const Config = z.object({
        *  through add_dirs: a profile, or one chat (`whatsapp:<id>`), which then is also the pick when
        *  that profile has several chats. The chat gets a brief and the project's path. Unset: refused. */
       handoff: z.string().optional(),
+      /** The start of every profile's tmux pane and Remote Control name, unless the profile sets its
+       *  own: angelia-vps gives angelia-vps-<folder>-<id>. Default angelia. */
+      session_prefix: SessionPrefix.optional(),
     })
     .strict()
     .prefault({}),

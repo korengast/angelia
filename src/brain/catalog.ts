@@ -23,6 +23,7 @@ export interface Catalog {
 
 export const LABELS: Record<BackendName, string> = { 'claude-code': 'Claude Code', grok: 'Grok Build', codex: 'Codex', pi: 'pi' };
 
+/** From the largest model to the smallest: the canary takes the last as the cheapest (canary.ts). */
 const CLAUDE: Catalog = {
   models: [{ id: 'fable' }, { id: 'opus' }, { id: 'sonnet' }, { id: 'haiku' }],
   efforts: ['low', 'medium', 'high', 'xhigh', 'max'],

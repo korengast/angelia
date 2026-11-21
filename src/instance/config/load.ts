@@ -3,7 +3,8 @@ import { homedir } from 'node:os';
 import { dirname, resolve, join } from 'node:path';
 import { parse } from 'yaml';
 import type { z } from 'zod';
-import { Config, Profile } from './schema.js';
+import { Config, Profile, permissionPolicy } from './schema.js';
+import { checkable } from '../../core/permission-rules.js';
 import { expandHome, isInside } from '../../core/paths.js';
 import { isGroupChat } from '../../core/types.js';
 import { EVERYONE } from '../../core/router/gate.js';
@@ -30,7 +31,15 @@ export function configWarnings(cfg: Config, workspace?: string): string[] {
     if (p.backend === 'pi' && !p.model) out.push(`profiles.${name}: backend pi with no model uses pi's own default provider, which may be one with no login here; set model: provider/model`);
     if (p.chrome && p.backend !== 'claude-code') out.push(`profiles.${name}: chrome: true is Claude Code only and is ignored by ${p.backend}`);
     // It reads like protection, and protects nothing: the mode never asks, so there is nothing to refuse.
-    if (p.permission_prompts === 'deny' && p.permission_mode === 'bypassPermissions') out.push(`profiles.${name}: permission_prompts: deny with bypassPermissions refuses nothing: that mode never asks. Pick a mode that asks (default or acceptEdits) for deny to refuse those requests`);
+    const pol = permissionPolicy(p);
+    const rules = [...pol.refuse, ...pol.ask, ...pol.approve];
+    if (p.permission_mode === 'bypassPermissions' && !p.permissions && p.permission_prompts === 'deny') out.push(`profiles.${name}: permission_prompts: deny with bypassPermissions refuses nothing: that mode never asks. Pick a mode that asks (default or acceptEdits) for deny to refuse those requests`);
+    else if (p.permission_mode === 'bypassPermissions' && (pol.default !== 'ask' || rules.length)) out.push(`profiles.${name}: permissions with bypassPermissions decides nothing: that mode never asks, so no request reaches the default or the rules. Pick a mode that asks (default or acceptEdits) for them to decide`);
+    // A rule the backend's requests do not carry enough to check never matches there: it neither
+    // refuses nor approves; the default decides (and approve all asks instead, when refuse or ask rules exist).
+    const blind = rules.filter((r) => !checkable(p.backend, r));
+    if (blind.length) out.push(`profiles.${name}: ${p.backend} does not tell Angelia enough to check ${blind.join(', ')}: on its requests ${blind.length === 1 ? 'that rule never matches' : 'those rules never match'} and the default (${pol.default}${pol.default === 'approve' && (pol.refuse.length || pol.ask.length) ? ', asked instead while refuse or ask rules exist' : ''}) decides`);
+    if (rules.length && p.backend === 'claude-code' && p.tui) out.push(`profiles.${name}: tmux mode: a permission dialog the hook did not relay (one read off the screen) cannot be checked against the rules and is never approved by them`);
   }
   const used = new Set(cfg.routes.map((r) => r.profile));
   for (const name of Object.keys(cfg.profiles)) {
@@ -141,6 +150,7 @@ export function loadConfig(path: string): Config {
   const cfg = parsed.data;
   removed.set(cfg, removedKeys(raw));
   for (const [name, p] of Object.entries(cfg.profiles)) {
+    if (p.session_prefix === undefined && cfg.defaults.session_prefix) p.session_prefix = cfg.defaults.session_prefix;
     p.cwd = resolve(expandHome(p.cwd));
     p.add_dirs = p.add_dirs.map((d) => resolve(expandHome(d)));
     if (!folderOrHidden(p.cwd)) throw new ConfigError(`profiles.${name}.cwd: not a directory: ${p.cwd}`);
@@ -172,6 +182,15 @@ export function loadConfig(path: string): Config {
     const p = cfg.profiles[r.profile];
     if (isGroupChat(r.platform, r.chat) && (p.permission_mode === 'bypassPermissions' || (p.backend === 'codex' && p.sandbox === false)) && r.allow_from.includes(EVERYONE) && !((p.sandbox && p.backend === 'claude-code') || (p.backend === 'codex' && p.sandbox !== false))) {
       throw new ConfigError(`routes[${i}] (${r.platform} ${r.chat}): a group on the profile ${r.profile}, open to every member (allow_from: "*"), that runs anything without asking and without a sandbox (bypassPermissions, or Codex with sandbox: false). List who may in allow_from, or keep a sandbox: sandbox: true on Claude Code, Codex's own by default (pi's does not stop a command from asking launchd or another app to act for it, so it does not count)`);
+    }
+    // Approving at once in a group of other people: anyone there could have the agent do what a rule
+    // passes, with no owner asked. Any approve rule or default fails the load there, unless unsafe_ok. A
+    // sandbox is no way out: under one, what is still asked is mostly the way out of it.
+    const pol = permissionPolicy(p);
+    const open = r.allow_from.includes(EVERYONE) || r.allow_from.some((x) => !r.owners.includes(x));
+    const wide = pol.default === 'approve' ? 'permissions: approve (every request approved at once)' : pol.approve.length ? `the approve rule${pol.approve.length > 1 ? 's' : ''} ${pol.approve.join(', ')}` : undefined;
+    if (isGroupChat(r.platform, r.chat) && open && wide && p.permission_mode !== 'bypassPermissions' && !p.unsafe_ok) {
+      throw new ConfigError(`routes[${i}] (${r.platform} ${r.chat}): a group on the profile ${r.profile} where people other than the owners talk to the agent, with ${wide}. Any of them could have the agent do what an approve rule passes, with nobody asked. Keep approvals to chats where only owners talk (list only owners in allow_from), or set unsafe_ok: true on the profile. A sandbox does not count: under one, the requests left to approve are mostly ways out of it`);
     }
     // A route for a platform the table does not set up passes the router and has nobody to reply
     // through: the daemon crashed in reply(), and the API answered with the raw TypeError.

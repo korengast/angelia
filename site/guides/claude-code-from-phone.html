@@ -2,7 +2,7 @@
   "title": "How to control Claude Code from your phone",
   "description": "Run Claude Code on your Mac and use it from WhatsApp or Telegram: install, pair a chat, approve commands and send voice notes. About ten minutes.",
   "date": "2026-10-18",
-  "updated": "2026-11-18",
+  "updated": "2026-11-20",
   "howto": { "totalTime": "PT10M" },
   "draft": false
 }-->
@@ -44,8 +44,8 @@ angelia compile main --write</code></pre>
 <h2 id="approvals">Step 4: approve commands from the phone</h2>
 <p>With <code>permission_mode: acceptEdits</code>, Claude Code edits files on its own and asks before it runs other commands. The question comes to the chat:</p>
 <pre><code>🔐 Bash: npm test
-Reply "yes 6b480a6f" or "no 6b480a6f".</code></pre>
-<p>Answer <code>yes 6b480a6f</code> and the turn goes on. No answer in ten minutes means no. Only the chat's owners can approve, so a group member cannot say yes for you. More in <a href="/guides/claude-code-phone-notifications/">notifications and approvals on your phone</a>.</p>
+Reply "yes" or "no". (request 6b480a6f)</code></pre>
+<p>Answer <code>yes</code> and the turn goes on. In a group, reply to the request's message or mention the bot. No answer in ten minutes means no. Only the chat's owners can approve, so a group member cannot say yes for you. More in <a href="/guides/claude-code-phone-notifications/">notifications and approvals on your phone</a>.</p>
 
 <h2 id="while-it-works">While it works</h2>
 <ul>

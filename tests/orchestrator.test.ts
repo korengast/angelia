@@ -71,7 +71,7 @@ test('only the agent\'s answer and angelia send may tag group members: progress,
   calls.length = 0;
   const p = o.handle(g('PERM do it'));
   await new Promise((r) => setTimeout(r, 300));
-  const id = /yes ([0-9a-f-]+)/.exec(calls.at(-1)!.text)![1];
+  const id = /request ([0-9a-f-]+)/.exec(calls.at(-1)!.text)![1];
   assert.equal(calls.at(-1)!.mentions, false, 'the permission prompt');
   await o.handle(g(`yes ${id}`));
   await p;
@@ -90,7 +90,7 @@ test('permission relay through the chat, and a crash yields the failure line onc
   const p = o.handle(dm('1', 'PERM do it'));
   await new Promise((r) => setTimeout(r, 300));
   const line = sent.at(-1)!.text;
-  const id = /yes ([0-9a-f-]+)/.exec(line)![1];
+  const id = /request ([0-9a-f-]+)/.exec(line)![1];
   await o.handle(dm('1', `yes ${id}`));
   await p;
   assert.equal(sent.at(-1)!.text, 'tool allowed: rm -rf /tmp/x');
@@ -105,14 +105,14 @@ test('a turn that ends empty after a denied request says so; after an allowed on
   await o.handle(dm('1', 'warm up'));
   let p = o.handle(dm('1', 'PERMQUIET do it'));
   await new Promise((r) => setTimeout(r, 300));
-  let id = /no ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
+  let id = /request ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
   await o.handle(dm('1', `no ${id}`));
   await p;
   assert.equal(sent.at(-1)!.text, DENIED_LINE);
   // The denial belongs to that turn only: the next quiet end, with a yes, gets the plain line.
   p = o.handle(dm('1', 'PERMQUIET again'));
   await new Promise((r) => setTimeout(r, 300));
-  id = /yes ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
+  id = /request ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
   await o.handle(dm('1', `yes ${id}`));
   await p;
   assert.equal(sent.at(-1)!.text, NO_ANSWER_LINE);
@@ -214,7 +214,7 @@ test('in a group, only an owner can answer a permission prompt', async (t) => {
   await o.handle(g('warm up', 'u1'));
   const p = o.handle(g('PERM do it', 'u1'));
   await new Promise((r) => setTimeout(r, 300));
-  const id = /yes ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
+  const id = /request ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
   await o.handle(g(`yes ${id}`, 'intruder'));
   assert.equal(sent.at(-1)!.text, 'Only an owner of this chat can do that.');
   await o.handle(g(`no ${id}`, 'u1'));
@@ -232,8 +232,8 @@ test('red team: strangers are dropped silently, a group member cannot approve or
   await o.handle(grp('/sh id', 'stranger'));
   assert.match(sent.at(-1)!.text, /Only an owner/);
   const pending = o.handle(grp('PERM', 'u1'));
-  while (!/yes [0-9a-f]{8}/.test(sent.at(-1)?.text ?? '')) await new Promise((r) => setTimeout(r, 10));
-  const id = /yes ([0-9a-f]{8})/.exec(sent.at(-1)!.text)![1];
+  while (!/request [0-9a-f]{8}/.test(sent.at(-1)?.text ?? '')) await new Promise((r) => setTimeout(r, 10));
+  const id = /request ([0-9a-f]{8})/.exec(sent.at(-1)!.text)![1];
   await o.handle(grp(`yes ${id}`, 'stranger'));
   assert.match(sent.at(-1)!.text, /Only an owner/);
   await o.handle(grp(`no ${id}`, 'u1'));
@@ -361,7 +361,7 @@ test('a permission request nobody answers is denied, and the chat is told', asyn
   const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE } });
   t.after(() => o.shutdown());
   await o.handle(dm('1', 'PERMWHY do it'));
-  const id = /yes ([0-9a-f]{8})/.exec(sent[0])![1];
+  const id = /request ([0-9a-f]{8})/.exec(sent[0])![1];
   assert.ok(sent.includes(`No answer to the permission request in time, so it was denied. (${id})`), sent.join(' | '));
   assert.equal(sent.at(-1), 'tool denyed: Denied from chat', 'the agent got the plain deny: the owner may still ask for it again');
 });
@@ -381,7 +381,7 @@ test('permission_prompts: deny refuses every request at once: nothing is asked i
   await o.handle(dm('1', 'PERMWHY do it'));
   assert.deepEqual(asked(), [], 'no prompt line');
   assert.equal(sent.at(-1)!.text, `tool denyed: ${AUTO_DENY_MESSAGE}`, 'the agent got the refusal, with why');
-  assert.equal(logs.filter((l) => /^permission auto-denied key=telegram:1 tool=Bash$/.test(l)).length, 1, logs.join('\n'));
+  assert.equal(logs.filter((l) => /^permission auto-denied key=telegram:1 tool=Bash by=default refuse$/.test(l)).length, 1, logs.join('\n'));
   // The agent says nothing after the refusal: the chat hears the turn is over.
   await o.handle(dm('1', 'PERMQUIET do it'));
   assert.deepEqual(asked(), []);
@@ -390,7 +390,7 @@ test('permission_prompts: deny refuses every request at once: nothing is asked i
   await o.handle(dm('2', 'warm up'));
   const p = o.handle(dm('2', 'PERMWHY do it'));
   await new Promise((r) => setTimeout(r, 300));
-  const id = /no ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
+  const id = /request ([0-9a-f-]+)/.exec(sent.at(-1)!.text)![1];
   await o.handle(dm('2', `no ${id}`));
   await p;
   assert.equal(asked().length, 1);

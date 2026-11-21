@@ -173,7 +173,7 @@ Back at your desk? In a Claude Code chat, `/status` ends with a line such as `cd
 An assistant that can read your files can be talked into reading them aloud. Read the [security model](docs/security.md) before you give the bot to anyone but yourself.
 
 - Only chats in the table reach the agent. In a group, only the owners are heard unless you name others.
-- Only owners approve commands, change the session or restart. A group member's typed "yes" is refused.
+- Only owners approve commands, change the session or restart. A group member's "yes" approves nothing.
 - What the agent may do is its CLI's own permission mode. For a profile other people talk to, keep a cautious mode or set `sandbox: true`.
 - Prompt injection is not solved: a web page or a forwarded message can still talk the agent into anything its permission mode allows.
 

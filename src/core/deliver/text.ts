@@ -18,6 +18,11 @@ export const PERMISSION_TIMEOUT_LINE = 'No answer to the permission request in t
  *  and pi can all end a turn with an empty final too. One line, so the chat knows the turn is over. */
 export const DENIED_LINE = 'Denied; the agent stopped.';
 export const NO_ANSWER_LINE = 'The agent ended its turn without an answer. Send your message again, or /new for a fresh session.';
+/** tmux mode: the agent's answers to turns it started by itself (the end of a background task), past
+ *  the hourly cap for one chat. Said at most once an hour; the answers past the cap are not kept. */
+export function selfCapLine(max: number): string {
+  return `The agent keeps reporting by itself, as its background work ends: ${max} such messages reached this chat in the last hour, so more are held back. Ask it for what you miss.`;
+}
 export const UNMATCHED_LINE = '[Angelia] This chat is not routed to a profile.';
 export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
 /** A chat answer to a request no hook waits for any more (it stepped aside when the chat stopped
@@ -34,15 +39,21 @@ export function autoDenyCapLine(max: number): string {
 export const AUTO_DENY_FAILED_LINE = 'Claude asked for a permission this profile refuses, but the refusal could not reach it. Answer it in the Claude app or in its pane.';
 export const LATE_ANSWER_LINE = 'Too late: that request is no longer waiting for the chat. If Claude still asks, answer it in the Claude app or in its pane.';
 
+/** The request as the chat sees it. A bare "yes" or "no" answers it where that cannot land on another
+ *  request (orchestrator.ts, bareAnswer); "yes <id>" names it outright and works in every case. */
 export function permissionLine(id: string, tool: string, preview: string): string {
-  const short = id.slice(0, 8);
-  return `🔐 ${tool}: ${preview}\nReply "yes ${short}" or "no ${short}".`;
+  return `🔐 ${tool}: ${preview}\nReply "yes" or "no". (request ${shortId(id)})`;
 }
+
+/** A request's id as the chat is shown it. */
+export function shortId(id: string): string { return id.slice(0, 8); }
 
 // Ids are not all hex: Grok Build's are `call-…`, and the chat is shown their first eight characters.
 // A digit or a dash marks an id, so "yes please" stays a message. A comma, full stop or exclamation
 // mark may follow the id ("yes d640cc6a.").
 export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+((?=[0-9a-z_-]*[0-9-])[0-9a-z_-]{5,40})[.,!]*\s*$/i;
+/** An answer with no id: the word alone, a full stop or exclamation mark after it at most. */
+export const BARE_ANSWER_RE = /^\s*(y|yes|n|no|כן|לא)[.!]*\s*$/i;
 
 export function parsePermissionReply(text: string): { id: string; allow: boolean } | null {
   // A group passes on only messages that @mention the bot, so the answer often carries one
@@ -51,6 +62,65 @@ export function parsePermissionReply(text: string): { id: string; allow: boolean
   const m = PERMISSION_REPLY_RE.exec(text.replace(/(^|\s)@\S+/g, ' '));
   if (!m) return null;
   return { id: m[2], allow: /^y/i.test(m[1]) };
+}
+
+/**
+ * yes / no / y / n / כן / לא and nothing else: true to allow, false to deny, null for any other text.
+ * Only the bot's own mention may stand beside the word (`botMentions`: the tokens the adapter read as
+ * naming the bot, Inbound.botMentions). An answer with an id names its request, so any mention may ride
+ * with it; a bare word names nothing, and "@someone yes" is said to someone. Whether the word answers
+ * anything is the orchestrator's to say (bareAnswer).
+ */
+export function parseBareAnswer(text: string, botMentions: string[] = []): boolean | null {
+  const own = new Set(botMentions.map((t) => t.toLowerCase()));
+  const rest = text.split(/\s+/).filter((w) => !own.has(w.toLowerCase().replace(/[.,!]+$/, ''))).join(' ');
+  const m = BARE_ANSWER_RE.exec(rest);
+  if (!m) return null;
+  return /^(y|כן)/i.test(m[1]);
+}
+
+/** A press on a request's button (Telegram) when the request is over: answered, timed out, or from before a restart. */
+export const BUTTON_GONE_LINE = 'That request is no longer waiting.';
+/** A bare answer, or a press, on a request posted a moment ago: it may have been meant for something
+ *  else, with the request appearing under it. Also a bare answer whose platform gave it no time. */
+export const READ_FIRST_LINE = 'That request only just arrived, so your answer was not taken for it. Read the request, then answer again.';
+
+type Asked = { id: string; tool: string; preview: string };
+const start = (preview: string, max = 60) => { const what = preview.replace(/\s+/g, ' ').trim(); return what.length > max ? `${what.slice(0, max)}…` : what; };
+
+/** A bare answer with several requests open: which they are, and the two ways to say which one. */
+export function whichOneLine(open: Asked[]): string {
+  return `Which one? ${open.length} requests are waiting:\n${open.map((r) => `${shortId(r.id)} ${r.tool}: ${start(r.preview)}`).join('\n')}\nAnswer "yes <id>" or "no <id>", or reply to the request's own message.`;
+}
+
+/** What a bare answer was taken for, said back to the chat: the word named no request, so the chat is
+ *  told which one it landed on. */
+export function answeredLine(allow: boolean, ask: Asked): string {
+  return `${pressedText(allow, ask)} (request ${shortId(ask.id)})`;
+}
+
+/** The same for a press on a button, in the press's own answer (Bot API: at most 200 characters). */
+export function pressedText(allow: boolean, ask: Pick<Asked, 'tool' | 'preview'>): string {
+  return `${allow ? 'Allowed' : 'Denied'}: ${ask.tool}: ${start(ask.preview)}`;
+}
+
+/**
+ * A bare answer in a chat where a request ended a moment ago with no answer from the chat (it timed
+ * out, was answered in the app or the pane, its turn ended): the word may have been typed for that one
+ * and sent late, which no clock here can tell (a phone that was offline sends it when it is back, and
+ * the platform stamps it then). So for a while a bare word answers nothing and is never passed to the
+ * agent. `open`: a request waits now, and this is how to answer it; `buttons`: its line has them.
+ */
+export function afterCloseLine(open: boolean, buttons: boolean): string {
+  if (!open) return 'Too late: that request is no longer waiting, and your word was not passed to the agent. If it was meant for the agent, say it in more words.';
+  return `A request in this chat ended a moment ago, so "yes" or "no" alone is not taken for a few minutes. Reply to the open request's own message${buttons ? ', press its button,' : ''} or answer with its id ("yes <id>").`;
+}
+
+/** A bare answer to a request that was in the chat, or came into it, around the time another one ended
+ *  with no answer from the chat: a word typed for that other one may arrive at any time while this
+ *  one waits, so this one takes no bare word at all. How to answer it instead. */
+export function followsCloseLine(buttons: boolean): string {
+  return `Another request in this chat ended without an answer around the time this one was asked, so "yes" or "no" alone is not taken for it. Reply to the request's own message${buttons ? ', press its button,' : ''} or answer with its id ("yes <id>").`;
 }
 
 /**

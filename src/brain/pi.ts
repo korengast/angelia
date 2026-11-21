@@ -12,6 +12,7 @@ import { PERMISSION_TITLE, type PiPolicy } from './pi-gate.js';
 import { LOST_SESSION_LINE } from './transcripts.js';
 import { tmuxSocketPath } from './tmux.js';
 import { cacheEnv, profileCacheDir } from './cache.js';
+import { piRequest } from './tool-request.js';
 
 type Msg = Record<string, any>;
 
@@ -249,7 +250,8 @@ export class PiBrain extends EventEmitter implements Brain {
             let input: Msg = {};
             try { input = JSON.parse(String(m.message ?? '{}')); } catch { /* shown as empty */ }
             this.permissions.add(id);
-            yield { kind: 'permission', id, tool, ...permissionPreview(previewInput(input)) };
+            const request = piRequest(tool, input);
+            yield { kind: 'permission', id, tool, ...permissionPreview(previewInput(input)), ...(request ? { request } : {}) };
           } else if (dialog) {
             // Another extension asking for a screen the chat does not have: dismissed, never left waiting.
             this.write({ type: 'extension_ui_response', id: m.id, cancelled: true });

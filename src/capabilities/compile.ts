@@ -1,11 +1,11 @@
-import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import type { Capability, Config, Profile } from '../instance/config/schema.js';
 import { resolveProfile } from './resolve.js';
 import { SELF_END, SELF_START, openAgentFile, rewriteAgentFile, upsertSelfBlock } from '../daemon/self.js';
 import { API_SOCKET, HOME_PRIVATE, INSTANCE_DIR, STATE_PRIVATE, commonDir, workspaceDir } from '../instance/instance.js';
-import { isInside, openNoFollow } from '../core/paths.js';
+import { expandHome, isInside, openNoFollow } from '../core/paths.js';
 import { codexUserMcpServers } from '../brain/codex-config.js';
 import { fileURLToPath } from 'node:url';
 
@@ -237,10 +237,52 @@ export function otherProfileRules(cfg: Config, name: string, home = homedir()): 
   return [...out];
 }
 
+/** Another profile's keys: every entry under the instance's keys/ (folders and files, read from disk at
+ *  compile) and every folder under keys/ that some profile names in add_dirs, denied to every profile
+ *  that does not reach it by its own folder, add_dirs or an allowed directory capability (counted the
+ *  way otherProfileRules counts them). Unlike other add_dirs, these are never shared: each holds one
+ *  profile's deploy or API keys. A relative add_dirs entry is read from its profile's folder; on macOS
+ *  paths are compared without regard to case, as the usual disk opens them. */
+export function keyRules(cfg: Config, name: string, stateDir: string, home = homedir()): string[] {
+  const p = cfg.profiles[name];
+  const fold = (x: string) => (process.platform === 'darwin' ? x.toLowerCase() : x);
+  const abs = (d: string, from: string) => resolve(from, expandHome(d, home));
+  const inside = (a: string, b: string) => isInside(fold(a), fold(b), home);
+  const keys = resolve(stateDir, 'keys');
+  const entries = new Map<string, boolean>(); // path -> is a plain file
+  try {
+    for (const e of readdirSync(keys, { withFileTypes: true })) {
+      const at = join(keys, e.name);
+      if (!e.isSymbolicLink()) { entries.set(at, e.isFile()); continue; }
+      // A link is denied by its name and by what it points at: the file tools follow it.
+      let file = false;
+      try { file = statSync(at).isFile(); entries.set(realpathSync(at), file); } catch { /* dangling: the name only */ }
+      entries.set(at, file);
+    }
+  } catch { /* no keys/ yet */ }
+  for (const q of Object.values(cfg.profiles)) {
+    for (const d of q.add_dirs) {
+      const a = abs(d, q.cwd);
+      if (fold(a) !== fold(keys) && inside(a, keys) && !entries.has(a)) entries.set(a, false);
+    }
+  }
+  const dirs = [...resolveProfile(cfg, name).allowed.values()].flatMap((c) => (c.kind === 'directory' ? [c.path] : []));
+  const reach = [p.cwd, ...p.add_dirs.map((d) => abs(d, p.cwd)), ...dirs.map((d) => abs(d, p.cwd))];
+  // Only a grant at keys/ or inside it lifts an entry, as a credential is lifted only by naming it: a
+  // wider grant (the home folder, /) does not. A profile folder inside an entry keeps it too.
+  const lifts = (e: string, r: string) => (inside(r, keys) && inside(e, r)) || inside(r, e);
+  const out = new Set<string>();
+  for (const [e, file] of entries) {
+    if (reach.some((r) => lifts(e, r))) continue;
+    for (const tool of ['Read', 'Edit'] as const) out.add(pathRule(tool, file ? e : glob(e), p.backend, home));
+  }
+  return [...out];
+}
+
 /** All a profile is denied whatever its capabilities: Angelia's state, your credentials, the other profiles. */
 export function profileFloor(cfg: Config, name: string, stateDir: string, home = homedir()): string[] {
   const p = cfg.profiles[name];
-  return [...new Set([...floorRules(p.backend, stateDir, home), ...credentialRules(p, home), ...otherProfileRules(cfg, name, home), ...sharedRules(p, stateDir, home)])];
+  return [...new Set([...floorRules(p.backend, stateDir, home), ...credentialRules(p, home), ...otherProfileRules(cfg, name, home), ...keyRules(cfg, name, stateDir, home), ...sharedRules(p, stateDir, home)])];
 }
 
 /** The workspace folders that reach every profile: _shared/ (doctrine their instructions import, the

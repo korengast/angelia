@@ -38,8 +38,8 @@ or \`angelia profile add <platform:chat> [name]\` makes one before anyone writes
 By hand:
 1. Create workspace/profiles/<name>/ with its instruction file, CLAUDE.md (every backend reads it).
 2. Add it under \`profiles:\` in routing.yaml. Fields: cwd, backend (claude-code | grok | pi | codex),
-   permission_mode (default | acceptEdits | bypassPermissions | plan), permission_prompts (chat |
-   deny: refuse every request the mode would ask, without asking the chat), model, effort, add_dirs,
+   permission_mode (default | acceptEdits | bypassPermissions | plan: which actions the CLI asks
+   about at all), permissions (what Angelia does with each of those requests; see below), model, effort, add_dirs,
    shell, shell_timeout_seconds, chrome, tui (claude-code only), media_tags, bin (the CLI's full
    path when it is not found), unsafe_ok, agent_commands (CLI slash commands every group member
    may send, e.g. [compact]), sandbox (claude-code: the CLI's own sandbox on, no escape; shell
@@ -64,6 +64,27 @@ By hand:
    the sandbox stops is the cue to add a folder to add_dirs (then compile and restart).
    \`sandbox: false\` gives it full access. It asks in the chat only to run something outside the
    sandbox. It reads CLAUDE.md (as a fallback for AGENTS.md). Its login is its own (\`codex login\`).
+   permissions: a default (refuse | ask | approve) and rules that beat it, checked in this order:
+   refuse, then ask, then approve. Rules are Claude Code's own syntax, fixed patterns matched in
+   code: Bash(git push *), Bash(npm run test:*), Read(~/.ssh/**), Edit(src/**),
+   WebFetch(domain:example.com), mcp__server, mcp__server__tool, Agent(Explore). The five levels:
+     refuse all   permissions: refuse
+     refuse some  permissions: { default: ask, refuse: [Bash(rm *), Bash(git push *)] }
+     ask all      permissions: ask   (the default)
+     ask some     permissions: { default: ask, approve: [Bash(git status), Bash(git log *)] }
+     approve all  permissions: approve
+   Refused: the agent hears "not permitted" and says so in its own words. Approved: it runs at
+   once, nothing is posted. Asked: the chat gets a yes or no question; only an owner's answer counts.
+   A shell approve rule passes only a plain line (words, quoted strings with no $, joined by
+   &&, || or |, every part approved); anything else is asked. An approve rule covers every
+   argument of its command, also options that write files or run programs (git log --output,
+   git grep -O, find, rg --pre, sort -o, tar): approve only commands whose every option is fine. A shell refuse or ask rule matches
+   if any part does; that is best effort: a hard limit belongs in deny rules or the sandbox.
+   Codex and Grok requests carry only shell commands, pi's also file paths: check-config names a
+   rule a backend cannot check, and it never matches there. The load refuses any approve (a
+   default or a rule) in a group where others talk to the agent, unless the profile sets
+   unsafe_ok (a sandbox does not count). A turn another profile started is never auto-approved.
+   The older permission_prompts: chat | deny is ask | refuse.
 3. Route a chat to it (\`angelia guide routing\`).
 4. The owner accepts the table: \`angelia accept\` on the host, or /restart, then /restart confirm.
 5. \`angelia compile <name> --write\`: the deny floor. The daemon starts no agent for a profile
@@ -113,6 +134,18 @@ lines and Angelia's own lines never tag.
 
 A turn whose CLI gives no output for defaults.turn_stall_minutes (60; 0 for never) is stopped and the
 chat told; at half of it the chat hears that it may be stuck. tmux turns are not stopped.
+
+What reaches the chat is the answer to a message. On a tmux profile (tui: true) one more thing does:
+when a background task or a subagent you started in a turn of the chat ends and Claude Code wakes
+you with its notification, what you answer then is sent to the chat as your message. Do not also post that
+result with \`angelia send\`: the chat would get it twice. Answer [SILENT] when there is nothing to
+tell. At most 6 such messages an hour reach one chat; past that the chat is told that more are held
+back. Only while Angelia reads the session: until defaults.idle_exit_minutes (30) pass with no
+message from the chat and no turn woken by the end of such work. It does not hold for a prompt you scheduled inside the
+session, a teammate's message, in print mode, or when the daemon restarted while the
+task ran: there your words stay in the session, so post the result with \`angelia send\`. For work
+on a schedule use a job (\`angelia guide jobs\`). A turn typed in the Claude app is never sent to
+the chat.
 
 An unknown chat is dropped (defaults.unmatched), or with unmatched: onboard an owner's first message
 there (in a group, one that mentions the bot) makes its profile (\`angelia guide onboard\`). The daemon reads the table only at start:
