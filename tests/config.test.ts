@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
-import { Config } from '../src/instance/config/schema.js';
+import { Config, permissionPolicy } from '../src/instance/config/schema.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, ConfigError, configWarnings } from '../src/instance/config/load.js';
@@ -29,7 +29,7 @@ telegram: {}
 `));
   assert.equal(Object.keys(cfg.profiles).length, 2);
   assert.equal(cfg.profiles.family.permission_mode, 'acceptEdits');
-  assert.equal(cfg.profiles.family.permission_prompts, 'chat', 'a request is asked in the chat unless the profile says deny');
+  assert.deepEqual(permissionPolicy(cfg.profiles.family), { default: 'ask', refuse: [], ask: [], approve: [] }, 'a request is asked in the chat unless the profile says otherwise');
   assert.equal(cfg.routes[1].chat, '123');
   assert.equal(cfg.defaults.unmatched, 'drop');
   assert.equal(cfg.defaults.max_out_per_min, 10);
@@ -320,4 +320,63 @@ profiles:
   family: { cwd: $DIR/fam, session_prefix: angelia-canary }
 routes: []
 `)), /self-test/);
+});
+
+test('permissions: a word or a default with rules; permission_prompts still works and must agree', () => {
+  const load = (fields: string) => loadConfig(fixture(`
+profiles:
+  p: { cwd: $DIR/fam${fields} }
+routes:
+  - { platform: telegram, chat: 1, profile: p }
+telegram: {}
+`)).profiles.p;
+  assert.deepEqual(permissionPolicy(load(', permissions: approve')), { default: 'approve', refuse: [], ask: [], approve: [] });
+  assert.deepEqual(permissionPolicy(load(', permission_prompts: deny')), { default: 'refuse', refuse: [], ask: [], approve: [] });
+  assert.deepEqual(permissionPolicy(load(', permissions: { refuse: ["Bash(rm *)"], approve: [Read] }')), { default: 'ask', refuse: ['Bash(rm *)'], ask: [], approve: ['Read'] });
+  assert.deepEqual(permissionPolicy(load(', permission_prompts: deny, permissions: { default: refuse, approve: [Read] }')).default, 'refuse', 'the two agree: loads');
+  assert.throws(() => load(', permission_prompts: chat, permissions: approve'), /permission_prompts: chat means a default of ask, and permissions says approve/);
+  assert.throws(() => load(', permissions: { refuse: ["Bash("] }'), /permissions\.refuse\.0: "Bash\(" is not a rule/);
+  assert.throws(() => load(', permissions: { refuse: ["Glob(*.ts)"] }'), /cannot check a specifier on Glob/);
+  assert.throws(() => load(', permissions: maybe'), /permissions/);
+  assert.throws(() => load(', permissions: { default: ask, allow: [Read] }'), /unknown key/);
+});
+
+test('any approve, a default or a rule, in a group with people other than the owners needs unsafe_ok, sandbox or not', () => {
+  const load = (fields: string, route: string) => loadConfig(fixture(`
+profiles:
+  p: { cwd: $DIR/fam${fields} }
+routes:
+  - { platform: whatsapp, chat: "1@g.us", profile: p, owners: ["1@s.whatsapp.net"]${route} }
+whatsapp: {}
+`));
+  const others = ', allow_from: ["2@s.whatsapp.net"]';
+  assert.throws(() => load(', permissions: approve', others), /people other than the owners.*permissions: approve/);
+  assert.throws(() => load(', permissions: { approve: [Bash] }', ', allow_from: ["*"]'), /the approve rule Bash/);
+  assert.throws(() => load(', permissions: { approve: ["Bash(*)"] }', others), /approve rule Bash\(\*\)/);
+  assert.throws(() => load(', permissions: { approve: ["Bash(git status)"] }', others), /approve rule Bash\(git status\)/, 'a narrow approve rule too');
+  assert.ok(load(', permissions: { approve: ["Bash(git status)"] }', ''), 'owners only: a rule loads');
+  assert.ok(load(', permissions: { default: ask, refuse: [Bash] }', others), 'refuse and ask rules load anywhere');
+  assert.ok(load(', permissions: approve', ''), 'owners only: loads');
+  assert.ok(load(', permissions: approve', ', allow_from: ["1@s.whatsapp.net"]'), 'allow_from naming only owners: loads');
+  assert.ok(load(', permissions: approve, unsafe_ok: true', others), 'unsafe_ok: loads');
+  assert.throws(() => load(', permissions: approve, sandbox: true', others), /sandbox does not count/, 'a sandbox is no way out: what is asked under it is the way out of it');
+});
+
+test('check-config warns on rules a backend cannot check and on permissions a bypass profile never uses', () => {
+  const cfg = Config.parse({
+    profiles: {
+      cx: { cwd: '.', backend: 'codex', permissions: { default: 'approve', refuse: ['Read(~/.ssh/**)', 'Bash(rm *)'] } },
+      by: { cwd: '.', permission_mode: 'bypassPermissions', permissions: 'refuse' },
+      tm: { cwd: '.', tui: true, permissions: { approve: ['Read'] } },
+      ok: { cwd: '.', permissions: { refuse: ['mcp__gh'] } },
+    },
+    routes: [],
+  });
+  const w = configWarnings(cfg);
+  assert.ok(w.some((l) => l.startsWith('profiles.cx: codex does not tell Angelia enough to check Read(~/.ssh/**): on its requests that rule never matches and the default (approve, asked instead while refuse or ask rules exist) decides')), w.join('\n'));
+  assert.ok(!w.some((l) => l.includes('Bash(rm *)')));
+  assert.ok(w.some((l) => l.startsWith('profiles.by: permissions with bypassPermissions decides nothing')));
+  assert.ok(w.some((l) => l.startsWith('profiles.tm: tmux mode: a permission dialog the hook did not relay')));
+  // Only the unrouted-profile warning: none about its permissions.
+  assert.ok(!w.some((l) => l.startsWith('profiles.ok:') && !l.includes('no route names it')), w.join('\n'));
 });

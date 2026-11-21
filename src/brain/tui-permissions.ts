@@ -136,7 +136,7 @@ function canonical(v: unknown): string {
 
 /** The chat's view of a request: its tool and its whole input, cut the way print mode cuts it. */
 export function relayedPermission(r: RelayedRequest): Extract<BrainEvent, { kind: 'permission' }> {
-  return { kind: 'permission', id: r.id, tool: r.tool, ...permissionPreview(r.input) };
+  return { kind: 'permission', id: r.id, tool: r.tool, ...permissionPreview(r.input), request: { tool: r.tool, input: r.input } };
 }
 
 /**

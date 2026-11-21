@@ -4,6 +4,7 @@ import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { grokArgv, childEnv } from './argv.js';
 import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
+import { grokRequest } from './tool-request.js';
 
 type Msg = Record<string, any>;
 
@@ -194,7 +195,8 @@ export class GrokBrain extends EventEmitter implements Brain {
           this.permissionRequests.set(id, { rpcId: m.id, allow: allow?.optionId, deny: deny?.optionId });
           this.permissions.add(id);
           const tool = String(tc._meta?.['x.ai/tool']?.name ?? tc.title ?? tc.kind ?? '?');
-          yield { kind: 'permission', id, tool, ...permissionPreview(tc.rawInput ?? tc.title ?? '') };
+          const request = grokRequest(tc);
+          yield { kind: 'permission', id, tool, ...permissionPreview(tc.rawInput ?? tc.title ?? ''), ...(request ? { request } : {}) };
           continue;
         }
         if (item.__kind === 'done') {

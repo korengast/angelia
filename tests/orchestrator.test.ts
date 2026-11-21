@@ -381,7 +381,7 @@ test('permission_prompts: deny refuses every request at once: nothing is asked i
   await o.handle(dm('1', 'PERMWHY do it'));
   assert.deepEqual(asked(), [], 'no prompt line');
   assert.equal(sent.at(-1)!.text, `tool denyed: ${AUTO_DENY_MESSAGE}`, 'the agent got the refusal, with why');
-  assert.equal(logs.filter((l) => /^permission auto-denied key=telegram:1 tool=Bash$/.test(l)).length, 1, logs.join('\n'));
+  assert.equal(logs.filter((l) => /^permission auto-denied key=telegram:1 tool=Bash by=default refuse$/.test(l)).length, 1, logs.join('\n'));
   // The agent says nothing after the refusal: the chat hears the turn is over.
   await o.handle(dm('1', 'PERMQUIET do it'));
   assert.deepEqual(asked(), []);

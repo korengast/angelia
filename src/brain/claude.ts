@@ -141,7 +141,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
           const id = String(l.request_id);
           this.permissions.add(id);
           this.requested.set(id, l.request.input);
-          yield { kind: 'permission', id, tool: String(l.request.tool_name ?? '?'), ...permissionPreview(l.request.input) };
+          yield { kind: 'permission', id, tool: String(l.request.tool_name ?? '?'), ...permissionPreview(l.request.input), request: { tool: String(l.request.tool_name ?? '?'), input: l.request.input } };
         } else if (l.type === 'result') {
           this.lastUsedAt = Date.now();
           yield { kind: 'result', text: String(l.result ?? '').trim(), isError: !!l.is_error };

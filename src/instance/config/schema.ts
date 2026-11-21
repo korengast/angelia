@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseRule, type PermissionPolicy } from '../../core/permission-rules.js';
 
 export const PermissionMode = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan']);
 export const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -29,6 +30,32 @@ export const Capability = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('directory'), path: z.string().min(1), when: z.string().optional() }).strict(),
 ]);
 
+/** One permission rule, in Claude Code's own syntax (`Bash(git push *)`, `Read(~/.ssh/**)`, `mcp__gh`):
+ *  a fixed pattern Angelia matches in code (core/permission-rules.ts). One it cannot check fails the load. */
+const PermissionRule = z.string().superRefine((s, ctx) => {
+  const r = parseRule(s);
+  if (typeof r === 'string') ctx.addIssue({ code: 'custom', message: r });
+});
+const PermissionRules = z.array(PermissionRule).default([]);
+export const PermissionLevel = z.enum(['refuse', 'ask', 'approve']);
+/** What Angelia does with a request the CLI asks about (docs/reference.md, Permission levels). A word
+ *  alone is the default with no rules. Rules beat the default; refuse is checked first, then ask, then
+ *  approve. Named levels: refuse all = refuse; refuse some = ask + refuse rules; ask all = ask; ask
+ *  some = ask + approve rules; approve all = approve. */
+export const Permissions = z.union([
+  PermissionLevel,
+  z.object({ default: PermissionLevel.default('ask'), refuse: PermissionRules, ask: PermissionRules, approve: PermissionRules }).strict(),
+]);
+
+/** The profile's permission levels, from `permissions` or the older `permission_prompts` (chat is
+ *  ask, deny is refuse). The load refuses a profile whose two disagree (Profile's check). */
+export function permissionPolicy(p: { permissions?: z.infer<typeof Permissions>; permission_prompts?: 'chat' | 'deny' }): PermissionPolicy {
+  const v = p.permissions;
+  if (typeof v === 'string') return { default: v, refuse: [], ask: [], approve: [] };
+  if (v) return { default: v.default, refuse: v.refuse, ask: v.ask, approve: v.approve };
+  return { default: p.permission_prompts === 'deny' ? 'refuse' : 'ask', refuse: [], ask: [], approve: [] };
+}
+
 export const BACKENDS = ['claude-code', 'grok', 'pi', 'codex'] as const;
 // One word that cannot pass for a flag: it goes on the CLI's command line, and needs no confirm (accepted.ts).
 const Model = z.string().regex(/^[^\s-]\S*$/, 'a model name: one word, not starting with -');
@@ -44,9 +71,11 @@ export const Profile = z.object({
   /** Denied on top of defaults.deny. A profile's own deny beats everything. */
   deny: z.array(z.string()).default([]),
   permission_mode: PermissionMode.default('acceptEdits'),
-  /** What a permission request does. chat: ask the owners in the chat (yes or no). deny: refuse it
-   *  at once without asking; the agent hears "not permitted" and tells the chat in its own words. */
-  permission_prompts: z.enum(['chat', 'deny']).default('chat'),
+  /** The older form of `permissions`. chat: ask the owners in the chat (yes or no), as `permissions: ask`.
+   *  deny: refuse it at once without asking, as `permissions: refuse`; the agent hears "not permitted". */
+  permission_prompts: z.enum(['chat', 'deny']).optional(),
+  /** Per request the CLI asks about: refuse it, ask the chat, or approve it, by rules and a default. */
+  permissions: Permissions.optional(),
   model: Model.optional(),
   effort: Effort.optional(),
   add_dirs: z.array(z.string()).default([]),
@@ -102,7 +131,13 @@ export const Profile = z.object({
    *  _capabilities/ (the skills and tools every profile runs). Default no: an agent that could edit
    *  them would reach every other profile. Give it to the one profile that keeps the instance. */
   shared_write: z.boolean().default(false),
-}).strict();
+}).strict().superRefine((p, ctx) => {
+  if (!p.permission_prompts || !p.permissions) return;
+  const said = p.permission_prompts === 'deny' ? 'refuse' : 'ask';
+  if (permissionPolicy({ permissions: p.permissions }).default !== said) {
+    ctx.addIssue({ code: 'custom', path: ['permissions'], message: `permission_prompts: ${p.permission_prompts} means a default of ${said}, and permissions says ${permissionPolicy({ permissions: p.permissions }).default}. Keep one: permissions replaces permission_prompts` });
+  }
+});
 
 const Id = z.union([z.string(), z.number()]).transform(String);
 

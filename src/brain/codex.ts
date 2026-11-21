@@ -10,6 +10,7 @@ import { cacheEnv, profileCacheDir } from './cache.js';
 import { CODEX_PROFILE, codexApproval, codexConfigConflict, codexOverrides, codexSandboxNote, codexSandboxed } from './codex-config.js';
 import { profilePermissions, readRecord } from '../capabilities/compile.js';
 import { LOST_SESSION_LINE } from './transcripts.js';
+import { codexRequest } from './tool-request.js';
 
 type Msg = Record<string, any>;
 
@@ -286,7 +287,8 @@ export class CodexBrain extends EventEmitter implements Brain {
           // line names the access the command asks for on top, if any, and the lasting way.
           const more = describeGrant(p.additionalPermissions);
           const why = [more && `asks ${more}`, p.reason, p.grantRoot ? `write access to ${p.grantRoot}` : ''].filter(Boolean).join('; ');
-          yield { kind: 'permission', id, tool: edit ? 'edit' : 'command', ...permissionPreview(`${what}${why ? ` (${why})` : ''}. Or add the folder to add_dirs instead.`) };
+          const request = codexRequest(String(a.method), p);
+          yield { kind: 'permission', id, tool: edit ? 'edit' : 'command', ...permissionPreview(`${what}${why ? ` (${why})` : ''}. Or add the folder to add_dirs instead.`), ...(request ? { request } : {}) };
           continue;
         }
         const params: Msg = m.params ?? {};

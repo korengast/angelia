@@ -868,7 +868,7 @@
                               "type": "string"
                             },
                             "additionalProperties": {},
-                            "description": "The table's settings for the profile. Its keys may grow."
+                            "description": "The table's settings for the profile. Its keys may grow. `permission_prompts`: `chat` (requests are asked, or approved by a rule) or `deny` (the default refuses: refused at once, nothing to answer). `permissions`: `{ default, refuse, ask, approve }`, the default (refuse | ask | approve) and the rules that beat it, in Claude Code's rule syntax."
                           }
                         },
                         "required": [

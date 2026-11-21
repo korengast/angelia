@@ -79,7 +79,8 @@ export type BrainEvent =
   | { kind: 'progress'; text: string }
   /** A line from Angelia about the session itself, delivered to the chat as is (not agent text). */
   | { kind: 'notice'; text: string }
-  | { kind: 'permission'; id: string; tool: string; preview: string; /** The whole request, when the preview had to cut it. */ detail?: string }
+  | { kind: 'permission'; id: string; tool: string; preview: string; /** The whole request, when the preview had to cut it. */ detail?: string;
+      /** The request in Claude Code's naming, for the profile's permission rules; none when the backend cannot name it. */ request?: { tool: string; input?: unknown } }
   /** A request given to the chat was answered outside Angelia: in the CLI's own dialog (its pane or app). */
   | { kind: 'permission-answered'; id: string; allow: boolean }
   /** An answer of the session that this turn did not ask for, found as the turn was typed: told to the
