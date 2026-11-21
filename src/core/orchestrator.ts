@@ -165,7 +165,7 @@ const LINES_MAX = 100;
  *  in an hour. Past it they are held back, and the chat is told once: a loop of notifications in a
  *  session must not flood a group. */
 const SELF_PER_HOUR = 6;
-/** A sender who is not an owner went over max_in_per_hour: said once for each block. */
+/** A sender who is not an owner went over max_in_per_hour: said at most once an hour. */
 export const SENDER_LIMIT_LINE = 'Too many messages. Wait up to one hour, then try again.';
 const BUSY_LINE = 'Still working through earlier messages in this chat, so this one was not taken. Send it again when I have answered.';
 /** More chunks than this and an answer goes as its start plus a file. */
