@@ -32,7 +32,7 @@ import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
 import { agentDenyRules, profilePermissions } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
-import { MAX_INBOUND, saveInbound } from '../adapters/inbox.js';
+import { MAX_INBOUND, SenderQuota, saveInbound } from '../adapters/inbox.js';
 import type { ChatEventBody, ChatListener } from './events.js';
 import { writeCutTurns } from './cut-turns.js';
 import type { Switched } from '../instance/switch-backend.js';
@@ -65,6 +65,8 @@ export interface Onboarded { name: string; prompt: string; git?: Promise<string>
 export type { Switched } from '../instance/switch-backend.js';
 
 export interface OrchestratorOptions {
+  /** The clock of the inbound limit (max_in_per_hour); a test passes its own. */
+  now?: () => number;
   /** Tests: how often a running turn is checked for a stall (default a minute). */
   stallTickMs?: number;
   /** Tests: the waits between attempts at a send that failed (default SEND_RETRY_MS). */
@@ -163,6 +165,8 @@ const LINES_MAX = 100;
  *  in an hour. Past it they are held back, and the chat is told once: a loop of notifications in a
  *  session must not flood a group. */
 const SELF_PER_HOUR = 6;
+/** A sender who is not an owner went over max_in_per_hour: said at most once an hour. */
+export const SENDER_LIMIT_LINE = 'Too many messages. Wait up to one hour, then try again.';
 const BUSY_LINE = 'Still working through earlier messages in this chat, so this one was not taken. Send it again when I have answered.';
 /** More chunks than this and an answer goes as its start plus a file. */
 const LONG_ANSWER_PARTS = 4;
@@ -201,6 +205,12 @@ export class Orchestrator {
   private peerSends = new Map<string, number[]>();
   /** Chats told their queue is full, until one message gets in again. */
   private busyTold = new Set<string>();
+  /** Messages in for each profile and non-owner sender in the last hour (max_in_per_hour). */
+  private inQuota: SenderQuota;
+  /** When each profile and sender key was last told it is over the limit. Told again only an hour
+   *  later: with a sliding window, one message gets through each time an old one leaves it. */
+  private limitTold = new Map<string, number>();
+  private readonly now: () => number;
   /** One outbound bucket per platform: a busy Telegram chat must not slow WhatsApp down. */
   private rates = new Map<Platform, RateLimiter>();
   private unmatchedNotified = new Map<string, number>();
@@ -252,6 +262,8 @@ export class Orchestrator {
   private log: (line: string) => void;
 
   constructor(private readonly cfg: Config, private readonly senders: Partial<Record<Platform, Sender>>, private readonly opts: OrchestratorOptions = {}) {
+    this.now = opts.now ?? Date.now;
+    this.inQuota = new SenderQuota(undefined, this.now);
     const dir = opts.stateDir ?? join(homedir(), '.angelia');
     this.log = opts.log ?? (() => {});
     this.map = new SessionMap(join(dir, 'sessions.json'), (line) => this.log(line));
@@ -281,6 +293,28 @@ export class Orchestrator {
     }
     const { route } = g;
     const profile = this.cfg.profiles[route.profile];
+    // A sender who is not an owner gets max_in_per_hour messages to this profile, every kind counted:
+    // a flood of /help or `yes` lines must not make the bot answer each one (a WhatsApp ban).
+    const limit = profile.max_in_per_hour ?? this.cfg.defaults.max_in_per_hour;
+    // An empty sender (a Telegram channel post has no `from`) is no one to count: all such posts would share one count.
+    // On WhatsApp a sender seen first by lid and later by phone (once the lid map learns it) is two keys: at most twice the limit.
+    if (limit > 0 && i.sender !== '' && !isOwner(i, route)) {
+      const qk = `${route.profile} ${i.platform}:${i.sender}`;
+      if (!this.inQuota.take(qk, limit)) {
+        this.dropped(key, `reason=sender-limit sender=${i.sender}`);
+        const at = this.now(), toldAt = this.limitTold.get(qk);
+        // In a `mention: any` group most messages are not to the bot: the line goes out only to one that is
+        // (or in a DM), so the bot does not post into a conversation it was not part of.
+        const addressed = !i.isGroup || i.mentioned;
+        if (addressed && (toldAt === undefined || at - toldAt >= 3600_000)) {
+          if (this.limitTold.size >= 1000) this.limitTold.clear();
+          // Marked before the send: messages that arrive together must not each send the line.
+          this.limitTold.set(qk, at);
+          await this.reply(i, SENDER_LIMIT_LINE).catch((e: unknown) => this.log(`sender-limit line not sent key=${key}: ${String((e as Error)?.message ?? e)}`));
+        }
+        return;
+      }
+    }
     const perm = parsePermissionReply(i.text);
     if (perm) {
       const b = this.brains.get(key);

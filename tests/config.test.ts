@@ -380,3 +380,12 @@ test('check-config warns on rules a backend cannot check and on permissions a by
   // Only the unrouted-profile warning: none about its permissions.
   assert.ok(!w.some((l) => l.startsWith('profiles.ok:') && !l.includes('no route names it')), w.join('\n'));
 });
+
+test('max_in_per_hour: 50 by default, a profile may set its own, 0 is allowed, negative is not', () => {
+  const base = { profiles: { a: { cwd: '/tmp' } }, routes: [] };
+  assert.equal(Config.parse(base).defaults.max_in_per_hour, 50);
+  assert.equal(Config.parse({ ...base, defaults: { max_in_per_hour: 0 } }).defaults.max_in_per_hour, 0);
+  assert.equal(Config.parse({ ...base, profiles: { a: { cwd: '/tmp', max_in_per_hour: 5 } } }).profiles.a.max_in_per_hour, 5);
+  assert.throws(() => Config.parse({ ...base, defaults: { max_in_per_hour: -1 } }));
+  assert.throws(() => Config.parse({ ...base, profiles: { a: { cwd: '/tmp', max_in_per_hour: 1.5 } } }));
+});

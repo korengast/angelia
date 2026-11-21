@@ -76,6 +76,8 @@ export const Profile = z.object({
   permission_prompts: z.enum(['chat', 'deny']).optional(),
   /** Per request the CLI asks about: refuse it, ask the chat, or approve it, by rules and a default. */
   permissions: Permissions.optional(),
+  /** Replaces defaults.max_in_per_hour for this profile. */
+  max_in_per_hour: z.number().int().nonnegative().optional(),
   model: Model.optional(),
   effort: Effort.optional(),
   add_dirs: z.array(z.string()).default([]),
@@ -195,6 +197,8 @@ export const Config = z.object({
       unmatched: z.enum(['drop', 'reply', 'onboard']).default('drop'),
       /** Messages out per minute, per platform. Progress lines always leave one free for the answer. */
       max_out_per_min: z.number().int().positive().default(10),
+      /** Messages in per hour from each sender who is not an owner, for each profile. 0: no limit. */
+      max_in_per_hour: z.number().int().nonnegative().default(50),
       idle_exit_minutes: z.number().positive().max(35_000).default(30),
       permission_timeout_minutes: z.number().positive().max(35_000).default(10),
       /** A turn in print mode with no output from its CLI this long is stuck: the chat is told at half

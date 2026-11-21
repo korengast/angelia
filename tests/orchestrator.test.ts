@@ -8,7 +8,7 @@ import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator, envelope, agentText, isAgentCommand } from '../src/core/orchestrator.js';
 import { AUTO_DENY_FAILED_LINE, AUTO_DENY_MESSAGE, autoDenyCapLine, DENIED_LINE, LATE_ANSWER_LINE, NO_ANSWER_LINE } from '../src/core/deliver/text.js';
 import type { Inbound } from '../src/core/types.js';
-import { QUOTE_LABEL, QUOTE_MAX } from '../src/core/orchestrator.js';
+import { QUOTE_LABEL, QUOTE_MAX, SENDER_LIMIT_LINE } from '../src/core/orchestrator.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FAKE = join(here, 'fake-claude.mjs');
@@ -602,4 +602,114 @@ test('a CLI that keeps writing lines with no text is working, not stalled', asyn
   t.after(() => o.shutdown());
   await o.handle(dm('1', 'QUIETWORK please'));
   assert.deepEqual(sent, ['worked quietly']);
+});
+
+function limited(opts: { def?: number; a?: number } = {}) {
+  let now = 0;
+  const cfg = Config.parse({
+    profiles: { a: { cwd: here, ...(opts.a !== undefined ? { max_in_per_hour: opts.a } : {}) }, b: { cwd: here } },
+    routes: [
+      { platform: 'whatsapp', chat: 'g@g.us', profile: 'a', mention: 'required', owners: ['u1'], allow_from: ['*'] },
+      { platform: 'whatsapp', chat: 'h@g.us', profile: 'b', mention: 'required', owners: ['u1'], allow_from: ['*'] },
+      { platform: 'whatsapp', chat: 'k@g.us', profile: 'a', mention: 'any', owners: ['u1'], allow_from: ['*'] },
+    ],
+    defaults: { max_out_per_min: 1000, ...(opts.def !== undefined ? { max_in_per_hour: opts.def } : {}) },
+  });
+  const sent: { chat: string; text: string }[] = [];
+  const sender = { send: async (chat: string, text: string) => { sent.push({ chat, text }); } };
+  const o = new Orchestrator(cfg, { telegram: sender, whatsapp: sender }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, now: () => now });
+  const msg = (from: string, text: string, chat = 'g@g.us', mentioned = true): Inbound => ({ platform: 'whatsapp', chat, sender: from, senderName: 'M', text, isGroup: true, mentioned, media: [], allow_from: ['*'] } as Inbound);
+  return { o, sent, msg, tick: (ms: number) => { now += ms; } };
+}
+const told = (sent: { text: string }[]) => sent.filter((s) => s.text === SENDER_LIMIT_LINE).length;
+const echoes = (sent: { text: string }[]) => sent.filter((s) => s.text.startsWith('echo:')).length;
+
+test('a non-owner over the limit is told once, and the rest start no turn', async (t) => {
+  const { o, sent, msg } = limited({ def: 3 }); t.after(() => o.shutdown());
+  await Promise.all(Array.from({ length: 6 }, (_, n) => o.handle(msg('m1', `hi ${n}`))));
+  assert.equal(told(sent), 1);
+  assert.equal(echoes(sent), 3);
+});
+
+test('an owner has no limit', async (t) => {
+  const { o, sent, msg } = limited({ def: 3 }); t.after(() => o.shutdown());
+  for (let n = 0; n < 6; n++) await o.handle(msg('u1', `hi ${n}`));
+  assert.equal(told(sent), 0);
+  assert.equal(echoes(sent), 6);
+});
+
+test('after the hour a message passes, and the next block is told again', async (t) => {
+  const { o, sent, msg, tick } = limited({ def: 2 }); t.after(() => o.shutdown());
+  for (let n = 0; n < 3; n++) await o.handle(msg('m1', `a ${n}`));
+  assert.equal(told(sent), 1);
+  tick(3600_001);
+  for (let n = 0; n < 3; n++) await o.handle(msg('m1', `b ${n}`));
+  assert.equal(told(sent), 2);
+  assert.equal(echoes(sent), 4);
+});
+
+test('/help and a yes from a non-owner count, and over the limit get no reply', async (t) => {
+  const { o, sent, msg } = limited({ def: 2 }); t.after(() => o.shutdown());
+  await o.handle(msg('m1', '/help'));
+  await o.handle(msg('m1', 'yes abcd'));
+  const before = sent.length;
+  await o.handle(msg('m1', '/help'));
+  assert.deepEqual(sent.slice(before).map((s) => s.text), [SENDER_LIMIT_LINE]);
+  assert.equal(told(sent), 1);
+});
+
+test('a profile value replaces the default, and 0 turns the limit off', async (t) => {
+  const off = limited({ def: 1, a: 0 }); t.after(() => off.o.shutdown());
+  for (let n = 0; n < 4; n++) await off.o.handle(off.msg('m1', `hi ${n}`));
+  assert.equal(told(off.sent), 0);
+  const one = limited({ def: 50, a: 1 }); t.after(() => one.o.shutdown());
+  for (let n = 0; n < 2; n++) await one.o.handle(one.msg('m1', `hi ${n}`));
+  assert.equal(told(one.sent), 1);
+});
+
+test('two profiles keep separate counts for one sender', async (t) => {
+  const { o, sent, msg } = limited({ def: 1 }); t.after(() => o.shutdown());
+  await o.handle(msg('m1', 'to a'));
+  await o.handle(msg('m1', 'to b', 'h@g.us'));
+  assert.equal(told(sent), 0);
+  assert.equal(echoes(sent), 2);
+});
+
+test('a message the gate drops does not count', async (t) => {
+  const { o, sent, msg } = limited({ def: 1 }); t.after(() => o.shutdown());
+  for (let n = 0; n < 3; n++) await o.handle(msg('m1', `quiet ${n}`, 'g@g.us', false));
+  await o.handle(msg('m1', 'now'));
+  assert.equal(told(sent), 0);
+  assert.equal(echoes(sent), 1);
+});
+
+test('a sliding window does not tell the sender again within the hour after the last line', async (t) => {
+  const { o, sent, msg, tick } = limited({ def: 2 }); t.after(() => o.shutdown());
+  await o.handle(msg('m1', 'a'));          // 0
+  tick(30 * 60_000);
+  await o.handle(msg('m1', 'b'));          // 30 min
+  tick(60_000);
+  await o.handle(msg('m1', 'c'));          // 31 min: blocked, told
+  tick(29 * 60_000 + 1);
+  await o.handle(msg('m1', 'd'));          // 60 min: "a" left the window, passes
+  await o.handle(msg('m1', 'e'));          // blocked again, within the hour after the line
+  assert.equal(told(sent), 1);
+  assert.equal(echoes(sent), 3);
+});
+
+test('in a mention: any group, the line goes only to a message that addresses the bot', async (t) => {
+  const { o, sent, msg } = limited({ def: 1 }); t.after(() => o.shutdown());
+  for (let n = 0; n < 3; n++) await o.handle(msg('m1', `chat ${n}`, 'k@g.us', false));
+  assert.equal(echoes(sent), 1);
+  assert.equal(told(sent), 0);
+  await o.handle(msg('m1', 'bot?', 'k@g.us', true));
+  assert.equal(told(sent), 1);
+  assert.equal(echoes(sent), 1);
+});
+
+test('an empty sender (a channel post) is not counted', async (t) => {
+  const { o, sent, msg } = limited({ def: 1 }); t.after(() => o.shutdown());
+  for (let n = 0; n < 3; n++) await o.handle(msg('', `post ${n}`, 'k@g.us', false));
+  assert.equal(told(sent), 0);
+  assert.equal(echoes(sent), 3);
 });

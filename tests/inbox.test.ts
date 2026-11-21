@@ -91,3 +91,12 @@ test('chat chains: in order within a chat, side by side across chats', async () 
   await c.run('a', async () => { log.push('a3'); });
   assert.equal(log.at(-1), 'a3', 'a failed job does not stop the chain');
 });
+
+test('sender quota: a limit given on the call replaces the one from the constructor', () => {
+  let now = 0;
+  const q = new SenderQuota(30, () => now);
+  assert.deepEqual([q.take('a', 2), q.take('a', 2), q.take('a', 2)], [true, true, false]);
+  assert.equal(q.take('b'), true, 'the constructor limit still applies without one');
+  now = 3600_001;
+  assert.equal(q.take('a', 2), true);
+});
