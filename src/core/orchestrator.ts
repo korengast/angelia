@@ -871,7 +871,12 @@ export class Orchestrator {
     const tail = unsent.length && unsent[unsent.length - 1] === result.text ? unsent.slice(0, -1) : unsent;
     const fresh = unsent.length > 0 || result.text !== progress.lastSent;
     try {
-      if (result.text && isLimitText(result.text)) {
+      // The agent's "nothing to say" (an answer of exactly [SILENT], as a job run already takes it):
+      // nothing is posted, not even the no-answer line. Progress lines sent before it stay; unsent ones still go.
+      if (result.text?.trim() === '[SILENT]') {
+        this.log(`silent key=${key}`);
+        if (tail.length) await this.replyFromAgent(i, tail.join('\n\n'), profile);
+      } else if (result.text && isLimitText(result.text)) {
         limited = true;
         this.log(`usage limit key=${key}`);
         if (tail.length) await this.replyFromAgent(i, tail.join('\n\n'), profile);
