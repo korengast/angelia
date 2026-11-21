@@ -6,7 +6,7 @@ import { ChatChains, MAX_INBOUND, SenderQuota, saveInbound } from '../inbox.js';
 import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage, DisconnectReason, type AnyMessageContent, type GroupMetadata, type WASocket } from 'baileys';
 import qrcode from 'qrcode-terminal';
 import type { Inbound } from '../../core/types.js';
-import type { Sender, SendOptions } from '../../core/orchestrator.js';
+import type { Sender, SendOptions, Sent } from '../../core/orchestrator.js';
 import { LidMap, normalizeJid } from './ids.js';
 import { MAX_MENTIONS, parseMessage, SeenIds, toInbound, withMentions, type WaMessageLike } from './parse.js';
 import { GroupCache } from './groups.js';
@@ -326,7 +326,7 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
    * the lid map knows goes out as the lid (withMentions). A group whose members cannot be fetched gets
    * that text with no tags: the answer matters more than the tag.
    */
-  async send(chat: string, text: string, _thread?: string, o: SendOptions = {}): Promise<void> {
+  async send(chat: string, text: string, _thread?: string, o: SendOptions = {}): Promise<Sent> {
     if (!this.sock || !this.connected) throw new Error('whatsapp: not connected');
     if (chat.endsWith('@g.us') && /@\+?\d/.test(text)) {
       const meta = o.mentions ? await this.groupMeta(chat).catch((e) => {
@@ -335,10 +335,9 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
       }) : undefined;
       const m = withMentions(text, meta?.participants, { lidFor: (n) => this.lids.lidFor(n) });
       if (m.capped) this.log(`whatsapp: ${m.mentions.length + m.capped} members named in one message, ${m.capped} not tagged (at most ${MAX_MENTIONS}) chat=${chat.slice(0, 8)}…`);
-      await this.post(chat, m.mentions.length ? { text: m.text, mentions: m.mentions } : { text: m.text });
-      return;
+      return this.post(chat, m.mentions.length ? { text: m.text, mentions: m.mentions } : { text: m.text });
     }
-    await this.post(chat, { text });
+    return this.post(chat, { text });
   }
 
   /** A group's metadata, from the cache or the server (which then fills the cache). */
@@ -350,9 +349,13 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     return meta;
   }
 
-  /** Every outgoing message goes through here, so a retry receipt can find it later. */
-  private async post(chat: string, content: AnyMessageContent): Promise<void> {
-    this.sent.remember(await this.sock!.sendMessage(chat, content));
+  /** Every outgoing message goes through here, so a retry receipt can find it later. Gives back the
+   *  message's id, which a reply to it names (contextInfo.stanzaId). No time: the one Baileys puts on a
+   *  sent message is this machine's own. */
+  private async post(chat: string, content: AnyMessageContent): Promise<Sent> {
+    const sent = await this.sock!.sendMessage(chat, content);
+    this.sent.remember(sent);
+    return sent?.key?.id ? { id: sent.key.id } : {};
   }
 
   /** A group's subject, for naming its profile. A DM has no name here. */

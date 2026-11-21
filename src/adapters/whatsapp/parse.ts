@@ -6,6 +6,8 @@ export interface WaMessageLike {
   key: { remoteJid?: string | null; fromMe?: boolean | null; participant?: string | null; id?: string | null };
   pushName?: string | null;
   message?: Record<string, any> | null;
+  /** Unix seconds, as a number, a numeric string, or a protobuf Long. */
+  messageTimestamp?: unknown;
 }
 
 export type MediaKind = 'image' | 'document' | 'audio' | 'video' | 'sticker';
@@ -17,6 +19,12 @@ export interface ParsedMessage {
   text: string;
   /** The text of the message this one quotes, if any. */
   quoted?: string;
+  /** When WhatsApp says it was sent, in ms. */
+  at?: number;
+  /** A reply: the quoted message's id (contextInfo.stanzaId) and whether its author is us. */
+  reply?: { id?: string; ours: boolean };
+  /** The @<number> tokens in the text that are a mention of us. */
+  botMentions?: string[];
   isGroup: boolean;
   mentioned: boolean;
   /** size: what the sender's message declares, in bytes, when it declares one. */
@@ -99,12 +107,18 @@ export function parseMessage(m: WaMessageLike, us: string[]): ParsedMessage | nu
   // Strings only, as for the message itself: a field of another type is not text.
   const quoted = q ? [q.conversation, q.extendedTextMessage?.text, q.imageMessage?.caption, q.videoMessage?.caption, q.documentMessage?.caption]
     .find((v): v is string => typeof v === 'string' && v !== '') : undefined;
-  return { chat, sender, senderName: m.pushName ?? undefined, text, ...(quoted ? { quoted } : {}), isGroup, mentioned, media };
+  const sent = byteLength(m.messageTimestamp);
+  // A reply names the message it answers by id and by author. The id alone is the sender's to choose
+  // (a client can send a message under any id), so "ours" is read from the author WhatsApp names.
+  const reply = ctx?.stanzaId || ctx?.quotedMessage ? { ...(typeof ctx.stanzaId === 'string' && ctx.stanzaId ? { id: ctx.stanzaId } : {}), ours: !!quotedBy && ours.has(quotedBy) } : undefined;
+  // A mention is written in the text as @ and the number of the jid it names.
+  const botMentions = mentionedJids.map((j) => bareId(String(j))).filter((n) => ours.has(n)).map((n) => `@${n}`);
+  return { chat, sender, senderName: m.pushName ?? undefined, text, ...(quoted ? { quoted } : {}), ...(reply ? { reply } : {}), ...(botMentions.length ? { botMentions } : {}), ...(sent ? { at: sent * 1000 } : {}), isGroup, mentioned, media };
 }
 
 /** ParsedMessage -> Inbound, with the sender written the way routing.yaml expects (bare phone or lid). */
 export function toInbound(p: ParsedMessage, senderId: string, mediaPaths: string[]): Inbound {
-  return { platform: 'whatsapp', chat: p.chat, sender: senderId, senderName: p.senderName, text: p.text, ...(p.quoted ? { quoted: p.quoted } : {}), isGroup: p.isGroup, mentioned: p.mentioned, media: mediaPaths };
+  return { platform: 'whatsapp', chat: p.chat, sender: senderId, senderName: p.senderName, text: p.text, ...(p.quoted ? { quoted: p.quoted } : {}), ...(p.reply ? { reply: p.reply } : {}), ...(p.botMentions ? { botMentions: p.botMentions } : {}), ...(p.at ? { at: p.at } : {}), isGroup: p.isGroup, mentioned: p.mentioned, media: mediaPaths };
 }
 
 /** A group member as `groupMetadata` lists them: `id` is the jid WhatsApp addresses them by (lid or phone). */

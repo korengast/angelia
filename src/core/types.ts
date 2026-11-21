@@ -29,6 +29,18 @@ export interface Inbound {
   media: string[];
   /** The text of the message this one replies to (quotes), when the platform sends it. */
   quoted?: string;
+  /** This message is a reply (a swipe-reply, a Telegram reply): the id of the message replied to, as
+   *  the platform names it in that chat (absent when the platform gives none: a reply into another
+   *  chat), and whether that message is one this bot sent. The adapter's facts, never the sender's text:
+   *  a reply picks a permission request by this id (orchestrator.ts, bareAnswer), not by what it quotes. */
+  reply?: { id?: string; ours: boolean };
+  /** The @tokens in `text` that name the bot itself, as written ("@Angelia_bot", "@15550000000").
+   *  Another member's mention is never here: "@someone yes" is said to someone. */
+  botMentions?: string[];
+  /** When the platform says the message was sent, in ms (WhatsApp and Telegram give whole seconds).
+   *  A message can reach the daemon long after it was typed (a reconnect, a download in front of it);
+   *  a bare answer to a permission request is held to this time, not to when it arrived. */
+  at?: number;
   /** 'app': the owner typed it in a client on this machine (the API's reply-to-caller turn). What
    *  the turn says goes to that client as events (core/events.ts) and never to the chat. */
   surface?: 'app';

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import type { Config, Profile } from '../instance/config/schema.js';
+import type { Config, Profile, Route } from '../instance/config/schema.js';
 import type { Inbound, BrainEvent, Platform, SessionRow } from './types.js';
 import { cleanName, cleanText, isGroupChat, parseSessionKey, sessionKey } from './types.js';
 import { matchRoute } from './router/match.js';
@@ -22,7 +22,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
+import { failureLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -39,15 +39,24 @@ import type { Switched } from '../instance/switch-backend.js';
 /** `mentions`: the text is the agent's own (an answer, `angelia send`): WhatsApp turns `@<number>` of a
  *  group member into a tag. Off for everything Angelia writes itself and for progress lines. A late
  *  answer (one owed after a failed delivery) tags too: it is the agent's answer, sent once. */
-export interface SendOptions { mentions?: boolean }
+/** `ask`: the text is a permission request's line, and this is the request's id: an adapter with
+ *  controls of its own (Telegram's inline buttons) puts Yes and No under the message. */
+export interface SendOptions { mentions?: boolean; ask?: string }
+
+/** What a send says of the message it made, where the adapter can: its id in that chat, as a reply to
+ *  it will name it, and the platform's own time for it in ms. */
+export interface Sent { id?: string; at?: number }
 
 export interface Sender {
-  send(chat: string, text: string, thread?: string, o?: SendOptions): Promise<void>;
+  send(chat: string, text: string, thread?: string, o?: SendOptions): Promise<Sent | void>;
   /** Attach a file that already passed `resolveMedia`. Absent on an adapter that cannot. */
   sendMedia?(chat: string, m: Media, thread?: string): Promise<void>;
   typing?(chat: string, on: boolean): Promise<void>;
   /** The chat's own name (a group's subject), for naming a new profile. */
   chatName?(chat: string): Promise<string | undefined>;
+  /** The request a line was sent for with `ask` is over (answered anywhere, timed out, its turn ended):
+   *  the controls under that line go. Absent on an adapter that shows none; never throws. */
+  askDone?(chat: string, id: string): void;
 }
 
 /** A profile made for a new chat: its name, the first turn's prompt, and the workspace commit, which settles later. */
@@ -61,6 +70,12 @@ export interface OrchestratorOptions {
   sendRetryMs?: number[];
   /** Tests: the random gap between the chunks of one long answer (default 1.5 to 4 s). */
   chunkGapMs?: [number, number];
+  /** Tests: how long a permission request must have been in the chat before a bare "yes" or "no", or
+   *  a press on its button, answers it (default BARE_ANSWER_MIN_MS). */
+  bareAnswerMinMs?: number;
+  /** Tests: how long after a request ended with no answer from the chat a bare word answers nothing
+   *  (default BARE_AFTER_CLOSE_MS). */
+  bareAfterCloseMs?: number;
   stateDir?: string;
   /** Executable per backend, when not the default on PATH (tests, odd installs). */
   bins?: Partial<Record<BackendName, string>>;
@@ -123,6 +138,24 @@ const ASK_TOTAL = 4;
 function waitingDropped(n: number): string {
   return n ? ` ${n} waiting message${n === 1 ? '' : 's'} dropped.` : '';
 }
+/** A bare "yes" or "no", and a press on a request's button, answers a request only when the request
+ *  was in the chat this long before. Under it, the answer may have been meant for something else (a
+ *  question from a person, the request before) while this request appeared under the owner's thumb.
+ *  Messages are stamped in whole seconds, so for a typed word the wait is three to five seconds. */
+const BARE_ANSWER_MIN_MS = 3000;
+/** After a request of a chat ended with no answer from the chat (it timed out, was answered in the app
+ *  or the pane, its turn ended), a bare word answers nothing in that chat for this long. A "yes" typed
+ *  for that request on a phone with no network is sent, and stamped by the platform, when the phone is
+ *  back: by then the next request may have been in the chat for minutes, and no time on the message
+ *  tells the two apart. A reply to the request's message, "yes <id>" and a button name their request,
+ *  so they are taken as always.
+ *  The time alone would not do: a request waits ten minutes, so one posted right after the close is
+ *  still open when the time is up, and the late word would land on it then. So a request that was
+ *  posted inside this time, or was open beside the one that ended, takes no bare word for as long as
+ *  it waits (`noBare` on its posted record). */
+const BARE_AFTER_CLOSE_MS = 3 * 60_000;
+/** Request lines remembered per chat, so a reply to one is known for what it is. */
+const LINES_MAX = 100;
 const BUSY_LINE = 'Still working through earlier messages in this chat, so this one was not taken. Send it again when I have answered.';
 /** More chunks than this and an answer goes as its start plus a file. */
 const LONG_ANSWER_PARTS = 4;
@@ -189,6 +222,21 @@ export class Orchestrator {
   /** Each chat's open permission requests by full id, so an answer by prefix (the chat's `y abcde`)
    *  is evented under the id the client was given, and a client that connects later can list them. */
   private asks = new Map<string, Map<string, WaitingPermission>>();
+  /** When each open request's line reached the chat: by this machine's clock, and by the platform's own
+   *  where the send gave one (Telegram), which is the clock the messages that answer it are stamped by.
+   *  A request whose line never did (an app turn's, a send that failed) is not here, and no bare "yes"
+   *  answers it: nobody in the chat has read it. `noBare`: it was posted while, or open when, another
+   *  request of the chat ended with no answer from the chat (BARE_AFTER_CLOSE_MS): never a bare word. */
+  private posted = new WeakMap<WaitingPermission, { local: number; platform?: number; noBare?: true }>();
+  /** The requests whose line was handed to the chat's adapter (it may carry buttons there): only for
+   *  these is the adapter told when the request is over. An app turn's request never touches the chat. */
+  private shown = new WeakSet<WaitingPermission>();
+  /** Per chat: the message id of every request line sent there (and of a long request's full text, sent
+   *  just before its line), and the request it is the line of. Kept after the request is over, so a
+   *  reply to its line is told it is too late; LINES_MAX a chat. Empty after a restart, as the requests are. */
+  private lines = new Map<string, Map<string, string>>();
+  /** Per chat: when a request shown there last ended with no answer from the chat (BARE_AFTER_CLOSE_MS). */
+  private closed = new Map<string, number>();
   private log: (line: string) => void;
 
   constructor(private readonly cfg: Config, private readonly senders: Partial<Record<Platform, Sender>>, private readonly opts: OrchestratorOptions = {}) {
@@ -232,6 +280,9 @@ export class Orchestrator {
         return;
       }
     }
+    // No await for any other message: its place in the chat's queue is taken at once, as before.
+    const word = perm || i.media.length ? null : parseBareAnswer(i.text, i.botMentions);
+    if (word !== null && await this.bareAnswer(i, key, route, word)) return;
     const cmd = parseCommand(i.text);
     if (cmd && OWNER_COMMANDS.has(cmd.name) && !isOwner(i, route)) {
       this.log(`${cmd.name} refused key=${key} sender=${i.sender} reason=not-owner`);
@@ -332,6 +383,74 @@ export class Orchestrator {
   private async stop(key: string): Promise<boolean> {
     if (!this.brains.get(key)?.alive) return false;
     await this.dropBrain(key);
+    return true;
+  }
+
+  /**
+   * A "yes" or "no" with no id (text.ts, parseBareAnswer): which request it answers, if any. True when
+   * the message was dealt with here, answered or told why not: it then never goes on to the agent. False
+   * when the word is a message like any other, as it always was.
+   *
+   * The id in "yes <id>" exists so an answer cannot land on another request, or on a request at all
+   * when it was said to a person. Without it, the word is an answer only where neither can happen:
+   *
+   * - From an owner. Anyone else's bare word is a message, never an attempt to answer.
+   * - A reply (swipe-reply) answers the request whose line it replies to, by the message's id as the
+   *   adapter read it and only when the message is ours; never by the quoted text, which is the sender's
+   *   to write. A reply to the line of a request that is over is told so. A reply to anything else (a
+   *   person's message, the agent's question) is a message for the agent.
+   * - With no reply, only where the word can be meant for nobody but Angelia: a private chat, or a
+   *   message that mentions the bot. Then: not while a request of
+   *   the chat ended a moment ago without the chat's answer (BARE_AFTER_CLOSE_MS); not with several
+   *   open; and only when the one open was in the chat BARE_ANSWER_MIN_MS before the word was sent, by
+   *   the platform's time for the message (none: not taken). What it was taken for is said back.
+   */
+  private async bareAnswer(i: Inbound, key: string, route: Route, allow: boolean): Promise<boolean> {
+    if (!isOwner(i, route)) return false;
+    const waiting = () => { const b = this.brains.get(key); return [...(this.asks.get(key)?.values() ?? [])].filter((a) => b?.hasPendingPermission(a.id)); };
+    const take = async (ask: WaitingPermission) => {
+      if (this.brains.get(key)?.answerPermission(ask.id, allow)) { this.answered(key, ask.id, allow, 'chat'); return true; }
+      await this.reply(i, LATE_ANSWER_LINE);
+      return false;
+    };
+    if (i.reply || i.quoted !== undefined) {
+      const id = i.reply?.ours && i.reply.id !== undefined ? this.lines.get(key)?.get(i.reply.id) : undefined;
+      if (id === undefined) return false;
+      const ask = waiting().find((a) => a.id === id);
+      if (ask) await take(ask);
+      else { this.log(`permission reply ignored key=${key} reason=replied-to-request-not-open id=${shortId(id)}`); await this.reply(i, LATE_ANSWER_LINE); }
+      return true;
+    }
+    const open = () => waiting().filter((a) => this.posted.has(a));
+    const recent = () => this.justClosed(key);
+    if (!open().length && !recent()) return false;
+    // In a group a bare word may be said to someone, and is not Angelia's unless it names her.
+    if (i.isGroup && !i.mentioned) return false;
+    const now = open();
+    if (recent()) {
+      this.log(`permission reply ignored key=${key} reason=a-request-just-ended`);
+      await this.reply(i, afterCloseLine(now.length > 0, !!this.senders[i.platform]?.askDone));
+      return true;
+    }
+    if (!now.length) return false;
+    if (now.length > 1) { await this.reply(i, whichOneLine(now)); return true; }
+    const at = this.posted.get(now[0])!;
+    if (at.noBare) {
+      this.log(`permission reply ignored key=${key} reason=request-beside-one-that-ended id=${shortId(now[0].id)}`);
+      await this.reply(i, followsCloseLine(!!this.senders[i.platform]?.askDone));
+      return true;
+    }
+    // The message's time by its platform, never later than now (a clock ahead of ours), against the
+    // line's time by the same platform where the send gave it: that is in whole seconds, so the line
+    // counts as there from the end of its second. With no time on the message, nothing says when it
+    // was typed: not taken.
+    if (i.at === undefined || Math.min(i.at, Date.now()) - (at.platform !== undefined ? at.platform + 999 : at.local) < (this.opts.bareAnswerMinMs ?? BARE_ANSWER_MIN_MS)) {
+      this.log(`permission reply ignored key=${key} reason=${i.at === undefined ? 'message-has-no-time' : 'request-just-posted'} id=${shortId(now[0].id)}`);
+      await this.reply(i, READ_FIRST_LINE);
+      return true;
+    }
+    // The word named no request: the chat is told which one it was taken for.
+    if (await take(now[0])) await this.reply(i, answeredLine(allow, now[0])).catch((e) => this.log(`permission receipt failed key=${key} ${(e as Error).message}`));
     return true;
   }
 
@@ -554,7 +673,7 @@ export class Orchestrator {
       this.answered(key, id, false, 'timeout');
       // An app turn's request was never in the chat, so neither is its timeout; the client has the event.
       if (this.running.get(key)?.surface === 'app') return;
-      void this.notify(key, `${PERMISSION_TIMEOUT_LINE} (${id.slice(0, 8)})`).catch((e) => this.log(`permission timeout note: ${(e as Error).message}`));
+      void this.notify(key, `${PERMISSION_TIMEOUT_LINE} (${shortId(id)})`).catch((e) => this.log(`permission timeout note: ${(e as Error).message}`));
     });
     return b;
   }
@@ -571,7 +690,12 @@ export class Orchestrator {
     let failed: string | undefined = 'exception';
     try { failed = await this.runTurn(i, key, name, o); }
     finally {
-      if (this.running.get(key) === i) { this.running.delete(key); this.asks.delete(key); }
+      if (this.running.get(key) === i) {
+        this.running.delete(key);
+        // Requests the turn left open (a /stop, a crash) are gone with it.
+        for (const ask of this.asks.get(key)?.values() ?? []) { this.askOver(key, ask); if (this.posted.has(ask)) this.closed.set(key, Date.now()); }
+        this.asks.delete(key);
+      }
       this.emit(key, { type: 'turn-end', turn, ok: !failed, ...(failed ? { reason: failed } : {}), queued: this.queue.queued(key) });
     }
   }
@@ -666,13 +790,17 @@ export class Orchestrator {
         else if (e.kind === 'permission') {
           let open = this.asks.get(key);
           if (!open) this.asks.set(key, open = new Map());
-          const ask = { key, at: new Date().toISOString(), id: e.id, tool: e.tool, preview: e.preview, ...(e.detail ? { detail: e.detail } : {}) };
+          const ask: WaitingPermission = { key, at: new Date().toISOString(), id: e.id, tool: e.tool, preview: e.preview, ...(e.detail ? { detail: e.detail } : {}) };
           open.set(e.id, ask);
           this.emit(key, { type: 'permission', id: e.id, tool: e.tool, preview: e.preview, ...(e.detail ? { detail: e.detail } : {}) });
           if (app) continue;
           try {
-            if (e.detail) await this.reply(i, e.detail);
-            await this.reply(i, permissionLine(e.id, e.tool, e.preview));
+            this.shown.add(ask);
+            const detail = e.detail ? await this.post(i, e.detail) : [];
+            const line = await this.post(i, permissionLine(e.id, e.tool, e.preview), false, false, e.id);
+            const platform = line.at(-1)?.at;
+            this.posted.set(ask, { local: Date.now(), ...(platform !== undefined ? { platform } : {}), ...(this.justClosed(key) ? { noBare: true as const } : {}) });
+            this.keepLines(key, e.id, [...detail, ...line]);
           } catch (err) { this.log(`permission line failed key=${key} ${(err as Error).message}`); }
         }
         else if (e.kind === 'permission-answered') {
@@ -880,8 +1008,67 @@ export class Orchestrator {
     return hits.length === 1 ? hits[0] : undefined;
   }
 
+  /** Did a request shown in this chat end with no answer from the chat within BARE_AFTER_CLOSE_MS? */
+  private justClosed(key: string): boolean {
+    return Date.now() - (this.closed.get(key) ?? -Infinity) < (this.opts.bareAfterCloseMs ?? BARE_AFTER_CLOSE_MS);
+  }
+
+  /** The messages a request's line went out as: a reply to one of them names that request. */
+  private keepLines(key: string, id: string, sent: Sent[]): void {
+    let lines = this.lines.get(key);
+    if (!lines) this.lines.set(key, lines = new Map());
+    for (const m of sent) if (m.id !== undefined) lines.set(m.id, id);
+    while (lines.size > LINES_MAX) lines.delete(lines.keys().next().value as string);
+  }
+
+  /** A request is over, however it ended: the platform's own controls under its line go (Sender.askDone). */
+  private askOver(key: string, ask: WaitingPermission | undefined): void {
+    if (!ask || !this.shown.has(ask)) return;
+    const k = parseSessionKey(key);
+    try { this.senders[k.platform]?.askDone?.(k.chat, ask.id); } catch (e) { this.log(`permission controls not removed key=${key} ${(e as Error).message}`); }
+  }
+
+  /**
+   * A press on the platform's own Yes or No under a request's line (Telegram's buttons); `id` is the
+   * request that line was sent for, as the adapter kept it, never one the press itself names (none:
+   * buttons the adapter does not know; they may go, but only for someone this chat hears). The rules
+   * of a typed "yes <id>": the chat is routed and lets this sender in, the request is open in this chat,
+   * and only an owner answers it. And one of a bare word's: not within BARE_ANSWER_MIN_MS of the line
+   * (a second request can take the first one's place under the owner's finger). A press is never a
+   * message: one for a request that is gone answers nothing and starts no turn. Returns what to tell
+   * the person who pressed (nothing for one the chat does not hear), and whether the request is over,
+   * so the controls can go.
+   */
+  pressed(i: Pick<Inbound, 'platform' | 'chat' | 'thread' | 'sender' | 'isGroup'>, id: string | undefined, allow: boolean): { text: string; over: boolean } {
+    const key = sessionKey(i);
+    // A press on the bot's own message addresses the bot, as a reply to it does.
+    const g = gate({ ...i, mentioned: true }, matchRoute(this.cfg, i));
+    if (!g.ok) { this.dropped(key, `reason=${g.reason}${g.reason === 'sender' ? ` sender=${i.sender}` : ''}`); return { text: '', over: false }; }
+    // Buttons the adapter does not know (from before a restart): nothing of this run's is behind them.
+    if (id === undefined) return { text: BUTTON_GONE_LINE, over: true };
+    const b = this.brains.get(key), ask = this.asks.get(key)?.get(id);
+    if (!ask || !b?.hasPendingPermission(id)) return { text: BUTTON_GONE_LINE, over: true };
+    if (!isOwner(i, g.route)) { this.log(`permission reply ignored key=${key} sender=${i.sender} reason=not-owner`); return { text: NOT_OWNER_LINE, over: false }; }
+    const at = this.posted.get(ask);
+    if (!at || Date.now() - at.local < (this.opts.bareAnswerMinMs ?? BARE_ANSWER_MIN_MS)) {
+      this.log(`permission reply ignored key=${key} reason=request-just-posted id=${shortId(id)}`);
+      return { text: READ_FIRST_LINE, over: false };
+    }
+    if (!b.answerPermission(id, allow)) return { text: LATE_ANSWER_LINE, over: true };
+    this.answered(key, id, allow, 'chat');
+    return { text: pressedText(allow, ask), over: true };
+  }
+
   private answered(key: string, id: string, allow: boolean, by: 'chat' | 'app' | 'timeout' | 'terminal'): void {
+    const ask = this.asks.get(key)?.get(id);
     this.asks.get(key)?.delete(id);
+    this.askOver(key, ask);
+    // Ended with no answer from the chat: a bare word typed for it may still be on its way.
+    if (by !== 'chat' && ask && this.posted.has(ask)) {
+      this.closed.set(key, Date.now());
+      // And the requests open beside it: the word typed for this one may come while they still wait.
+      for (const other of this.asks.get(key)?.values() ?? []) { const at = this.posted.get(other); if (at) at.noBare = true; }
+    }
     if (!allow) this.denied.add(key);
     this.emit(key, { type: 'permission-answered', id, allow, by });
   }
@@ -1256,10 +1443,15 @@ export class Orchestrator {
 
   /** `held`: the caller already took the first chunk's slot (a progress batch). `mentions`: the agent's
    *  own words, which may tag group members (SendOptions); every other line goes as written. */
-  private async reply(i: Inbound, text: string, held = false, mentions = false): Promise<void> {
+  private async reply(i: Inbound, text: string, held = false, mentions = false): Promise<void> { await this.post(i, text, held, mentions); }
+
+  /** `reply`, giving back what each part's send said of its message (nothing for a line that went to
+   *  no platform). `ask`: the line is that permission request's (SendOptions). */
+  private async post(i: Inbound, text: string, held = false, mentions = false, ask?: string): Promise<Sent[]> {
+    const made: Sent[] = [];
     // `held` is a batch of progress lines, which a client already saw as they came.
     if (!held) this.emit(sessionKey(i), { type: 'out', text });
-    if (i.surface === 'app') return;
+    if (i.surface === 'app') return made;
     const sender = this.senders[i.platform];
     if (!sender) throw new Error(`${i.platform} is not set up in the routing table`);
     let parts = chunk(text, LIMITS[i.platform]);
@@ -1272,7 +1464,9 @@ export class Orchestrator {
     const send = <T>(f: () => Promise<T>) => (held ? f() : this.retrySend(f));
     for (let n = 0; n < parts.length; n++) {
       if (!(held && n === 0)) await this.rateFor(i.platform).acquire(n === 0);
-      try { await send(() => sender.send(i.chat, parts[n], i.thread, { mentions })); }
+      // A request's controls go under the last part, where its "Reply yes or no" is.
+      const o: SendOptions = ask !== undefined && n === parts.length - 1 ? { mentions, ask } : { mentions };
+      try { made.push((await send(() => sender.send(i.chat, parts[n], i.thread, o))) ?? {}); }
       catch (e) {
         // What did not go out, so a kept answer is not sent twice.
         (e as { unsent?: string }).unsent = parts.slice(n).join('\n\n');
@@ -1299,6 +1493,7 @@ export class Orchestrator {
         await (route ? this.replyFromAgent(i, late, this.cfg.profiles[route.profile]) : this.reply(i, late)).catch((e) => this.log(`late answer failed key=${sessionKey(i)} ${(e as Error).message}`));
       }
     }
+    return made;
   }
 
   /**

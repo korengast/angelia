@@ -216,7 +216,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   if (cfg.telegram) {
     const token = process.env[cfg.telegram.token_env] ?? secrets[cfg.telegram.token_env];
     if (!token) throw new Error(`telegram: ${cfg.telegram.token_env} is not set`);
-    const tg = new TelegramAdapter({ token, log: logLine, inboxFor, onInbound, menuChats: cfg.routes.filter((r) => r.platform === 'telegram').map((r) => r.chat) });
+    const tg = new TelegramAdapter({ token, log: logLine, inboxFor, onInbound, onPress: (i, id, allow) => orch.pressed(i, id, allow), menuChats: cfg.routes.filter((r) => r.platform === 'telegram').map((r) => r.chat) });
     senders.telegram = tg;
     telegram = tg;
     adapters.push(tg);

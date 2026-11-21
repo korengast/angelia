@@ -329,10 +329,10 @@ footer a{text-decoration:none}
       <div class="msg me">Why did last night's build fail?</div>
       <div class="msg bot">The date parser test fails on the day the clocks change. The fix is one line in <code>src/date.ts</code>. Apply it?</div>
       <div class="msg me">Yes, and run the tests</div>
-      <div class="msg ask"><span class="badge"><svg aria-hidden="true"><use href="#i-shield"/></svg>Needs your approval</span>🔐 Bash: <code>npm test</code><br>Reply <code>yes 6b480a6f</code> or <code>no 6b480a6f</code></div>
-      <div class="msg me">yes 6b480a6f</div>
+      <div class="msg ask"><span class="badge"><svg aria-hidden="true"><use href="#i-shield"/></svg>Needs your approval</span>🔐 Bash: <code>npm test</code><br>Reply <code>yes</code> or <code>no</code> (request 6b480a6f)</div>
+      <div class="msg me">yes</div>
       <div class="msg bot">38 tests green. Pushed to <code>fix/dst</code>.</div>
-      <figcaption>It runs only after an owner answers <b>yes</b> with the one-time code. Anyone else's yes is refused, and no answer means no.</figcaption>
+      <figcaption>It runs only after an owner answers <b>yes</b>. Anyone else's yes approves nothing, and no answer means no.</figcaption>
     </figure>
   </div>
 </div>
@@ -409,7 +409,7 @@ footer a{text-decoration:none}
     <ul class="guards">
       <li class="wide"><svg aria-hidden="true"><use href="#i-nodb"/></svg><div><h3>Your messages are not stored.</h3><p>Angelia hands each message to your CLI and keeps no copy: no message history, no database, no Angelia server. Your conversations stay where they already are, in your CLI's own history on your machine. Angelia keeps only what routing needs, which chat goes to which session, and its log holds ids and counts, not the conversation. A file you send is saved in that chat's folder, so the agent can open it.</p></div></li>
       <li><svg aria-hidden="true"><use href="#i-lock"/></svg><h3>Strangers get nothing</h3><p>Only chats you paired reach the agent. Anyone else gets no reply at all. In a group, only the people you name are heard.</p></li>
-      <li><svg aria-hidden="true"><use href="#i-user"/></svg><h3>Only owners approve</h3><p>A risky command waits for an owner's <code>yes</code> with its one-time code. A group member's yes is refused. No answer means no.</p></li>
+      <li><svg aria-hidden="true"><use href="#i-user"/></svg><h3>Only owners approve</h3><p>A risky command waits for an owner's <code>yes</code>. A group member's yes approves nothing. No answer means no.</p></li>
       <li><svg aria-hidden="true"><use href="#i-key"/></svg><h3>Secrets fenced off</h3><p>Every profile is compiled with deny rules for your SSH keys, cloud logins, the bot token and the other profiles' folders.</p></li>
       <li><svg aria-hidden="true"><use href="#i-box"/></svg><h3>A sandbox when you want one</h3><p>Deny rules stop the agent's file tools; a sandbox also stops every program it runs. Codex and pi run every command in an OS sandbox. A Claude Code profile gets the same with one line: <code>sandbox: true</code> (on Linux: after one extra setup step, and not in <code>bypassPermissions</code>).</p></li>
       <li><svg aria-hidden="true"><use href="#i-stop"/></svg><h3>Tampering stops it</h3><p>If a profile's rules are loosened, by the agent or by hand, it does not start until you compile it again. The chat says why.</p></li>
@@ -427,7 +427,7 @@ footer a{text-decoration:none}
     <p class="kicker">What it does today</p>
     <h2>Built for chat, <em>not a terminal.</em></h2>
     <div class="feat">
-      <div><h3>You approve risky steps</h3><p>Before a risky command, the chat shows it with a code. Only an owner's <code>yes</code> plus that code runs it. No answer means no.</p></div>
+      <div><h3>You approve risky steps</h3><p>Before a risky command, the chat shows it and waits. Only an owner's <code>yes</code> runs it; in a group, as a reply to the request or with a mention of the bot. No answer means no.</p></div>
       <div><h3>Quiet in groups</h3><p>It answers only when mentioned, and only to people you allow. Strangers get nothing.</p></div>
       <div><h3>Every chat remembers</h3><p>Each chat keeps its own session, even after a restart. <code>/new</code> starts fresh.</p></div>
       <div><h3>Keys stay out</h3><p>API keys are kept out of the agent's environment, and in the default mode a session that would bill an API key is refused. You stay on your subscription.</p></div>

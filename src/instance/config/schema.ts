@@ -42,7 +42,7 @@ export const Profile = z.object({
   /** Denied on top of defaults.deny. A profile's own deny beats everything. */
   deny: z.array(z.string()).default([]),
   permission_mode: PermissionMode.default('acceptEdits'),
-  /** What a permission request does. chat: ask the owners in the chat (yes/no <code>). deny: refuse it
+  /** What a permission request does. chat: ask the owners in the chat (yes or no). deny: refuse it
    *  at once without asking; the agent hears "not permitted" and tells the chat in its own words. */
   permission_prompts: z.enum(['chat', 'deny']).default('chat'),
   model: Model.optional(),
