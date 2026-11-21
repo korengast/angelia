@@ -91,12 +91,12 @@ export class SenderQuota {
   private seen = new Map<string, number[]>();
   constructor(private readonly perHour = FILES_PER_SENDER_HOUR, private readonly now = () => Date.now()) {}
 
-  /** True, and counted, when `sender` may have one more file now. */
-  take(sender: string): boolean {
+  /** True, and counted, when `sender` may have one more now; `perHour` replaces the constructor's limit. */
+  take(sender: string, perHour = this.perHour): boolean {
     const cutoff = this.now() - 3600_000;
     for (const [k, v] of this.seen) { const kept = v.filter((t) => t > cutoff); if (kept.length) this.seen.set(k, kept); else this.seen.delete(k); }
     const list = this.seen.get(sender) ?? [];
-    if (list.length >= this.perHour) return false;
+    if (list.length >= perHour) return false;
     list.push(this.now());
     this.seen.set(sender, list);
     return true;
