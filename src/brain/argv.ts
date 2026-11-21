@@ -42,7 +42,7 @@ export function claudeArgv(p: Profile, s: BrainSession, bin = 'claude', system?:
  *  print mode the flag is accepted and ignored), so print mode never passes it; tui mode always does. */
 export function remoteControlName(p: Profile, s: BrainSession): string {
   const dir = p.cwd.replace(/\/+$/, '').split('/').pop() || 'angelia';
-  return `angelia-${dir}-${s.id.slice(0, 8)}`.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').slice(0, 60);
+  return `${p.session_prefix ?? 'angelia'}-${dir}-${s.id.slice(0, 8)}`.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').slice(0, 60);
 }
 
 /** The same CLI as `claudeArgv`, hosted in a terminal instead of print mode. An interactive

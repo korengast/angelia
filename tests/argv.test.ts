@@ -49,6 +49,7 @@ test('print mode never passes --remote-control (ignored there); the session name
   assert.ok(!a.includes('--remote-control'));
   assert.equal(remoteControlName(p, { id: 'abcdef12-0000-0000-0000-000000000000', started: false }), 'angelia-notes-abcdef12');
   assert.equal(remoteControlName({ ...p, cwd: '/x/σημειώσεις ταξιδιού' }, { id: '12345678-1', started: true }), 'angelia-12345678');
+  assert.equal(remoteControlName({ ...p, session_prefix: 'angelia-vps' }, { id: 'abcdef12-0000-0000-0000-000000000000', started: false }), 'angelia-vps-notes-abcdef12');
 });
 
 test('claudeTuiArgv runs the CLI the way a person does: no print mode, a Stop hook, Remote Control', async () => {

@@ -293,3 +293,31 @@ test('check-config warns that permission_prompts: deny on a bypass profile refus
   const hits = configWarnings(cfg).filter((w) => w.includes('permission_prompts'));
   assert.deepEqual(hits, ['profiles.yolo: permission_prompts: deny with bypassPermissions refuses nothing: that mode never asks. Pick a mode that asks (default or acceptEdits) for deny to refuse those requests']);
 });
+
+test('session_prefix: from defaults, a profile sets its own, and it must start with angelia', () => {
+  const cfg = loadConfig(fixture(`
+profiles:
+  family: { cwd: $DIR/fam }
+  coding: { cwd: $DIR/code, session_prefix: angelia-dev }
+routes: []
+defaults: { session_prefix: angelia-vps }
+`));
+  assert.equal(cfg.profiles.family.session_prefix, 'angelia-vps');
+  assert.equal(cfg.profiles.coding.session_prefix, 'angelia-dev');
+  const none = loadConfig(fixture(`
+profiles:
+  family: { cwd: $DIR/fam }
+routes: []
+`));
+  assert.equal(none.profiles.family.session_prefix, undefined, 'unset: the name starts with angelia, as before');
+  assert.throws(() => loadConfig(fixture(`
+profiles:
+  family: { cwd: $DIR/fam, session_prefix: vps }
+routes: []
+`)), /session_prefix/);
+  assert.throws(() => loadConfig(fixture(`
+profiles:
+  family: { cwd: $DIR/fam, session_prefix: angelia-canary }
+routes: []
+`)), /self-test/);
+});

@@ -33,6 +33,8 @@ export const BACKENDS = ['claude-code', 'grok', 'pi', 'codex'] as const;
 // One word that cannot pass for a flag: it goes on the CLI's command line, and needs no confirm (accepted.ts).
 const Model = z.string().regex(/^[^\s-]\S*$/, 'a model name: one word, not starting with -');
 
+const SessionPrefix = z.string().regex(/^angelia(-[A-Za-z0-9]+)*$/, 'session_prefix: angelia, or angelia- and letters, digits and dashes (angelia-vps): Angelia finds its own panes by that start')
+  .refine((s) => !/^angelia-canary(-|$)/i.test(s), 'session_prefix: angelia-canary is the self-test\'s own');
 export const Profile = z.object({
   cwd: z.string(),
   /** Capabilities this profile gets on top of defaults.capabilities; they also lift a default deny. */
@@ -53,6 +55,9 @@ export const Profile = z.object({
   shell_timeout_seconds: z.number().positive().max(2_000_000).default(60),
   /** Launch the agent with Claude in Chrome (--chrome): browser tools inside the user's everyday Chrome. */
   chrome: z.boolean().default(false),
+  /** The start of this profile's tmux pane and Remote Control name: <prefix>-<folder>-<id>. Unset:
+   *  defaults.session_prefix, else angelia. Tells several instances apart in the Claude app. */
+  session_prefix: SessionPrefix.optional(),
   /** Which local CLI answers this profile. claude-code: Claude Code. grok: Grok Build. pi: pi. codex: Codex. */
   backend: z.enum(BACKENDS).default('claude-code'),
   /** The backend's executable, when it is not `claude` / `grok` / `pi` / `codex` on PATH or in the usual
@@ -169,6 +174,9 @@ export const Config = z.object({
        *  through add_dirs: a profile, or one chat (`whatsapp:<id>`), which then is also the pick when
        *  that profile has several chats. The chat gets a brief and the project's path. Unset: refused. */
       handoff: z.string().optional(),
+      /** The start of every profile's tmux pane and Remote Control name, unless the profile sets its
+       *  own: angelia-vps gives angelia-vps-<folder>-<id>. Default angelia. */
+      session_prefix: SessionPrefix.optional(),
     })
     .strict()
     .prefault({}),

@@ -141,6 +141,7 @@ export function loadConfig(path: string): Config {
   const cfg = parsed.data;
   removed.set(cfg, removedKeys(raw));
   for (const [name, p] of Object.entries(cfg.profiles)) {
+    if (p.session_prefix === undefined && cfg.defaults.session_prefix) p.session_prefix = cfg.defaults.session_prefix;
     p.cwd = resolve(expandHome(p.cwd));
     p.add_dirs = p.add_dirs.map((d) => resolve(expandHome(d)));
     if (!folderOrHidden(p.cwd)) throw new ConfigError(`profiles.${name}.cwd: not a directory: ${p.cwd}`);
