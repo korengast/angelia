@@ -9,7 +9,7 @@ import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent, type UnaskedAnswer } from '../core/types.js';
 import { isLimitText } from '../core/deliver/text.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
-import { PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer } from './brain.js';
+import { PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
 import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
@@ -101,23 +101,47 @@ export const KEY_MISS_LINE = 'tmux: marker dropped, prompt key miss:';
 /** Background tasks remembered as started in a turn of Angelia's: a task's end is delivered by these. */
 const OURS_MAX = 500;
 
+/** Calls kept while their result is awaited, so a turn of a thousand shell commands does not grow the map. */
+const CALLS_MAX = 500;
+
 /**
- * The tool_use ids of the background tasks a slice of transcript rows starts: a shell command sent to
- * the background (its result row carries `backgroundTaskId`) and a subagent launched to run on its own
- * (`status: async_launched`, or `teammate_spawned` for a named one). The end of each comes back as a
- * `<task-notification>` naming the same id, which the Stop hook reports as `origin_ids`.
+ * The tool_use ids of the background tasks a slice of transcript rows starts, as Claude Code writes
+ * them: a shell command sent to the background (a `Bash` call whose result row carries
+ * `backgroundTaskId`) and a subagent launched to run on its own (`status: async_launched`, or
+ * `teammate_spawned` for a named one). The end of each comes back as a `<task-notification>` naming the
+ * same id, which the Stop hook reports as `origin_ids`. `calls`: the kind of each call whose result
+ * has not come yet, kept by the caller across slices (a call and its result may be read apart).
  */
-export function backgroundStarts(chunk: string): string[] {
+export function backgroundStarts(chunk: string, calls: Map<string, 'bash' | 'agent'> = new Map()): string[] {
   const out: string[] = [];
+  type Block = { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown };
   for (const l of chunk.split('\n')) {
     let r: { type?: unknown; message?: { content?: unknown }; toolUseResult?: unknown } | null;
     try { r = JSON.parse(l); } catch { continue; }
-    if (r?.type !== 'user' || !Array.isArray(r.message?.content)) continue;
-    const results = (r.message.content as { type?: unknown; tool_use_id?: unknown }[]).filter((b) => b?.type === 'tool_result' && typeof b.tool_use_id === 'string');
+    if (!Array.isArray(r?.message?.content)) continue;
+    const content = r.message.content as Block[];
+    if (r.type === 'assistant') {
+      for (const b of content) {
+        if (b?.type !== 'tool_use' || typeof b.id !== 'string') continue;
+        if (b.name === 'Bash') calls.set(b.id, 'bash');
+        else if (b.name === 'Agent' || b.name === 'Task') calls.set(b.id, 'agent');
+        else continue;
+        if (calls.size > CALLS_MAX) calls.delete(calls.keys().next().value!);
+      }
+      continue;
+    }
+    if (r.type !== 'user') continue;
+    const results = content.filter((b) => b?.type === 'tool_result' && typeof b.tool_use_id === 'string');
     // The result object belongs to the row's one call; a row of several is not guessed at.
     if (results.length !== 1) continue;
+    const id = String(results[0].tool_use_id), kind = calls.get(id);
+    calls.delete(id);
     const res = r.toolUseResult as { backgroundTaskId?: unknown; status?: unknown } | undefined;
-    if (res && typeof res === 'object' && (res.backgroundTaskId || res.status === 'async_launched' || res.status === 'teammate_spawned')) out.push(String(results[0].tool_use_id));
+    if (!res || typeof res !== 'object') continue;
+    // A background id counts for a shell call only (a call not seen is taken for one, as Claude Code
+    // gives that id to shell commands alone).
+    if (res.backgroundTaskId && (kind ?? 'bash') === 'bash') out.push(id);
+    else if (res.status === 'async_launched' || res.status === 'teammate_spawned') out.push(id);
   }
   return out;
 }
@@ -275,6 +299,8 @@ export class TuiBrain extends EventEmitter implements Brain {
   /** Tool-use ids of the background tasks started in Angelia's turns (read while a turn of its own
    *  ran). A task the owner started from the app is not among them. */
   private ours = new Set<string>();
+  /** The calls that may start a background task, until their result row is read (backgroundStarts). */
+  private calls = new Map<string, 'bash' | 'agent'>();
   /** Rows read now are of a turn Angelia typed here: set at its Enter (submit), cleared when that turn
    *  ends or its reader changes. Not turnSentAt: adopt() sets that with the transcript read from its
    *  start, and a released pane keeps it. */
@@ -539,7 +565,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     })();
   }
 
-  async *turn(text: string): AsyncGenerator<BrainEvent> {
+  async *turn(text: string, o: TurnFlags = {}): AsyncGenerator<BrainEvent> {
     this.lastUsedAt = Date.now();
     const problem = await (this.ready ?? Promise.resolve('brain not started'));
     if (problem) { yield { kind: 'result', text: '', isError: true, reason: problem }; return; }
@@ -561,7 +587,8 @@ export class TuiBrain extends EventEmitter implements Brain {
       sentAt = Date.now();
       // From here on a marker is this turn's (takeMarker): the reader between turns keeps off it.
       this.turnSentAt = sentAt;
-      this.recording = true;
+      // A turn typed in the desk app is the owner's own: what it starts is not the chat's (TurnFlags).
+      this.recording = !o.app;
       this.heldSince ??= sentAt;
       this.quietEnd = undefined;
       this.typedKey = promptKey(cleanText(text));
@@ -639,7 +666,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const deciding = new Map<string, { tool: string; input: unknown; since: number }>();
     const dialogs = new DialogWatch();
     const screen = new ScreenDialogs();
-    let quietSince = 0, held = false, grewAt = 0;
+    let quietSince = 0, held = false, grewAt = 0, failed = false;
     // The screen above the box's foot, and when it last changed.
     let lastAbove = '', aboveAt = 0;
     const quietMs = this.opts.quietMs ?? QUIET_MS, quietTextMs = this.opts.quietTextMs ?? QUIET_TEXT_MS, quietOpenMs = this.opts.quietOpenMs ?? QUIET_OPEN_MS;
@@ -667,6 +694,8 @@ export class TuiBrain extends EventEmitter implements Brain {
         const rows = this.readTranscript();
         if (this.at !== readTo) grewAt = Date.now(); // a row of any kind, bookkeeping too
         if (rows.length) { quietSince = 0; movedAt = Date.now(); }
+        // This turn's reader: whether the CLI's error row is the last word it read (turnRows).
+        if (this.at !== readTo) failed = this.rows === 'error';
         for (const ev of rows) {
           if (ev.kind === 'text') { if (pending) yield { kind: 'progress', text: pending }; pending = ev.text; }
           else if (pending) { yield { kind: 'progress', text: pending }; pending = null; }
@@ -679,8 +708,10 @@ export class TuiBrain extends EventEmitter implements Brain {
           if (m?.at && m.at >= sentAt && m.origin === 'notification') {
             // Its last text was read here as this turn's: it is that turn's answer, never a progress line of this one.
             pending = null;
-            const a = this.takeIdle(true);
+            const a = this.takeIdle(true, failed);
             if (a) yield { kind: 'unasked', ...a };
+            // That error row was the other turn's: it says nothing of this turn's own answer.
+            failed = false;
             continue;
           }
           // A turn whose one typed prompt is not what this turn typed: someone pressed Enter in the
@@ -816,7 +847,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       const rows = buf.subarray(0, cut).toString('utf8');
       this.rows = turnRows(rows, this.rows);
       // Started while a turn of Angelia's was read: its end may wake the agent, and that answer is the chat's.
-      if (this.recording) for (const id of backgroundStarts(rows)) {
+      if (this.recording) for (const id of backgroundStarts(rows, this.calls)) {
         this.ours.add(id);
         if (this.ours.size > OURS_MAX) this.ours.delete(this.ours.values().next().value!);
       }
@@ -873,7 +904,7 @@ export class TuiBrain extends EventEmitter implements Brain {
    * Never the CLI's own error row or usage limit, an empty answer, or `[SILENT]`. Each marker not
    * delivered is one log line with the reason, never the words.
    */
-  private takeIdle(inTurn = false): UnaskedAnswer | null {
+  private takeIdle(inTurn = false, turnFailed = false): UnaskedAnswer | null {
     const m = this.readMarker();
     if (!m?.at) return null;
     rmSync(this.markerPath, { force: true });
@@ -884,9 +915,9 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.transcript = m.transcript_path; // the same file under another spelling of its folder
     }
     // The rows since the last look: whether the CLI's error row is the last word. Not inside a turn:
-    // its own reader reads them, for the chat.
+    // its own reader reads them, for the chat, and says what it found (`turnFailed`).
     if (!inTurn) this.readTranscript();
-    const failedRow = this.rows === 'error';
+    const failedRow = inTurn ? turnFailed : this.rows === 'error';
     const late = inTurn ? undefined : this.quietEnd;
     if (late && m.at >= late.sentAt) {
       // Whatever this marker is, the turn closed on the quiet path is over: a Stop only comes after it.

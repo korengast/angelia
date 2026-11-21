@@ -122,7 +122,7 @@ export const FAST = { quietMs: 300, quietTextMs: 700, quietOpenMs: 900, idlePoll
 
 /**
  * One Telegram DM routed to a tmux profile whose panes are stubs, through the real orchestrator. `sent`:
- * what the chat got, in order. Each brain the pool makes gets a new stub pane on the same session folder.
+ * what the chat got, in order. Each brain the orchestrator makes gets a new stub pane on the same session folder.
  * `onEnter` / `onPaste` count across panes, from 1. `defaults`: the table's (a short idle time).
  */
 export async function stubChat(waits: Partial<typeof FAST> = {}, defaults: Record<string, unknown> = {}) {

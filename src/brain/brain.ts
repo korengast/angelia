@@ -4,6 +4,9 @@ import type { BrainEvent } from '../core/types.js';
 
 export type BackendName = Profile['backend'];
 
+/** What a brain may need to know of a turn besides its text. */
+export interface TurnFlags { app?: boolean }
+
 export interface BrainOptions {
   bin?: string;
   permissionTimeoutMs?: number;
@@ -70,7 +73,9 @@ export interface Brain extends EventEmitter {
   backendSessionId?: string;
   readonly alive: boolean;
   start(): void;
-  turn(text: string): AsyncGenerator<BrainEvent>;
+  /** `o.app`: the turn was typed in the desk app, not the chat. A tmux pane then takes none of the
+   *  turn's background tasks for the chat's: the answer to their end must not reach the chat. */
+  turn(text: string, o?: TurnFlags): AsyncGenerator<BrainEvent>;
   /** `id` may be a prefix of a pending request id (the chat sees the first 8 chars). `how.message`
    *  is what the agent hears with a refusal, where the backend can pass one; the others ignore it. */
   answerPermission(id: string, allow: boolean, how?: PermissionAnswer): boolean;

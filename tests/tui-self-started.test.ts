@@ -11,7 +11,7 @@ import { ROW, stubChat, until, wait, type PaneStub } from './tui-stub.js';
 process.env.ANGELIA_STATE_DIR = mkdtempSync(join(tmpdir(), 'angelia-self-'));
 process.env.ANGELIA_TMUX_SOCKET = `angelia-test-self-${process.pid}`;
 
-/** A first turn, answered the usual way: from its end on the pool holds the session between turns. */
+/** A first turn, answered the usual way: from its end on the daemon holds the session between turns. */
 const first = (n: number, p: PaneStub) => {
   if (n === 1) { p.rows(p.prompt(), ...ROW.background('toolu_1'), ...ROW.background('toolu_2'), ...ROW.background('toolu_3'), ROW.text('Started.')); p.stop('Started.'); }
 };
@@ -132,13 +132,13 @@ describe('tmux mode: a turn the agent started by itself, between turns', { concu
     assert.equal((c.o as any).selfSent.get(c.key).at.length, 6);
   });
 
-  test('a session the pool let go of is not read: no reader stays, and what it said meanwhile is not sent later', { timeout: 18_000 }, async (t) => {
+  test('a session the daemon let go of is not read: no reader stays, and what it said meanwhile is not sent later', { timeout: 18_000 }, async (t) => {
     const c = await stubChat(); t.after(() => c.o.shutdown());
     // No background task here: one that runs keeps the session held.
     c.onEnter((n, p) => { p.rows(p.prompt(), ROW.text(n === 1 ? 'Started.' : 'Second.')); p.stop(n === 1 ? 'Started.' : 'Second.'); });
-    assert.equal((await c.say('start the build'), c.brain().idle !== undefined), true, 'held by the pool: read between turns');
+    assert.equal((await c.say('start the build'), c.brain().idle !== undefined), true, 'held by the daemon: read between turns');
     const b1 = c.brain(), p1 = c.pane();
-    // The idle time passes (defaults.idle_exit_minutes): the pool lets the pane go, and it lives on.
+    // The idle time passes (defaults.idle_exit_minutes): the daemon lets the pane go, and it lives on.
     await c.o.reapIdle(Date.now() + 31 * 60_000);
     assert.equal(b1.idle, undefined, 'no timer left');
     assert.equal(b1.alive, false);
@@ -189,7 +189,7 @@ describe('tmux mode: a turn the agent started by itself, between turns', { concu
     p.mark({ text: 'Your own build.', origin: 'notification', origin_ids: ['toolu_owner'] });
     await until(() => !p.marked());
     assert.equal(b.lastUsedAt, used);
-    // Nothing more arrives: after the idle time the pool lets the pane go, as it always did.
+    // Nothing more arrives: after the idle time the daemon lets the pane go, as it always did.
     await wait(IDLE_MS + 200);
     await c.o.reapIdle();
     assert.equal(b.alive, false);
@@ -215,6 +215,22 @@ describe('tmux mode: a turn the agent started by itself, between turns', { concu
     assert.deepEqual(c.sent, ['Started.']);
   });
 
+  test('a task started by a turn typed in the desk app is the owner\'s: the answer to its end never reaches the chat', { timeout: 18_000 }, async (t) => {
+    const c = await stubChat(); t.after(() => c.o.shutdown());
+    const out: string[] = [];
+    c.o.onEvent((e) => { if (e.type === 'out') out.push(e.text); });
+    c.onEnter((n, p) => { if (n === 1) { p.rows(p.prompt(), ...ROW.background('toolu_1'), ROW.text('Started.')); p.stop('Started.'); } });
+    await c.o.injectTurn(c.key, 'from the desk: start my private build', false, undefined, 'scheduled', 'app');
+    await until(() => out.includes('Started.'));
+    const p = c.pane();
+    p.rows(ROW.notification(), ROW.text('Private build passed.'));
+    p.stop('Private build passed.');
+    await taken(p);
+    await wait(250);
+    assert.deepEqual(c.sent, [], 'nothing of the app turn reached the chat');
+    assert.ok(c.lines().some((l) => l.includes('the work it reports was not started by a turn of this chat')), c.lines().join('\n'));
+  });
+
   test('a late answer of a turn typed in the desk app goes back to the app, not to the chat', { timeout: 18_000 }, async (t) => {
     const c = await stubChat(); t.after(() => c.o.shutdown());
     const out: string[] = [];
@@ -227,4 +243,18 @@ describe('tmux mode: a turn the agent started by itself, between turns', { concu
     assert.deepEqual(c.sent, [], 'the chat got nothing: the turn was the app\'s');
     assert.deepEqual(c.lines(), [`late answer delivered key=${c.key} chars=17`]);
   });
+});
+
+test('a background start is a shell call with a background id, or a subagent launched on its own; a background id on another call is not', async () => {
+  const { backgroundStarts } = await import('../src/brain/tui.js');
+  const call = (id: string, name: string) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: {} }] } });
+  const result = (id: string, res: object) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] }, toolUseResult: res });
+  const rows = (...r: object[]) => r.map((x) => JSON.stringify(x)).join('\n');
+  const calls = new Map<string, 'bash' | 'agent'>();
+  assert.deepEqual(backgroundStarts(rows(call('b1', 'Bash'), call('a1', 'Agent'), call('a2', 'Task')), calls), []);
+  // The results come in a later slice: the calls were kept.
+  assert.deepEqual(backgroundStarts(rows(result('b1', { backgroundTaskId: 'x' }), result('a1', { backgroundTaskId: 'y' }), result('a2', { status: 'async_launched' })), calls), ['b1', 'a2']);
+  assert.equal(calls.size, 0, 'a call goes once its result is read');
+  assert.deepEqual(backgroundStarts(rows(result('z9', { backgroundTaskId: 'w' }))), ['z9'], 'a call not seen counts as a shell call');
+  assert.deepEqual(backgroundStarts(rows(call('r1', 'Read'), result('r1', { backgroundTaskId: 'w' }))), ['r1'], 'only Bash, Agent and Task calls are kept');
 });

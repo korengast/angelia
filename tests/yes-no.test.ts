@@ -24,8 +24,8 @@ const DM = 'telegram:1', GROUP = 'whatsapp:g@g.us', OPEN = 'whatsapp:open@g.us';
 /** The wait these tests use in place of the three seconds. */
 const MIN = 40;
 
-/** `people`: who the platform says is in each group (none: it cannot say). Every send gets a message id, as a real one does. */
-function setup(opts: OrchestratorOptions = {}, people: Record<string, string[]> = {}) {
+/** Every send gets a message id, as a real one does. */
+function setup(opts: OrchestratorOptions = {}) {
   const cfg = Config.parse({
     profiles: { a: { cwd: here } },
     routes: [
@@ -39,7 +39,6 @@ function setup(opts: OrchestratorOptions = {}, people: Record<string, string[]> 
   let n = 0;
   const sender = {
     send: async (_chat: string, text: string) => { sent.push(text); const id = `m${++n}`; ids.set(text, id); return { id }; },
-    people: async (chat: string) => people[chat],
   };
   const o = new Orchestrator(cfg, { telegram: sender, whatsapp: sender },
     { stateDir: mkdtempSync(join(tmpdir(), 'angelia-yesno-')), bins: { 'claude-code': FAKE }, bareAnswerMinMs: MIN, log: (l) => logs.push(l), ...opts });
@@ -74,10 +73,10 @@ test('the words: yes, no, y, n, כן, לא alone, any case, a full stop or excla
   // The bot's own @name, as the adapter read it in this message, and nobody else's.
   const bot = ['@Angelia_bot', '@15550000000'];
   for (const [said, allow] of [['@Angelia_bot yes', true], ['yes @angelia_BOT', true], ['כן @15550000000', true], ['@15550000000 no.', false], ['no @Angelia_bot.', false]] as const) assert.equal(parseBareAnswer(said, bot), allow, said);
-  for (const said of ['@972500000001 כן', 'yes @972500000001', '@ann yes', '@Angelia_bot @ann yes', '@Angelia_botx yes']) assert.equal(parseBareAnswer(said, bot), null, `${said}: said to someone else`);
-  assert.equal(parseBareAnswer('@972500000001 כן'), null, 'no mention is stripped that the adapter did not name as the bot\'s');
+  for (const said of ['@15550000001 כן', 'yes @15550000001', '@ann yes', '@Angelia_bot @ann yes', '@Angelia_botx yes']) assert.equal(parseBareAnswer(said, bot), null, `${said}: said to someone else`);
+  assert.equal(parseBareAnswer('@15550000001 כן'), null, 'no mention is stripped that the adapter did not name as the bot\'s');
   // With an id it is the other parser's, as before: the id names the request, so any mention may ride along.
-  assert.deepEqual(parsePermissionReply('yes d640cc6a @972501234567'), { id: 'd640cc6a', allow: true });
+  assert.deepEqual(parsePermissionReply('yes d640cc6a @15551234567'), { id: 'd640cc6a', allow: true });
   assert.equal(parsePermissionReply('yes'), null);
 });
 
@@ -212,7 +211,7 @@ test('a reply picks a request by the id of the message replied to, never by what
 });
 
 test('a reply "yes" to a person\'s message, or to the agent\'s own question, with a request open: not an answer, a message for the agent', async (t) => {
-  const { o, sent, replyTo } = setup({}, { 'open@g.us': ['u1', 'member'] }); t.after(() => o.shutdown());
+  const { o, sent, replyTo } = setup(); t.after(() => o.shutdown());
   const f = asker(o, OPEN);
   // A member's turn asks. Then the member writes to the owner, who swipe-replies "כן" to that.
   const turn = await ask(o, sent, any('', 'member'), [A]);
@@ -263,7 +262,7 @@ test('a reply cannot reach past its chat: a request line of another chat is no r
 });
 
 test('in a group with other people a bare word is an answer only when it names the bot', async (t) => {
-  const { o, sent } = setup({}, { 'open@g.us': ['u1', 'member'] }); t.after(() => o.shutdown());
+  const { o, sent } = setup(); t.after(() => o.shutdown());
   // The group that hears everything, with a member who is no owner: "yes" may be said to that member.
   const f = asker(o, OPEN);
   const turn = await ask(o, sent, any('', 'member'), [A]);
@@ -272,7 +271,7 @@ test('in a group with other people a bare word is an answer only when it names t
   assert.deepEqual(f.answers, [], 'said to nobody in particular: not taken');
   assert.deepEqual(sent, [LINE_A], 'and no line about it');
   // "@<a member> yes": the mention is not the bot's.
-  const toMember = o.handle(any('@972500000001 yes'));
+  const toMember = o.handle(any('@15550000001 yes'));
   await sleep(40);
   assert.deepEqual(f.answers, []);
   // "@bot yes" is said to the bot.
@@ -281,7 +280,7 @@ test('in a group with other people a bare word is an answer only when it names t
   assert.deepEqual(f.answers, [[A, true]]);
   assert.equal(f.turns.length, 3, 'the two that were no answer went to the agent, after the turn');
   assert.match(f.turns[1], /כן$/);
-  assert.match(f.turns[2], /@972500000001 yes$/);
+  assert.match(f.turns[2], /@15550000001 yes$/);
 });
 
 test('in a group a bare word that does not name the bot is a message, whoever the people are', async (t) => {

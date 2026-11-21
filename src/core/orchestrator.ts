@@ -746,7 +746,7 @@ export class Orchestrator {
     }
     const b = await this.brainFor(key, name);
     const text = preface ? `${preface}\n\n${agentText(i, bare)}` : agentText(i, bare);
-    const events = follow ?? b.turn(text);
+    const events = follow ?? b.turn(text, { app });
     if (!app) await sender?.typing?.(i.chat, true);
     let result: Extract<BrainEvent, { kind: 'result' }> | undefined;
     // Progress lines never hold the turn: they queue, merge while the bucket is full, and give way

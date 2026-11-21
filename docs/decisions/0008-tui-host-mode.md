@@ -67,7 +67,7 @@ warm between turns, background tasks outlive a turn, and slash commands behave a
   scheduled prompt and of a turn's end, measured on Claude Code 2.1.329; a prompt typed while a
   turn runs, a `queued_command` attachment row, read from the 2.1.330 program text), the tool-use
   ids of a task's end, and a key (a hash) of the typed prompt. The daemon reads the marker between
-  turns while the pool holds the session. A late answer of its own turn is sent when the turn's one
+  turns while the daemon holds the session. A late answer of its own turn is sent when the turn's one
   typed prompt has the key of what Angelia typed; the answer to a task's end only when each task
   it names was started in a turn Angelia typed, at most 6 an hour per chat. A turn a person typed
   or typed into, a prompt the session scheduled, a teammate's message, or a turn the hook cannot
@@ -79,7 +79,7 @@ Turns typed by the user in the Claude app are not delivered to the chat (the gat
 them). Nothing forwards them today, and a private message typed in the app should probably not
 land in a group by surprise; decide deliberately rather than inherit it.
 
-A session is read between turns only while the pool holds it (`idle_exit_minutes` after the chat's
+A session is read between turns only while the daemon holds it (`idle_exit_minutes` after the chat's
 last turn or the last turn woken by the end of the chat's own work). After a daemon restart, or once the pane is
 parked, what the agent says by itself stays in the session until the chat's next message, and is
 not sent then. A teammate's or another agent's message is `unknown` until its row is measured. A
