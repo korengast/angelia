@@ -334,7 +334,10 @@ export class Orchestrator {
         }
         const busy = [...this.brains.entries()].filter(([k, b]) => k !== key && b.alive).length;
         this.log(`restart requested key=${key} sender=${i.sender}`);
-        await this.reply(i, `Routing table ok. Restarting now; I will post here when I am back.${busy ? ` ${busy} other running session${busy > 1 ? 's' : ''} will be cut and resume on the next message.` : ''}`);
+        const said = `Routing table ok. Restarting now; I will post here when I am back.${busy ? ` ${busy} other running session${busy > 1 ? 's' : ''} will be cut and resume on the next message.` : ''}`;
+        // The restart must not hang on the reply: a chat that drops just now (WhatsApp 428) makes the
+        // send throw, and the owner already said yes. The new daemon posts "back up" when it starts.
+        try { await this.reply(i, said); } catch (e) { this.log(`restart reply not sent key=${key}: ${(e as Error).message}; restarting anyway`); }
         this.opts.restart.launch(key);
         return;
       }
