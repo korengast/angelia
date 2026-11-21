@@ -39,7 +39,9 @@ function view(cfg: Config): Record<string, unknown> {
   }
   return {
     ...cfg,
-    profiles: Object.fromEntries(Object.entries(cfg.profiles).map(([n, p]) => [n, drop(p as Record<string, unknown>, FREE_PROFILE)])),
+    // permission_prompts: chat was the old default and is written out in tables accepted before it
+    // became optional; it means what no setting means (ask), so it is no change.
+    profiles: Object.fromEntries(Object.entries(cfg.profiles).map(([n, p]) => [n, drop(p as Record<string, unknown>, p.permission_prompts === 'chat' ? new Set([...FREE_PROFILE, 'permission_prompts']) : FREE_PROFILE)])),
     routes,
     defaults: drop(cfg.defaults as Record<string, unknown>, FREE_DEFAULTS),
   };
