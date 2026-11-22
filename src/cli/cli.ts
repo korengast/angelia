@@ -8,7 +8,7 @@ import { initCommand } from '../instance/init-terminal.js';
 import { selfOverrideWarning } from '../daemon/self.js';
 import { cliWarnings } from '../brain/index.js';
 import { tmuxWarnings, tuiHookWarnings } from '../brain/tui.js';
-import { floorWarnings, nestingWarnings } from '../capabilities/compile.js';
+import { agyWarnings, floorWarnings, nestingWarnings } from '../capabilities/compile.js';
 import { guideText } from '../instance/guide.js';
 import { profilesText, profilesJson, readSessions } from '../instance/profiles.js';
 import { checkArgs, usageLines } from './cli-args.js';
@@ -51,7 +51,7 @@ try {
       // Name the table that was actually checked. The instance summary describes the default one,
       // which is the wrong thing to print when a path was given.
       console.log(rest[0] ? `table    ${resolve(path)}` : describeInstance());
-      const warnings = [...configWarnings(cfg, workspaceDir(STATE_DIR)), ...cliWarnings(cfg), ...tuiHookWarnings(cfg.profiles), ...tmuxWarnings(cfg.profiles), ...floorWarnings(cfg, STATE_DIR), ...nestingWarnings(cfg)];
+      const warnings = [...configWarnings(cfg, workspaceDir(STATE_DIR)), ...cliWarnings(cfg), ...tuiHookWarnings(cfg.profiles), ...tmuxWarnings(cfg.profiles), ...floorWarnings(cfg, STATE_DIR), ...nestingWarnings(cfg), ...agyWarnings(cfg, STATE_DIR)];
       const overridden = selfOverrideWarning();
       if (overridden) warnings.push(overridden);
       // The Node running this check, which is the one `angelia daemon` from this shell would run on.
@@ -96,9 +96,11 @@ try {
       const session = at >= 0 ? rest[at + 1] : undefined;
       const [chat] = rest.filter((a, i) => !a.startsWith('--') && !(at >= 0 && i === at + 1));
       if (!chat) throw new Error('usage: angelia export <platform:chat> [--all | --session <id>] [--tools]');
-      const { exportChat } = await import('../instance/export.js');
+      const { agyExportRows, exportChat } = await import('../instance/export.js');
       const cfg = loadConfig(configPath());
-      for (const row of exportChat(cfg, readSessions(join(STATE_DIR, 'sessions.json')), chat, { all, session, tools })) process.stdout.write(JSON.stringify(row) + '\n');
+      const sessions = readSessions(join(STATE_DIR, 'sessions.json'));
+      const agy = await agyExportRows(cfg, sessions, chat, { all, session, stateDir: STATE_DIR, warn: (l) => console.error(l) });
+      for (const row of exportChat(cfg, sessions, chat, { all, session, tools, agy })) process.stdout.write(JSON.stringify(row) + '\n');
       break;
     }
     case 'jobs': {

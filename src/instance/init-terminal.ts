@@ -1,3 +1,4 @@
+import { agyLoginProblem } from '../brain/agy-login.js';
 import { standIn } from '../adapters/telegram/adapter.js';
 import { locateBin } from '../brain/locate.js';
 import { createInterface } from 'node:readline/promises';
@@ -82,6 +83,7 @@ export async function initCommand(): Promise<void> {
     linkWhatsApp: async (authDir) => (await wa()).linkWhatsApp({ auth_dir: authDir, pairing: 'qr' }),
     waitForWhatsAppChat: async (authDir) => (await wa()).waitForWhatsAppChat(authDir),
     trustGrok: async (cwd) => { const bin = locateBin('grok'); return !!bin && trustFolder(bin, cwd); },
+    agyLogin: async () => { const bin = locateBin('agy'); return bin ? agyLoginProblem(bin) : 'agy is not installed'; },
     cloneAngelia,
     startService: process.platform === 'darwin'
       ? async (config) => (await import('../daemon/service.js')).serviceCommand(['install', config])

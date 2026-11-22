@@ -231,7 +231,7 @@ test('a Hebrew group name onboards on an accepted table, with no confirm (master
   const instance = join(t.dir, 'instance');
   const cfg = loadConfig(t.path);
   writeAccepted(cfg, instance);
-  const made = onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'hebrew@g.us', chatName: 'עוזרת בריאות שיר', instance });
-  assert.equal(made.name, 'עוזרת-בריאות-שיר');
+  const made = onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'hebrew@g.us', chatName: 'יומן מטבח ביתי', instance });
+  assert.equal(made.name, 'יומן-מטבח-ביתי');
   assert.ok(readAccepted(instance)!.profiles[made.name], 'recorded as accepted: the next /restart asks nothing');
 });

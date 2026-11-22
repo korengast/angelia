@@ -8,7 +8,7 @@ import { childEnv, versionAtLeast } from './argv.js';
 import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
 import { cacheEnv, profileCacheDir } from './cache.js';
 import { CODEX_PROFILE, codexApproval, codexConfigConflict, codexOverrides, codexSandboxNote, codexSandboxed } from './codex-config.js';
-import { profilePermissions, readRecord } from '../capabilities/compile.js';
+import { placedPermissions, readRecord } from '../capabilities/compile.js';
 import { LOST_SESSION_LINE } from './transcripts.js';
 import { codexRequest } from './tool-request.js';
 
@@ -84,7 +84,7 @@ export class CodexBrain extends EventEmitter implements Brain {
   get alive(): boolean { return !!this.child && !this.exited; }
 
   start(): void {
-    const perms = profilePermissions(this.profile.cwd);
+    const perms = placedPermissions(this.profile.cwd);
     const sandboxed = codexSandboxed(this.profile);
     // The profile's own cache folder, writable to it alone (profileCacheDir), next to the API socket in the
     // state folder the daemon passes. Without one (a bare test) there is no cache: never the live instance by default.

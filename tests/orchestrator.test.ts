@@ -280,7 +280,7 @@ test('a long quote is cut at QUOTE_MAX characters with "…", on a code point, n
 
 test('media_tags: off, a MEDIA: line stays text; on, the file is attached and the words still arrive', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'angelia-tags-'));
-  const png = join(dir, 'chart.png'); writeFileSync(png, Buffer.alloc(64, 1));
+  const png = join(mkdtempSync(join(tmpdir(), 'angelia-png-')), 'chart.png'); writeFileSync(png, Buffer.alloc(64, 1)); // outside the state folder, closed by default
   const real = realpathSync(png);
   const money = join(dir, 'money'); mkdirSync(money);
   const theirs = join(money, 'notes.pdf'); writeFileSync(theirs, Buffer.alloc(64, 1));

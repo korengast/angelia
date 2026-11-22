@@ -147,3 +147,30 @@ export function piArgv(p: Profile, s: BrainSession, bin = 'pi', system?: string,
   if (system) a.push('--append-system-prompt', system);
   return a;
 }
+
+/** The model an agy profile runs when it names none (owner decision, 2026-11-21). */
+export const AGY_DEFAULT_MODEL = 'gemini-4-hydrogen-high';
+/** agy's effort levels: the last word of its model ids (session/new availableModels, agy 1.5.14). */
+const AGY_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
+
+/** The model id agy is set to: the profile's model, else the default. agy has no effort setting of its
+ *  own: the level is the id's suffix, so an `effort` replaces the suffix the id has, or is added
+ *  (max, which agy has not, becomes xhigh). */
+export function agyModel(p: Profile): string {
+  const model = p.model ?? AGY_DEFAULT_MODEL;
+  if (!p.effort) return model;
+  const level = p.effort === 'max' ? 'xhigh' : p.effort;
+  const parts = model.split('-');
+  const base = AGY_EFFORTS.includes(parts[parts.length - 1]) ? parts.slice(0, -1).join('-') : model;
+  return `${base}-${level}`;
+}
+
+/** agy (Antigravity CLI) as an ACP agent over stdio. Sessions and the model are set inside the
+ *  protocol (brain/agy.ts). `--gemini-dir` is the profile's own folder for agy's settings, MCP config
+ *  and conversations, never the owner's ~/.gemini. Never `--dangerously-skip-permissions`: Angelia
+ *  answers every permission request. */
+export function agyArgv(p: Profile, geminiDir: string, bin = 'agy'): string[] {
+  const a = [bin, 'acp', '--gemini-dir', geminiDir];
+  for (const d of p.add_dirs) a.push('--add-dir', d);
+  return a;
+}

@@ -44,7 +44,9 @@ export const HOME_PRIVATE = {
   files: ['.netrc', '.git-credentials', '.npmrc', '.pypirc', '.pgpass', '.vault-token', '.zsh_history', '.bash_history',
     // The logins pi, grok and Codex keep in plain text: an agent that reads one holds the owner's model account.
     '.pi/agent/auth.json', '.grok/auth.json', '.codex/auth.json',
-    '.claude/.credentials.json'], // Claude Code's login on Linux is this plain file
+    '.claude/.credentials.json', // Claude Code's login on Linux is this plain file
+    // Gemini CLI's Google login (agy keeps its own copy in its --gemini-dir, closed in the state folder).
+    '.gemini/oauth_creds.json'],
 };
 
 /** The daemon's API socket in the state folder (daemon/api/server.ts). */

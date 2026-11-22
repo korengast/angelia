@@ -117,7 +117,7 @@ test('api: send-media checks the path once for every caller, and a MEDIA: line i
   const socket = join(dir, API_SOCKET);
   await api.listen(socket); t.after(() => api.close());
   const call = caller(socket);
-  const png = join(dir, 'chart.png'); writeFileSync(png, Buffer.alloc(64, 1));
+  const png = join(mkdtempSync(join(tmpdir(), 'angelia-png-')), 'chart.png'); writeFileSync(png, Buffer.alloc(64, 1)); // outside the state folder, closed by default
 
   assert.equal((await call('/send-media', { token: 'nope', key: 'telegram:1', path: png })).status, 403);
   assert.equal((await call('/send-media', { token, key: 'telegram:9', path: png })).status, 404);

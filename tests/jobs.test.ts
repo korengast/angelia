@@ -222,14 +222,23 @@ test('a job on a profile without a sandbox still runs as before', async () => {
   assert.equal(r.calls[0][2], 'done');
 });
 
-test('Claude Code rules are read as Claude reads them before they go into the sandbox', async () => {
-  const { claudeRuleAbs } = await import('../src/jobs/jobs.js');
-  assert.equal(claudeRuleAbs('Read(//etc/secret)', '/p'), 'Read(//etc/secret)');
-  assert.equal(claudeRuleAbs('Read(./secrets/**)', '/p'), 'Read(//p/secrets/**)');
-  assert.equal(claudeRuleAbs('Read(/data/**)', '/p'), 'Read(//p/data/**)');
-  assert.equal(claudeRuleAbs('Edit(notes.md)', '/p'), 'Edit(//p/notes.md)');
-  assert.equal(claudeRuleAbs('Read(~/.ssh/**)', '/p'), 'Read(~/.ssh/**)');
-  assert.equal(claudeRuleAbs('Bash(rm:*)', '/p'), 'Bash(rm:*)');
+test("the owner's rules reach a job's sandbox placed once, every form, every sandboxed backend", { skip: process.platform !== 'darwin' }, async () => {
+  const { jobSandbox } = await import('../src/jobs/jobs.js');
+  const { planProfile } = await import('../src/capabilities/compile.js');
+  for (const backend of ['claude-code', 'pi', 'codex', 'agy'] as const) {
+    const cwd = tmp(), home = tmp(), state = tmp(), outside = tmp();
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    const owner = ['Read(./dot.txt)', 'Read(bare.txt)', 'Read(/slash.txt)', `Read(/${join(outside, 'abs.txt')})`, 'Read(~/tilde.txt)'];
+    writeFileSync(join(cwd, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: owner } }));
+    const cfg = Config.parse({ profiles: { p: { cwd, backend, ...(backend === 'claude-code' ? { sandbox: true } : {}) } }, routes: [] });
+    planProfile(cfg, 'p', { stateDir: state, home }).apply();
+    const sb = jobSandbox(cfg, 'p', state, home);
+    const has = (path: string) => sb.includes(`"${path}"`) || sb.includes(path.replace(/[.]/g, '\\\\.'));
+    for (const f of ['dot.txt', 'bare.txt', 'slash.txt']) assert.ok(has(join(cwd, f)), `${backend}: ${f} in the profile folder`);
+    assert.ok(has(join(outside, 'abs.txt')), `${backend}: //abs is the disk's`);
+    assert.ok(has(join(home, 'tilde.txt')), `${backend}: ~/x is the home's`);
+    assert.ok(!sb.includes(join(cwd, cwd.slice(1))) && !sb.includes(join(cwd, outside.slice(1))), `${backend}: no rule placed twice`);
+  }
 });
 
 test('an at: job fires once on its date, and not before', async () => {

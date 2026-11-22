@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readPlainText } from '../core/paths.js';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { Profile } from '../instance/config/schema.js';
@@ -56,7 +56,7 @@ export function codexFilesystem(deny: string[], writable: string[], home = homed
 }
 
 const codexConfigText = (home: string): string => {
-  try { return readFileSync(join(process.env.CODEX_HOME ?? join(home, '.codex'), 'config.toml'), 'utf8'); }
+  try { return readPlainText(join(process.env.CODEX_HOME ?? join(home, '.codex'), 'config.toml')); }
   catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw e; }
 };
 

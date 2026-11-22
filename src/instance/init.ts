@@ -5,6 +5,7 @@ import { Config } from './config/schema.js';
 import { INSTANCE_DIR, buildSkeleton, createPrivateRepo, defaultConfigPath, ghReady, initRepo, isRepo, profileDir, profilesDir } from './instance.js';
 import { expandHome, loadConfig } from './config/load.js';
 import { isInside } from '../core/paths.js';
+import { AGY_LOGIN_HINT } from '../brain/agy-login.js';
 import { planProfile } from '../capabilities/compile.js';
 import { readEnvFile, setEnvVar } from '../core/env.js';
 import { voiceLines, voiceQuestions, type VoiceTools } from '../voice/setup.js';
@@ -37,6 +38,8 @@ export interface InitDeps {
   waitForWhatsAppChat(authDir: string): Promise<PairedChat>;
   /** Mark a folder trusted in grok, which reads a folder's CLAUDE.md only then; whether it holds. */
   trustGrok(cwd: string): Promise<boolean>;
+  /** Why agy cannot answer yet (not signed in), or undefined when it can (agy-login.ts). Absent: not checked. */
+  agyLogin?(): Promise<string | undefined>;
   /** Clone Angelia's source into a folder; returns what happened, in words, or throws. */
   cloneAngelia(dest: string): string;
   /** Overridable so tests never touch a real `gh` or a real GitHub account. */
@@ -47,7 +50,7 @@ export interface InitDeps {
   startService?(configPath: string): Promise<void>;
 }
 
-type Backend = 'claude-code' | 'grok' | 'pi' | 'codex';
+type Backend = 'claude-code' | 'grok' | 'pi' | 'codex' | 'agy';
 export interface ProfileDraft { name: string; cwd: string; permission_mode: string; shell: boolean; model?: string; backend: Backend; add_dirs?: string[]; instructions?: string }
 interface RouteDraft { platform: App; chat: string; profile: string; mention?: 'required'; owners?: string[]; allow_from?: string[] }
 
@@ -60,6 +63,8 @@ const BACKENDS: { key: Backend; label: string; bin: string; instructions: string
   { key: 'pi', label: 'pi (pi)', bin: 'pi', instructions: 'CLAUDE.md' },
   // Codex reads CLAUDE.md through the fallback name Angelia passes it (codex-config.ts).
   { key: 'codex', label: 'Codex (codex)', bin: 'codex', instructions: 'CLAUDE.md' },
+  // agy reads GEMINI.md, which Angelia writes from CLAUDE.md before every start (agy-instructions.ts).
+  { key: 'agy', label: 'Antigravity (agy)', bin: 'agy', instructions: 'CLAUDE.md' },
 ];
 
 const MODES = [
@@ -189,6 +194,7 @@ export async function runInit(d: InitDeps): Promise<{ configPath: string; envPat
     else plan.apply();
   }
   for (const p of profiles.filter((x) => x.backend === 'grok')) await grokTrust(d, p);
+  if (profiles.some((x) => x.backend === 'agy')) await agyLogin(d);
   await workspaceGit(d, skel.workspace);
   // Without a running daemon the chat just paired answers nothing, and a closed terminal looks like
   // a broken bot: the wizard offers the service rather than leaving it to a line in the README.
@@ -259,6 +265,13 @@ async function grokTrust(d: InitDeps, p: ProfileDraft): Promise<void> {
   const later = `Later: run grok --trust in ${p.cwd} once.`;
   if (!(await ask.confirm(`grok reads ${p.name}'s CLAUDE.md only in a folder it trusts. Mark ${p.cwd} as trusted in grok now?`, true))) { ask.say(later); return; }
   ask.say((await d.trustGrok(expandHome(p.cwd))) ? `grok trusts ${p.cwd}.` : `grok did not confirm the trust. ${later}`);
+}
+
+/** agy signs in in its own terminal, which no chat can answer: checked once, and said how if not. */
+async function agyLogin(d: InitDeps): Promise<void> {
+  if (!d.agyLogin) return;
+  const no = await d.agyLogin();
+  d.ask.say(no ? `${no}: ${AGY_LOGIN_HINT}.` : 'agy is signed in.');
 }
 
 /**

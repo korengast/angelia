@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, lstatSync, openSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -49,4 +49,24 @@ export function openNoFollow(path: string, flags: number, mode?: number): number
     }
     return openSync(`/proc/self/fd/${dir}/${parts[parts.length - 1]}`, flags | constants.O_NOFOLLOW, mode);
   } finally { closeSync(dir); }
+}
+
+/**
+ * The text of a plain file the daemon reads from a place an agent can write in (a profile's folder,
+ * its settings, agy's gemini dir). Opened non-blocking, so a named pipe planted there cannot hold the
+ * daemon (red team, review 3), and read only when fstat says it is a regular file; with `follow: false`
+ * a link at the last name is refused too (ELOOP). Throws like readFileSync: ENOENT when missing,
+ * EFTYPE when it is not a regular file. At most `max` bytes (default 16 MiB).
+ */
+export function readPlainText(path: string, o: { follow?: boolean; max?: number } = {}): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (o.follow === false ? constants.O_NOFOLLOW : 0));
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw Object.assign(new Error(`${path} is not a plain file`), { code: 'EFTYPE' });
+    const take = Math.min(st.size, o.max ?? 16 * 1024 * 1024);
+    const buf = Buffer.alloc(take);
+    let got = 0;
+    while (got < take) { const n = readSync(fd, buf, got, take - got, got); if (!n) break; got += n; }
+    return buf.subarray(0, got).toString('utf8');
+  } finally { closeSync(fd); }
 }

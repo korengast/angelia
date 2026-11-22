@@ -5,6 +5,7 @@ import type { Config } from './config/schema.js';
 import type { SessionMapFile } from '../core/types.js';
 import { sessionKey } from '../core/types.js';
 import { transcriptPath } from '../brain/tui.js';
+import { agyReplay } from '../brain/agy-history.js';
 
 /**
  * `angelia export <platform:chat>`: a chat's turns as JSONL, one shape whatever the backend, so a
@@ -32,7 +33,8 @@ export interface Row {
   tools?: string[];
 }
 
-export interface ExportOpts { all?: boolean; session?: string; tools?: boolean; home?: string }
+/** `agy`: each agy session's rows, replayed beforehand (agyExportRows): agy's own store is protobuf in SQLite. */
+export interface ExportOpts { all?: boolean; session?: string; tools?: boolean; home?: string; agy?: Map<string, Row[]> }
 
 /** The same rule the tui host reads live sessions with: a cwd behind a symlink is resolved first. */
 export const claudeTranscript = (cwd: string, id: string, home = homedir()): string => transcriptPath(cwd, id, home);
@@ -171,14 +173,41 @@ export function piRows(path: string | undefined, base: Base, tools = false): Row
   return out;
 }
 
+/** The sessions an export takes: one named, every one the chat had, or its active one. */
+function exportIds(sessions: SessionMapFile, chat: string, o: Pick<ExportOpts, 'all' | 'session'>): string[] {
+  const c = sessions.chats[chat];
+  if (o.session && !c?.history.some((h) => h.id === o.session)) throw new Error(`${chat} has no session ${o.session}`);
+  return o.session ? [o.session] : o.all ? (c?.history ?? []).map((h) => h.id) : c?.active ? [c.active] : [];
+}
+
+/** The rows of a chat's agy sessions, each replayed by agy (agy-history.ts), for exportChat's `agy`.
+ *  One session at a time; a session agy does not replay gives no rows, and says so on `warn`. */
+export async function agyExportRows(cfg: Config, sessions: SessionMapFile, chat: string, o: Pick<ExportOpts, 'all' | 'session'> & { stateDir: string; bin?: string; replay?: typeof agyReplay; warn?: (line: string) => void }): Promise<Map<string, Row[]>> {
+  const route = cfg.routes.find((r) => sessionKey(r) === chat);
+  const out = new Map<string, Row[]>();
+  if (!route) return out;
+  const p = cfg.profiles[route.profile];
+  const c = sessions.chats[chat];
+  for (const id of exportIds(sessions, chat, o)) {
+    const row = c?.history.find((h) => h.id === id);
+    if ((row?.backend ?? p.backend) !== 'agy' || !row?.started) continue;
+    let r: Awaited<ReturnType<typeof agyReplay>>;
+    try { r = await (o.replay ?? agyReplay)(p, id, { stateDir: o.stateDir, profileName: route.profile, bin: o.bin ?? p.bin }); }
+    catch (e) { o.warn?.(`agy did not replay session ${id}: ${(e as Error).message}`); continue; }
+    if (!r) { o.warn?.(`agy did not replay session ${id}`); continue; }
+    const base = { chat, profile: route.profile, backend: 'agy', session: id, ts: null };
+    out.set(id, r.items.map((i) => ({ ...base, role: i.role === 'user' ? 'user' as const : 'assistant' as const, text: i.text, ...(i.tools?.length ? { tools: i.tools } : {}) })));
+  }
+  return out;
+}
+
 /** The rows of one chat: its active session, one named session, or every session it has had. */
 export function exportChat(cfg: Config, sessions: SessionMapFile, chat: string, o: ExportOpts = {}): Row[] {
   const route = cfg.routes.find((r) => sessionKey(r) === chat);
   if (!route) throw new Error(`no route for ${chat}; angelia profiles lists the chats`);
   const p = cfg.profiles[route.profile];
   const c = sessions.chats[chat];
-  const ids = o.session ? [o.session] : o.all ? (c?.history ?? []).map((h) => h.id) : c?.active ? [c.active] : [];
-  if (o.session && !c?.history.some((h) => h.id === o.session)) throw new Error(`${chat} has no session ${o.session}`);
+  const ids = exportIds(sessions, chat, o);
   const out: Row[] = [];
   for (const id of ids) {
     const row = c?.history.find((h) => h.id === id);
@@ -188,6 +217,7 @@ export function exportChat(cfg: Config, sessions: SessionMapFile, chat: string, 
     else if (backend === 'codex') out.push(...codexRows(codexSessionFile(id, o.home), base, o.tools));
     else if (backend === 'pi') out.push(...piRows(piSessionFile(p.cwd, id, o.home), base, o.tools));
     else if (backend === 'claude-code') out.push(...claudeRows(claudeTranscript(p.cwd, id, o.home), base, o.tools));
+    else if (backend === 'agy') out.push(...(o.agy?.get(id) ?? []));
     // A session from a backend Angelia does not run has no reader: skipped, not guessed at.
   }
   return out;

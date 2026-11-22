@@ -15,6 +15,7 @@ import { projectsDir } from '../brain/transcripts.js';
 import { START_EXIT } from '../brain/tui.js';
 import { claudeHistory, claudeTranscriptFor, piHistory, type HistoryItem, type HistoryPage } from '../brain/history.js';
 import { grokPage, grokReplay } from '../brain/grok-history.js';
+import { agyReplay } from '../brain/agy-history.js';
 import { codexCursorFor, codexHistory } from '../brain/codex-history.js';
 import { claudeTerminalLine, remoteControlName } from '../brain/argv.js';
 import { AskError, claudeAskArgv, codexAskArgv, fileAnswer, piAskArgv, piSessionFile, runAsk, textAnswer, type AskReader } from '../brain/ask.js';
@@ -27,11 +28,12 @@ import { failureLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILE
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
-import { catalog as askCatalog, effortsFor, LABELS, type Catalog } from '../brain/catalog.js';
+import { agyCatalogFromIds, catalog as askCatalog, effortsFor, LABELS, type Catalog } from '../brain/catalog.js';
 import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
-import { agentDenyRules, profilePermissions } from '../capabilities/compile.js';
+import { agentDenyRules, placedPermissions } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
+import { stateOpenPaths } from '../capabilities/compile.js';
 import { MAX_INBOUND, SenderQuota, saveInbound } from '../adapters/inbox.js';
 import type { ChatEventBody, ChatListener } from './events.js';
 import { writeCutTurns } from './cut-turns.js';
@@ -120,7 +122,11 @@ export interface OrchestratorOptions {
 type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; follow?: AsyncGenerator<BrainEvent> };
 
 /** The backends /backend offers. */
-const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex', 'pi'];
+const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex', 'pi', 'agy'];
+/** What a profile gives up on agy, said when /backend agy switches to it (ADR 0017). */
+export const AGY_LACKS = 'agy lacks, next to Claude Code: tmux mode (tui: true), chrome: true, the prompt cache, and permission asks for the work of its subagents, swarms, workflows and schedules (they run unasked; each use is logged).';
+/** The limit of agy's sandbox, said with AGY_LACKS (red team round 2, docs/security.md). */
+export const AGY_TOKEN_NOTE = 'One limit to know: agy must read its own sign-in file, a copy of your Google sign-in for agy (an access token and a long-lived refresh token, for the access Antigravity asked when you signed in), and the network stays open, so a command agy runs can read that token and send it anywhere. Sign out of agy (or revoke it in your Google account) if a profile on agy may have been misused.';
 /** How long a CLI's model list is reused before it is asked again. */
 const CATALOG_MS = 10 * 60_000;
 
@@ -563,10 +569,17 @@ export class Orchestrator {
 
   /** The backend's catalog, asked of the CLI at most every ten minutes. Kept per profile: a CLI lists
    *  the models its keys reach, and each profile is given its own keys. */
-  private async catalogFor(profileName: string): Promise<Catalog> {
+  private async catalogFor(profileName: string, key?: string): Promise<Catalog> {
     const p = this.cfg.profiles[profileName];
     const bin = this.binFor(p);
     const k = `${profileName} ${p.backend} ${bin ?? ''}`;
+    // agy: the running session's own list, when this chat has one (no `agy models` run), kept as the
+    // catalog: /model and /effort end the session, and the next command still has the list.
+    if (p.backend === 'agy' && key) {
+      const b = this.brains.get(key) ?? this.parked.get(key);
+      const ids = (b as { availableModels?: string[] } | undefined)?.availableModels;
+      if (ids?.length) { const c = agyCatalogFromIds(ids); this.catalogs.set(k, { at: Date.now(), c }); return c; }
+    }
     const hit = this.catalogs.get(k);
     if (hit && Date.now() - hit.at < CATALOG_MS) return hit.c;
     const c = await (this.opts.catalog ?? askCatalog)(p.backend, bin, this.childEnv(profileName).env);
@@ -584,7 +597,7 @@ export class Orchestrator {
 
   private async modelCommand(i: Inbound, key: string, profileName: string, value?: string): Promise<void> {
     const p = this.cfg.profiles[profileName];
-    const c = await this.catalogFor(profileName);
+    const c = await this.catalogFor(profileName, key);
     const cli = LABELS[p.backend];
     if (!value) {
       const cur = this.current(key, profileName, 'model');
@@ -594,18 +607,29 @@ export class Orchestrator {
       return this.reply(i, [`Model: ${now}`, '', `${cli} models:`, list, ...(c.note ? [c.note] : []), '', 'Set for this session: /model <name>. Back to the profile\'s: /model default'].join('\n'));
     }
     const clear = /^(default|reset|none)$/i.test(value);
+    // agy: a full id names its effort too (gemini-x-low); the model is the id without it, and the effort
+    // it names is set with it, as /effort would.
+    let effort: string | undefined;
+    if (p.backend === 'agy' && !clear) {
+      const m = /^(.+)-(low|medium|high|xhigh)$/.exec(value);
+      if (m && (c.anyModel || c.models.some((x) => x.id === m[1]))) { value = m[1]; effort = m[2]; }
+    }
     if (!clear && !c.anyModel && !c.models.some((m) => m.id === value)) {
       return this.reply(i, `${cli} has no model ${value}. Choose one of: ${c.models.map((m) => m.id).join(', ')}.`);
     }
+    if (effort) {
+      const { levels } = effortsFor(c, value);
+      if (!levels.includes(effort)) return this.reply(i, `${cli} has no ${value} at effort ${effort}. Its efforts: ${levels.join(', ')}.`);
+    }
     this.map.ensureActive(key);
-    this.map.setOverride(key, { model: clear ? null : value });
+    this.map.setOverride(key, { model: clear ? null : value, ...(effort ? { effort } : {}) });
     await this.dropBrain(key); // the next message respawns with the override; the session id is kept
-    return this.reply(i, clear ? 'model back to the profile default.' : `model set to ${value} for this session.`);
+    return this.reply(i, clear ? 'model back to the profile default.' : `model set to ${value}${effort ? ` at effort ${effort}` : ''} for this session.`);
   }
 
   private async effortCommand(i: Inbound, key: string, profileName: string, value?: string): Promise<void> {
     const p = this.cfg.profiles[profileName];
-    const c = await this.catalogFor(profileName);
+    const c = await this.catalogFor(profileName, key);
     const model = this.current(key, profileName, 'model').value;
     const { levels, defaultLevel } = effortsFor(c, model);
     const forWhat = model ?? c.models.find((m) => m.isDefault)?.id ?? `${LABELS[p.backend]}'s default model`;
@@ -663,6 +687,7 @@ export class Orchestrator {
       ...(others > 0 ? [`${others} other chat${others > 1 ? 's on this profile switch' : ' on this profile switches'} at their next message.`] : []),
       // The switch takes the model off, and pi's own default provider may have no login here.
       ...(b === 'pi' ? ['Pick a model with /model: pi\'s own default may be a provider with no login here.'] : []),
+      ...(b === 'agy' ? [AGY_LACKS, AGY_TOKEN_NOTE] : []),
       ...done.notes.map((n) => `Note: ${n}`),
     ].join('\n'));
   }
@@ -714,6 +739,7 @@ export class Orchestrator {
       projectsDir: this.opts.transcripts === true ? projectsDir() : this.opts.transcripts,
       apiSocket: join(this.opts.stateDir ?? join(homedir(), '.angelia'), API_SOCKET),
       profileName: name,
+      stateOpen: stateOpenPaths(this.cfg, name, this.opts.stateDir ?? join(homedir(), '.angelia')),
     });
     b.on('log', (line: string) => this.log(`${line} key=${key}`));
     // A prompt nobody answered is denied; the chat hears it, or the turn just seems to go wrong.
@@ -1050,7 +1076,8 @@ export class Orchestrator {
     const row = this.map.list(key, Number.MAX_SAFE_INTEGER).find((r) => r.id === id);
     if (!row) return undefined;
     const backend = row.backend ?? p.backend;
-    if (backend === 'grok') {
+    // agy replays its conversation over ACP as grok does (agy-history.ts); the same cache serves both.
+    if (backend === 'grok' || backend === 'agy') {
       if (!row.started) return { session: id, supported: true, items: [], more: false };
       return this.grokHistory(key, row).then((r) => ({ session: id, supported: true, ...grokPage(r.items, { limit, before, cut: r.cut }) }));
     }
@@ -1092,9 +1119,14 @@ export class Orchestrator {
       const route = matchRoute(this.cfg, parseSessionKey(key))!;
       const profile = this.cfg.profiles[route.profile];
       const gen = this.grokGen.get(id) ?? 0;
-      const started = this.historySlot(() => grokReplay(withOverrides(profile, row), id, { bin: this.binFor(profile), env: this.childEnv(route.profile).env }))
+      const cli = (row.backend ?? profile.backend) === 'agy' ? 'agy' : 'grok';
+      const opts = { bin: this.binFor(profile), env: this.childEnv(route.profile).env };
+      const replay = cli === 'agy'
+        ? () => agyReplay(withOverrides(profile, row), id, { ...opts, stateDir: this.opts.stateDir ?? join(homedir(), '.angelia'), profileName: route.profile })
+        : () => grokReplay(withOverrides(profile, row), id, opts);
+      const started = this.historySlot(replay)
         .then((r) => {
-          if (!r) { this.log(`grok history: no replay key=${key} session=${id.slice(0, 8)}`); throw new HistoryError('grok did not replay this session'); }
+          if (!r) { this.log(`${cli} history: no replay key=${key} session=${id.slice(0, 8)}`); throw new HistoryError(`${cli} did not replay this session`); }
           if ((this.grokGen.get(id) ?? 0) === gen) this.grokCache.set(id, { ...r, at: Date.now() });
           return r;
         })
@@ -1302,6 +1334,9 @@ export class Orchestrator {
     }
     // Grok Build cannot be held read-only by its flags (measured 2026-10-04): later, in an OS sandbox.
     if (profile.backend === 'grok') throw new AskError('asking a grok profile is not supported yet; give it a task with angelia turn', 501);
+    // agy has no fork of a conversation: --conversation and session/resume both write into the
+    // chat's own, and its subagents run tools unasked (ADR 0017), so no read-only copy is held.
+    if (profile.backend === 'agy') throw new AskError(`profile ${route.profile} cannot answer here now`, 501, 'an agy profile takes no questions: agy cannot fork the chat\'s conversation into a read-only copy');
     const bin = this.binFor(profile);
     if (!bin) throw new AskError(`profile ${route.profile} cannot answer here now`, 502, `${profileBin(profile)} not installed`);
     const refused = this.opts.launchGuard?.(route.profile) ?? [];
@@ -1327,7 +1362,7 @@ export class Orchestrator {
         // Other profiles' cache folders stay closed, as for the chat's own agent (codex.ts start()).
         const cache = dirname(profileCacheDir(state, 'codex', route.profile));
         const out = join(work, 'answer.txt');
-        try { argv = codexAskArgv(effective, session, bin, system, [...profilePermissions(profile.cwd).deny, `Read(${cache})`, `Edit(${cache})`], out); }
+        try { argv = codexAskArgv(effective, session, bin, system, [...placedPermissions(profile.cwd).deny, `Read(${cache})`, `Edit(${cache})`], out); }
         catch (e) { throw e instanceof AskError ? e : new AskError(`profile ${route.profile} cannot answer here now`, 502, (e as Error).message); }
         read = fileAnswer(out);
       } else if (profile.backend === 'pi') {

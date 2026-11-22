@@ -1,6 +1,6 @@
 # ADR 0007 — Antigravity CLI and Grok Build as backends
 
-Status: accepted 2026-09-15. The agy half is superseded 2026-09-21: agy was removed as a backend (headless it cannot deny a single tool, and its MCP servers are machine-wide, so per-profile capabilities could never be enforced on it). The measurements below stay as the record of why.
+Status: accepted 2026-09-15. The agy half is superseded 2026-09-21: agy was removed as a backend (headless it cannot deny a single tool, and its MCP servers are machine-wide, so per-profile capabilities could never be enforced on it). The measurements below stay as the record of why. agy is a backend again from 0.4.0, over ACP, held by Angelia's gate and a macOS sandbox: see [ADR 0017](0017-agy-backend.md).
 
 ADR 0006 asked three facts of any new backend: how a session is resumed by id, how a permission
 prompt is surfaced without a TTY, and whether the process stays alive across turns. Both were

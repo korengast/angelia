@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
@@ -5,7 +6,7 @@ import type { Config, Profile } from '../instance/config/schema.js';
 import type { BackendName } from './brain.js';
 
 /** Default executable per backend; a profile's `bin:` wins. */
-export const DEFAULT_BIN: Record<BackendName, string> = { 'claude-code': 'claude', grok: 'grok', pi: 'pi', codex: 'codex' };
+export const DEFAULT_BIN: Record<BackendName, string> = { 'claude-code': 'claude', grok: 'grok', pi: 'pi', codex: 'codex', agy: 'agy' };
 
 /** Where the CLIs install themselves when PATH does not say. The daemon must not depend on
  *  the PATH of whatever shell started it: on 2026-09-21 a restart inherited one without
@@ -36,12 +37,40 @@ export function profileBin(p: Profile): string {
   return p.bin ?? DEFAULT_BIN[p.backend];
 }
 
-/** One line per profile whose CLI cannot be found, for check-config and the daemon log. */
-export function cliWarnings(cfg: Config, env: NodeJS.ProcessEnv = process.env, home = homedir()): string[] {
+/** The oldest agy Angelia drives: the one ADR 0017 measured (`agy acp`, session/resume, set_model). */
+export const MIN_AGY_VERSION = '1.5.14';
+
+/** `a` is older than `b`, both x.y.z. */
+export function olderThan(a: string, b: string): boolean {
+  const x = a.split('.').map(Number), y = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0);
+  return false;
+}
+
+const versions = new Map<string, string | undefined>();
+/** `bin --version`, once per binary per process: x.y.z, or undefined when it does not say. */
+export function binVersion(bin: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!versions.has(bin)) {
+    let v: string | undefined;
+    try { v = /(\d+\.\d+\.\d+)/.exec(execFileSync(bin, ['--version'], { env, timeout: 10_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))?.[1]; } catch { v = undefined; }
+    versions.set(bin, v);
+  }
+  return versions.get(bin);
+}
+
+/** One line per profile whose CLI cannot be found, or (agy) is older than Angelia drives, for
+ *  check-config and the daemon log. */
+export function cliWarnings(cfg: Config, env: NodeJS.ProcessEnv = process.env, home = homedir(), version: (bin: string) => string | undefined = (b) => binVersion(b, env)): string[] {
   const out: string[] = [];
   for (const [name, p] of Object.entries(cfg.profiles)) {
     const bin = profileBin(p);
-    if (locateBin(bin, env, home)) continue;
+    const found = locateBin(bin, env, home);
+    if (found && p.backend === 'agy') {
+      const v = version(found);
+      if (!v) out.push(`profiles.${name}: \`${found} --version\` did not print a version; Angelia drives agy ${MIN_AGY_VERSION} or newer`);
+      else if (olderThan(v, MIN_AGY_VERSION)) out.push(`profiles.${name}: agy ${v} is older than ${MIN_AGY_VERSION}, the oldest Angelia drives; update agy`);
+    }
+    if (found) continue;
     out.push(p.bin
       ? `profiles.${name}.bin: ${bin} is not an executable file: every turn in this profile will fail`
       : `profiles.${name}: ${p.backend} runs \`${bin}\`, which is not on PATH or in ${fallbackDirs(home).join(', ')}: every turn in this profile will fail. Install it, or set bin: to its full path`);

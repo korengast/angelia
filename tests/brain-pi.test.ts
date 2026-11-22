@@ -153,8 +153,10 @@ test('pi: the policy carries the compiled deny rules; compile writes pi rules as
   const dir = mkdtempSync(join(tmpdir(), 'angelia-pi-'));
   mkdirSync(join(dir, '.claude'));
   writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Read(/x/**)'] } }));
-  assert.deepEqual(piPolicy(profile('default', { cwd: dir, add_dirs: ['/y'] }) as any), { mode: 'default', cwd: dir, dirs: ['/y'], deny: ['Read(/x/**)'], sandbox: true, sockets: [tmuxSocketPath()] });
-  assert.deepEqual(piPolicy(profile('default', { cwd: dir, sandbox: false }) as any), { mode: 'default', cwd: dir, dirs: [], deny: ['Read(/x/**)'], sandbox: false });
+  // The owner's `/x` (no compile wrote it): denied as written and in the profile folder, as Claude Code reads it.
+  const both = ['Read(/x/**)', `Read(${join(dir, 'x')}/**)`];
+  assert.deepEqual(piPolicy(profile('default', { cwd: dir, add_dirs: ['/y'] }) as any), { mode: 'default', cwd: dir, dirs: ['/y'], deny: both, sandbox: true, sockets: [tmuxSocketPath()] });
+  assert.deepEqual(piPolicy(profile('default', { cwd: dir, sandbox: false }) as any), { mode: 'default', cwd: dir, dirs: [], deny: both, sandbox: false });
   assert.equal(pathRule('Read', '/h/.ssh/**', 'pi', '/h'), 'Read(/h/.ssh/**)');
 
   const home = mkdtempSync(join(tmpdir(), 'angelia-pi-home-'));
@@ -228,7 +230,7 @@ test('pi: the policy also carries settings.local.json; compile protects .pi/ and
   mkdirSync(join(dir, '.claude'));
   writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Read(/x/**)'] } }));
   writeFileSync(join(dir, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { deny: ['Read(/mine/**)'] } }));
-  assert.deepEqual(piPolicy(profile('default', { cwd: dir }) as any).deny, ['Read(/x/**)', 'Read(/mine/**)']);
+  assert.deepEqual(piPolicy(profile('default', { cwd: dir }) as any).deny, ['Read(/x/**)', `Read(${join(dir, 'x')}/**)`, 'Read(/mine/**)', `Read(${join(dir, 'mine')}/**)`]);
   assert.deepEqual(PI_LAUNCH_DIRS, [join('.pi', '**'), join('.agents', '**')]);
   const cfg = Config.parse({ profiles: { p: { cwd: dir, backend: 'pi' } }, routes: [] });
   const floor = profileFloor(cfg, 'p', '/state', '/h');

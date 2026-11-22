@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { piArgv, childEnv, versionAtLeast } from './argv.js';
-import { profilePermissions } from '../capabilities/compile.js';
+import { placedPermissions } from '../capabilities/compile.js';
 import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
 import { PERMISSION_TITLE, type PiPolicy } from './pi-gate.js';
 import { LOST_SESSION_LINE } from './transcripts.js';
@@ -33,7 +33,7 @@ export const piSandboxed = (p: Profile): boolean => p.sandbox !== false;
  *  capabilities as additionalDirectories), the owner's settings.local.json merged in. With the
  *  sandbox, Angelia's tmux server is closed to commands too: other profiles' agents run there. */
 export function piPolicy(p: Profile, cache?: string): PiPolicy {
-  const s = profilePermissions(p.cwd);
+  const s = placedPermissions(p.cwd);
   const sandbox = piSandboxed(p);
   return { mode: p.permission_mode as PiPolicy['mode'], cwd: p.cwd, dirs: [...new Set([...p.add_dirs, ...s.dirs])], deny: s.deny, sandbox, ...(sandbox ? { sockets: [tmuxSocketPath()] } : {}), ...(cache ? { cache } : {}) };
 }
@@ -125,6 +125,7 @@ export class PiBrain extends EventEmitter implements Brain {
     // Without one (a bare test) there is none: never the live instance by default.
     const cache = piSandboxed(this.profile) && this.opts.apiSocket ? profileCacheDir(dirname(this.opts.apiSocket), 'pi', this.opts.profileName ?? this.profile.cwd) : undefined;
     const policy = piPolicy(this.profile, cache);
+    if (policy.sandbox && this.opts.stateOpen && this.opts.apiSocket) policy.closed = { dir: dirname(this.opts.apiSocket), open: [...this.opts.stateOpen, policy.cwd, ...policy.dirs, ...(cache ? [cache] : [])] };
     const system = [this.opts.system, piSandboxNote(this.profile, policy.dirs, this.opts.profileName, !!cache)].filter(Boolean).join('\n\n');
     const [bin, ...args] = piArgv(this.profile, this.session, this.opts.bin ?? 'pi', system, gatePath());
     const env: NodeJS.ProcessEnv = { ...childEnv(this.opts.env), ANGELIA_PI_POLICY: JSON.stringify(policy), ...(cache ? cacheEnv(cache) : {}) };

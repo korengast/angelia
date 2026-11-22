@@ -5,6 +5,7 @@ import { TuiBrain } from './tui.js';
 import { GrokBrain } from './grok.js';
 import { PiBrain } from './pi.js';
 import { CodexBrain } from './codex.js';
+import { AgyBrain } from './agy.js';
 import { profileBin } from './locate.js';
 
 export type { Brain, BrainOptions, BrainSession, BackendName } from './brain.js';
@@ -18,6 +19,7 @@ export function createBrain(profile: Profile, session: BrainSession, opts: Brain
     case 'grok': return new GrokBrain(profile, session, o);
     case 'pi': return new PiBrain(profile, session, o);
     case 'codex': return new CodexBrain(profile, session, o);
+    case 'agy': return new AgyBrain(profile, session, o);
     default: return profile.tui ? new TuiBrain(profile, session, o) : new ClaudeBrain(profile, session, o);
   }
 }

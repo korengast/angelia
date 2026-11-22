@@ -11,7 +11,7 @@ export function endChild(child: { pid?: number; stdin: { end(): void }; exitCode
 }
 import type { HistoryItem, HistoryPage } from './history.js';
 
-type Update = { sessionUpdate?: unknown; content?: { type?: unknown; text?: unknown }; kind?: unknown; _meta?: { promptIndex?: unknown; 'x.ai/tool'?: { name?: unknown } } };
+type Update = { sessionUpdate?: unknown; content?: { type?: unknown; text?: unknown }; kind?: unknown; name?: unknown; _meta?: { promptIndex?: unknown; 'x.ai/tool'?: { name?: unknown } } };
 
 /** How long one replay may take before it is given up (a load of a long session took about 3 s). */
 export const GROK_REPLAY_TIMEOUT_MS = 30_000;
@@ -64,7 +64,8 @@ export class GrokItems {
     } else if (u.sessionUpdate === 'tool_call') {
       const c = this.start('assistant');
       this.open = false;
-      const named = u._meta?.['x.ai/tool']?.name;
+      // grok names its tool in _meta, agy in `name`.
+      const named = u._meta?.['x.ai/tool']?.name ?? u.name;
       const name = typeof named === 'string' ? named : typeof u.kind === 'string' ? u.kind : undefined;
       if (name && !c.item.tools?.includes(name)) (c.item.tools ??= []).push(name);
     } else if (u.sessionUpdate === 'agent_thought_chunk') {
@@ -106,9 +107,14 @@ export function grokPage(items: HistoryItem[], opts: { limit?: number; before?: 
  * undefined when grok does not know the session or does not answer.
  */
 export function grokReplay(profile: Profile, sessionId: string, opts: { bin?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; maxChars?: number } = {}): Promise<{ items: HistoryItem[]; cut: boolean } | undefined> {
+  return acpReplay(grokArgv(profile, opts.bin ?? 'grok'), profile.cwd, sessionId, opts);
+}
+
+/** The replay of one ACP session by a CLI started with `argv` in `cwd` (grok, agy): see grokReplay. */
+export function acpReplay(argv: string[], cwd: string, sessionId: string, opts: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxChars?: number } = {}): Promise<{ items: HistoryItem[]; cut: boolean } | undefined> {
   return new Promise((resolve) => {
-    const [bin, ...args] = grokArgv(profile, opts.bin ?? 'grok');
-    const child = spawn(bin, args, { cwd: profile.cwd, env: childEnv(opts.env), stdio: ['pipe', 'pipe', 'ignore'], ...CHILD_GROUP });
+    const [bin, ...args] = argv;
+    const child = spawn(bin, args, { cwd, env: childEnv(opts.env), stdio: ['pipe', 'pipe', 'ignore'], ...CHILD_GROUP });
     trackGroup(child);
     const built = new GrokItems(opts.maxChars);
     let done = false;
@@ -130,7 +136,7 @@ export function grokReplay(profile: Profile, sessionId: string, opts: { bin?: st
       if (m.id !== undefined && m.method) { send({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: `unsupported: ${m.method}` } }); return; }
       if (m.id === 1) {
         if (m.error) return finish(undefined);
-        send({ jsonrpc: '2.0', id: 2, method: 'session/load', params: { sessionId, cwd: profile.cwd, mcpServers: [] } });
+        send({ jsonrpc: '2.0', id: 2, method: 'session/load', params: { sessionId, cwd, mcpServers: [] } });
       } else if (m.id === 2) {
         finish(m.error ? undefined : { items: built.items(), cut: built.cut });
       }

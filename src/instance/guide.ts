@@ -37,13 +37,13 @@ or \`angelia profile add <platform:chat> [name]\` makes one before anyone writes
 
 By hand:
 1. Create workspace/profiles/<name>/ with its instruction file, CLAUDE.md (every backend reads it).
-2. Add it under \`profiles:\` in routing.yaml. Fields: cwd, backend (claude-code | grok | pi | codex),
+2. Add it under \`profiles:\` in routing.yaml. Fields: cwd, backend (claude-code | grok | pi | codex | agy),
    permission_mode (default | acceptEdits | bypassPermissions | plan: which actions the CLI asks
    about at all), permissions (what Angelia does with each of those requests; see below), model, effort, add_dirs,
    shell, shell_timeout_seconds, chrome, tui (claude-code only), media_tags, bin (the CLI's full
    path when it is not found), unsafe_ok, agent_commands (CLI slash commands every group member
    may send, e.g. [compact]), sandbox (claude-code: the CLI's own sandbox on, no escape; shell
-   network only to sandbox.network.allowedDomains in settings.local.json; codex and pi: on unless false),
+   network only to sandbox.network.allowedDomains in settings.local.json; codex, pi and agy: on unless false),
    isolated (cut off from the other profiles and from _common/: for a profile other people talk
    to), backends (written by /backend; keeps model, effort, bin, tui per CLI for a switch back),
    and capabilities, except, deny (\`angelia guide capabilities\`).
@@ -64,6 +64,14 @@ By hand:
    the sandbox stops is the cue to add a folder to add_dirs (then compile and restart).
    \`sandbox: false\` gives it full access. It asks in the chat only to run something outside the
    sandbox. It reads CLAUDE.md (as a fallback for AGENTS.md). Its login is its own (\`codex login\`).
+   agy (Antigravity CLI, 1.5.14 or newer) runs as \`agy acp\` inside a macOS sandbox made from the
+   deny rules, with its own folder in the state folder (never ~/.gemini). Angelia answers each of
+   its permission requests from the rules and asks the chat for the rest. Before each start Angelia
+   copies CLAUDE.md to GEMINI.md with its @imports expanded: edit CLAUDE.md, never GEMINI.md. It
+   refuses to start beside a hand-written GEMINI.md or AGENTS.md, one in a folder above, or a
+   .agents/mcp_config.json. Its MCP servers come from the table only. Default model
+   gemini-4-hydrogen; effort is the model id's suffix (\`agy models\` lists them). No tmux mode, no
+   chrome: true. Its login is its own (run \`agy\` once and sign in with Google).
    permissions: a default (refuse | ask | approve) and rules that beat it, checked in this order:
    refuse, then ask, then approve. Rules are Claude Code's own syntax, fixed patterns matched in
    code: Bash(git push *), Bash(npm run test:*), Read(~/.ssh/**), Edit(src/**),

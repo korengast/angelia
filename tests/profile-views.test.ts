@@ -139,3 +139,12 @@ test('capabilities: a command that sets a variable in front shows the program, n
   const cfg = Config.parse({ capabilities: { x: { kind: 'command', run: 'API_KEY=sk-123 TZ=UTC tool --flag', when: 'w' } }, profiles: { p: { cwd: prof, capabilities: ['x'] } }, routes: [] });
   assert.equal(capabilitiesView(cfg, 'p').allowed[0].what, 'tool');
 });
+
+test('skills (agy): a .agents/skills in the folder is not shown as its own, since agy does not start beside one', (t) => {
+  const home = tmp(t);
+  const prof = join(home, 'p');
+  skill(join(prof, '.agents', 'skills', 'planted'), 'planted', 'Would stop the start');
+  skill(join(home, '.agents', 'skills', 'shared'), 'shared', 'For every profile');
+  const cfg = Config.parse({ profiles: { p: { cwd: prof, backend: 'agy' } }, routes: [] });
+  assert.deepEqual(skillsView(cfg, 'p', none, home).skills.map((s) => [s.name, s.source]), [['shared', 'everyone']]);
+});

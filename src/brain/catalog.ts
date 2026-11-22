@@ -21,7 +21,7 @@ export interface Catalog {
   note?: string;
 }
 
-export const LABELS: Record<BackendName, string> = { 'claude-code': 'Claude Code', grok: 'Grok Build', codex: 'Codex', pi: 'pi' };
+export const LABELS: Record<BackendName, string> = { 'claude-code': 'Claude Code', grok: 'Grok Build', codex: 'Codex', pi: 'pi', agy: 'Antigravity' };
 
 /** From the largest model to the smallest: the canary takes the last as the cheapest (canary.ts). */
 const CLAUDE: Catalog = {
@@ -100,6 +100,32 @@ function codexModels(bin: string, env: NodeJS.ProcessEnv, timeoutMs: number): Pr
   });
 }
 
+/** `agy models` (agy 1.5.14): `<id>\t<name>` per model, after a "Fetching" line. Each id carries its
+ *  effort as a suffix (`gemini-4-hydrogen-high`); Angelia names the model without it and sets the
+ *  suffix from /effort (argv.ts, agyModel), so ids are grouped by what is left. The same list arrives
+ *  in session/new as `models.availableModels`; a live session could serve it instead (the seam is here). */
+export function parseAgyModels(text: string, defaultModel = 'gemini-4-hydrogen'): ModelInfo[] {
+  const byBase = new Map<string, ModelInfo>();
+  for (const line of text.split('\n')) {
+    const m = /^([a-z0-9][\w.-]*)\t(.+)$/.exec(line.trim());
+    if (!m) continue;
+    const e = /^(.*)-(low|medium|high|xhigh)$/.exec(m[1]);
+    const base = e ? e[1] : m[1];
+    const name = m[2].replace(/\s*\((Low|Medium|High|XHigh)\)\s*$/, '').trim();
+    const cur = byBase.get(base) ?? { id: base, name, efforts: [] as string[], ...(base === defaultModel ? { isDefault: true, defaultEffort: 'high' } : {}) };
+    if (e) cur.efforts!.push(e[2]);
+    byBase.set(base, cur);
+  }
+  return [...byBase.values()].map((x) => (x.efforts!.length ? x : { ...x, efforts: undefined }));
+}
+
+/** An agy session's own list (session/new's `models.availableModels`, full ids with the effort suffix),
+ *  in the catalog's shape: the models this login reaches right now, with no second `agy models` run. */
+export function agyCatalogFromIds(ids: string[]): Catalog {
+  const models = parseAgyModels(ids.map((id) => `${id}\t${id}`).join('\n'));
+  return { models, efforts: ['low', 'medium', 'high', 'xhigh'], anyModel: !models.length, note: 'The models this agy session listed.' };
+}
+
 /** The backend's catalog. A CLI that cannot be asked gives an empty model list, and nothing is refused on it. */
 export async function catalog(backend: BackendName, bin: string | undefined, env: NodeJS.ProcessEnv, timeoutMs = 15_000): Promise<Catalog> {
   if (backend === 'claude-code') return CLAUDE;
@@ -110,6 +136,10 @@ export async function catalog(backend: BackendName, bin: string | undefined, env
   if (backend === 'codex') {
     const models = bin ? await codexModels(bin, env, timeoutMs).catch(() => []) : [];
     return { models, efforts: ['low', 'medium', 'high', 'xhigh'], anyModel: !models.length, ...(models.length ? {} : { note: 'Codex did not list its models just now.' }) };
+  }
+  if (backend === 'agy') {
+    const models = bin ? await listModels(bin, ['models'], (t) => parseAgyModels(t), env, timeoutMs, tmpdir()).catch(() => []) : [];
+    return { models, efforts: ['low', 'medium', 'high', 'xhigh'], anyModel: !models.length, ...(models.length ? {} : { note: 'agy did not list its models just now (agy models).' }) };
   }
   // pi: every model it has a login for. Its own names are provider/model; any pattern pi takes still goes.
   const models = bin ? await listModels(bin, ['--list-models'], parsePiModels, env, timeoutMs, tmpdir()).catch(() => []) : [];

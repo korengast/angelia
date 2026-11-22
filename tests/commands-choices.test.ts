@@ -48,7 +48,7 @@ function setup(profile: Record<string, unknown>, extra: Record<string, unknown> 
   const sent: string[] = [];
   const asked: string[] = [];
   const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } }, {
-    stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs'), codex: join(here, 'fake-codex.mjs'), grok: join(here, 'fake-grok.mjs'), pi: join(here, 'fake-pi.mjs') },
+    stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs'), codex: join(here, 'fake-codex.mjs'), grok: join(here, 'fake-grok.mjs'), pi: join(here, 'fake-pi.mjs'), agy: join(here, 'fake-agy.mjs') },
     catalog: async (b) => { asked.push(b); return b === 'codex' ? codexCatalog : { models: [], efforts: ['low'], anyModel: true }; },
     ...extra,
   });
@@ -85,9 +85,9 @@ test('/backend shows the CLIs, switches the profile for every chat on it, and is
   });
   t.after(() => o.shutdown());
   await o.handle(dm('/backend'));
-  assert.equal(sent.at(-1), 'Backend of profile a: claude-code (Claude Code)\n\n• claude-code (Claude Code) — now\n• grok (Grok Build)\n• codex (Codex)\n• pi (pi)\n\nSwitch: /backend <name>. It changes the profile for all 2 chats that use it and starts a fresh session.');
+  assert.equal(sent.at(-1), 'Backend of profile a: claude-code (Claude Code)\n\n• claude-code (Claude Code) — now\n• grok (Grok Build)\n• codex (Codex)\n• pi (pi)\n• agy (Antigravity)\n\nSwitch: /backend <name>. It changes the profile for all 2 chats that use it and starts a fresh session.');
   await o.handle(dm('/backend gemini'));
-  assert.equal(sent.at(-1), 'No backend gemini. Choose one of: claude-code, grok, codex, pi.');
+  assert.equal(sent.at(-1), 'No backend gemini. Choose one of: claude-code, grok, codex, pi, agy.');
   await o.handle(dm('/backend claude-code'));
   assert.equal(sent.at(-1), 'Profile a already runs on Claude Code.');
   await o.handle(dm('hi'));

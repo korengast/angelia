@@ -556,6 +556,8 @@ export function checkable(backend: string, text: string): boolean {
   if (typeof r === 'string') return false;
   if (backend === 'claude-code') return true; // print mode and the tmux hook both carry the tool and its input
   if (backend === 'pi') return r.kind === 'bash' || r.kind === 'path' || (r.kind === 'tool' && r.tools.some((t) => ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob'].includes(t)));
+  // agy names its shell, file and MCP tools (tool-request.ts agyRequest).
+  if (backend === 'agy') return r.kind === 'bash' || r.kind === 'path' || r.kind === 'mcp' || (r.kind === 'tool' && r.tools.some((t) => ['Bash', 'Read', 'Edit', 'Write'].includes(t)));
   if (backend === 'codex' || backend === 'grok') return r.kind === 'bash' || (r.kind === 'tool' && r.tools.includes('Bash'));
   return false;
 }

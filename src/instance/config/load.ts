@@ -180,8 +180,8 @@ export function loadConfig(path: string): Config {
     if (!cfg.profiles[r.profile]) throw new ConfigError(`routes[${i}].profile: unknown profile "${r.profile}"`);
     // Every member of the group would run commands on this machine with no prompt and nothing around them.
     const p = cfg.profiles[r.profile];
-    if (isGroupChat(r.platform, r.chat) && (p.permission_mode === 'bypassPermissions' || (p.backend === 'codex' && p.sandbox === false)) && r.allow_from.includes(EVERYONE) && !((p.sandbox && p.backend === 'claude-code') || (p.backend === 'codex' && p.sandbox !== false))) {
-      throw new ConfigError(`routes[${i}] (${r.platform} ${r.chat}): a group on the profile ${r.profile}, open to every member (allow_from: "*"), that runs anything without asking and without a sandbox (bypassPermissions, or Codex with sandbox: false). List who may in allow_from, or keep a sandbox: sandbox: true on Claude Code, Codex's own by default (pi's does not stop a command from asking launchd or another app to act for it, so it does not count)`);
+    if (isGroupChat(r.platform, r.chat) && (p.permission_mode === 'bypassPermissions' || ((p.backend === 'codex' || p.backend === 'agy') && p.sandbox === false)) && r.allow_from.includes(EVERYONE) && !((p.sandbox && p.backend === 'claude-code') || ((p.backend === 'codex' || p.backend === 'agy') && p.sandbox !== false))) {
+      throw new ConfigError(`routes[${i}] (${r.platform} ${r.chat}): a group on the profile ${r.profile}, open to every member (allow_from: "*"), that runs anything without asking and without a sandbox (bypassPermissions, or Codex with sandbox: false). List who may in allow_from, or keep a sandbox: sandbox: true on Claude Code, Codex's own and agy's by default (pi's does not stop a command from asking launchd or another app to act for it, so it does not count)`);
     }
     // Approving at once in a group of other people: anyone there could have the agent do what a rule
     // passes, with no owner asked. Any approve rule or default fails the load there, unless unsafe_ok. A

@@ -1,12 +1,14 @@
-import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync,  readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Capability, Config, Profile } from '../instance/config/schema.js';
 import { resolveProfile } from './resolve.js';
 import { SELF_END, SELF_START, openAgentFile, rewriteAgentFile, upsertSelfBlock } from '../daemon/self.js';
-import { API_SOCKET, HOME_PRIVATE, INSTANCE_DIR, STATE_PRIVATE, commonDir, workspaceDir } from '../instance/instance.js';
-import { expandHome, isInside, openNoFollow } from '../core/paths.js';
+import { API_SOCKET, HOME_PRIVATE, INSTANCE_DIR, STATE_LOGS, STATE_PRIVATE, commonDir, workspaceDir } from '../instance/instance.js';
+import { expandHome, isInside, openNoFollow, readPlainText } from '../core/paths.js';
 import { codexUserMcpServers } from '../brain/codex-config.js';
+import { agyGeminiDir, agyGeminiPath } from '../brain/cache.js';
+import { AGY_CONFIG_DEFAULT, AGY_INSTRUCTIONS, agyGeminiInputs, agyLaunchProblems } from '../brain/agy-instructions.js';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -46,7 +48,7 @@ export interface CompiledRecord {
 }
 
 export function readRecord(cwd: string): CompiledRecord | undefined {
-  try { return JSON.parse(readFileSync(join(cwd, RECORD), 'utf8')) as CompiledRecord; } catch { return undefined; }
+  try { return JSON.parse(readPlainText(join(cwd, RECORD))) as CompiledRecord; } catch { return undefined; }
 }
 
 /** A compiled Claude profile loads only its own .mcp.json. The one thing the daemon takes from a
@@ -69,8 +71,22 @@ export interface LaunchGuard {
   codexSandbox?: boolean;
   /** pi: its commands ran in Angelia's sandbox at the last compile; `sandbox: false` since is a refusal. */
   piSandbox?: boolean;
+  /** agy: the whole agy process ran in Angelia's sandbox at the last compile; `sandbox: false` since is a refusal. */
+  agySandbox?: boolean;
   /** The backend compiled for: its rules differ per CLI, so another backend since is a refusal. */
   backend?: Profile['backend'];
+  /** agy: what the brain gives it at start, kept here where the agent cannot change it (agy-config.ts). */
+  agy?: AgyGuard;
+}
+
+/** One MCP server for agy's session/new, in ACP's stdio shape but for `env`: the names of the
+ *  variables, whose values come from the daemon's environment at start (as Claude expands ${VAR}). */
+export interface AgyMcpServer { name: string; command: string; args: string[]; env: string[] }
+export interface AgyGuard { mcpServers: AgyMcpServer[]; skills: string[] }
+
+/** What the last compile of a profile wrote, or undefined when it was never compiled or cannot be read. */
+export function readGuard(stateDir: string, name: string): LaunchGuard | undefined {
+  try { return JSON.parse(readPlainText(guardFile(stateDir, name))) as LaunchGuard; } catch { return undefined; }
 }
 
 const guardFile = (stateDir: string, name: string) => join(stateDir, 'compiled', `${encodeURIComponent(name)}.json`);
@@ -86,15 +102,15 @@ function writeGuard(stateDir: string, name: string, g: LaunchGuard): void {
  * compile wrote that is gone, the sandbox turned off. A rule the table added since the last compile
  * (an update that grew the floor) is not a refusal; floorWarnings names it.
  */
-export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR): string[] {
+export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR, home = homedir()): string[] {
   const p = cfg.profiles[name];
   let g: LaunchGuard;
-  try { g = JSON.parse(readFileSync(guardFile(stateDir, name), 'utf8')) as LaunchGuard; }
+  try { g = JSON.parse(readPlainText(guardFile(stateDir, name))) as LaunchGuard; }
   catch (e) { return [(e as NodeJS.ErrnoException).code === 'ENOENT' ? 'never compiled' : `the compiled record in ${join(stateDir, 'compiled')} cannot be read`]; }
   if (resolve(g.cwd) !== resolve(p.cwd)) return [`compiled for another folder (${g.cwd})`];
   if (g.backend && g.backend !== p.backend) return [`compiled for ${g.backend}, not ${p.backend}; compile again`];
   const read = (f: string): Record<string, any> | undefined => {
-    try { return JSON.parse(readFileSync(join(p.cwd, '.claude', f), 'utf8')); }
+    try { return JSON.parse(readPlainText(join(p.cwd, '.claude', f))); }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {}; return undefined; }
   };
   const settings = read('settings.json'), local = read('settings.local.json') ?? {};
@@ -107,8 +123,27 @@ export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR):
   }
   // Codex's and pi's sandboxes come from the table, not a settings file: turning one off there needs
   // a compile. (A guard from another backend returned above.)
-  if ((g.codexSandbox || g.piSandbox) && p.sandbox === false) out.push(`sandbox off: the table turned ${g.codexSandbox ? 'Codex\'s sandbox' : 'the sandbox for pi\'s commands'} off since the last compile; compile again to accept it`);
+  if ((g.codexSandbox || g.piSandbox || g.agySandbox) && p.sandbox === false) out.push(`sandbox off: the table turned ${g.codexSandbox ? 'Codex\'s sandbox' : g.piSandbox ? 'the sandbox for pi\'s commands' : 'agy\'s sandbox'} off since the last compile; compile again to accept it`);
+  if (p.backend === 'agy') out.push(...agyLaunchProblems(p.cwd, p.add_dirs, agyGeminiPath(stateDir, name), g.agy?.skills ?? []));
+  const agy = agyFloorProblem(cfg, name, g, stateDir, home);
+  if (agy) out.push(agy);
   return out;
+}
+
+/**
+ * An agy profile keeps its conversations and a copy of the owner's agy sign-in in `<state>/agy/`
+ * (agyStateRules). A profile compiled before that floor rule, or before another agy profile was added,
+ * holds nothing there, and launchCheck alone refuses only a rule the last compile wrote. While any
+ * other profile is on agy, such a profile does not start until it is compiled again.
+ */
+function agyFloorProblem(cfg: Config, name: string, g: LaunchGuard, stateDir: string, home: string): string | undefined {
+  const others = Object.keys(cfg.profiles).filter((n) => n !== name && cfg.profiles[n].backend === 'agy');
+  if (!others.length) return undefined;
+  const p = cfg.profiles[name];
+  const dirs = p.backend === 'agy' ? others.map((n) => agyGeminiPath(stateDir, n)) : [join(stateDir, 'agy')];
+  const want = dirs.flatMap((d) => (['Read', 'Edit'] as const).map((t) => pathRule(t, glob(d), p.backend, home)));
+  if (want.every((r) => (g.deny ?? []).includes(r))) return undefined;
+  return `compiled before the agy backend's floor, so nothing keeps its agent out of the agy profiles' folders (their conversations and sign-in copies); the owner can fix it with: angelia compile --write ${name}`;
 }
 
 /**
@@ -119,8 +154,13 @@ export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR):
  */
 export function agentDenyRules(cfg: Config, name: string, stateDir = INSTANCE_DIR, home = homedir()): string[] {
   let guard: string[] = [];
-  try { guard = (JSON.parse(readFileSync(guardFile(stateDir, name), 'utf8')) as LaunchGuard).deny ?? []; } catch { /* never compiled: the floor still holds */ }
-  return [...new Set([...guard, ...profilePermissions(cfg.profiles[name].cwd).deny, ...profileFloor(cfg, name, stateDir, home)])];
+  try { guard = (JSON.parse(readPlainText(guardFile(stateDir, name))) as LaunchGuard).deny ?? []; } catch { /* never compiled: the floor still holds */ }
+  const p = cfg.profiles[name];
+  // The owner's own rules, placed once as Claude Code reads them (placeRule): every reader of this list
+  // (the jobs' sandbox, the daemon's own checks) takes it absolute. Codex has no reading of its own for
+  // .claude/settings.json, so Claude's is the owner's; grok reads that file itself, in its own form.
+  const own = p.backend === 'grok' ? profilePermissions(p.cwd) : placedPermissions(p.cwd, home);
+  return [...new Set([...guard, ...own.deny, ...profileFloor(cfg, name, stateDir, home)])];
 }
 
 /**
@@ -188,7 +228,7 @@ export function floorRules(backend: Profile['backend'], stateDir: string, home =
  * their tools and the commands those run. Claude's `shell-snapshots/` and `session-env/` stay
  * readable: its shell sources them before every command.
  */
-export function cliStores(home = homedir(), env: NodeJS.ProcessEnv = process.env): { dirs: string[]; files: string[] } {
+export function cliStores(home = homedir(), env: NodeJS.ProcessEnv = process.env, backend?: Profile['backend']): { dirs: string[]; files: string[] } {
   // The default places, and wherever CLAUDE_CONFIG_DIR and CODEX_HOME moved them.
   const claude = [join(home, '.claude'), ...(env.CLAUDE_CONFIG_DIR ? [resolve(env.CLAUDE_CONFIG_DIR)] : [])];
   const codex = [join(home, '.codex'), ...(env.CODEX_HOME ? [resolve(env.CODEX_HOME)] : [])];
@@ -198,6 +238,13 @@ export function cliStores(home = homedir(), env: NodeJS.ProcessEnv = process.env
       ...under(claude, ['projects', 'file-history', 'paste-cache']),
       ...under(codex, ['sessions', 'archived_sessions', 'memories']),
       join(home, '.grok', 'sessions'), join(home, '.pi', 'agent', 'sessions'),
+      // The owner's own ~/.gemini, whole, for an agy profile only: agy's and the Antigravity app's
+      // conversations, artifacts, recordings, the app's browser profile (site logins), settings and MCP
+      // configs. Its agy uses its own --gemini-dir, and Angelia's `agy models` runs in the daemon. A
+      // profile on another backend keeps it open, as before the agy backend: the owner's own agy, run
+      // there as a tool (the agy skill), signs in and keeps its conversations in it. Every backend keeps
+      // `<state>/agy/**` closed (agyStateRules): the profiles' agy folders and sign-in copies.
+      ...(backend === 'agy' ? [join(home, '.gemini')] : []),
     ])],
     files: [...new Set([
       // Claude's user config sits beside the home's .claude/, or inside a moved config folder.
@@ -214,7 +261,7 @@ export function cliStores(home = homedir(), env: NodeJS.ProcessEnv = process.env
  *  folder in add_dirs; a wider grant (the home folder itself) does not lift it. */
 export function credentialRules(p: Profile, home = homedir(), env: NodeJS.ProcessEnv = process.env): string[] {
   const lifted = (x: string) => p.add_dirs.some((d) => isInside(d, x, home));
-  const stores = cliStores(home, env);
+  const stores = cliStores(home, env, p.backend);
   const dirs = [...HOME_PRIVATE.dirs.map((d) => join(home, d)), ...stores.dirs], files = [...HOME_PRIVATE.files.map((f) => join(home, f)), ...stores.files];
   return [...dirs.filter((d) => !lifted(d)).map(glob), ...files.filter((f) => !lifted(f))]
     .flatMap((x) => [pathRule('Read', x, p.backend, home), pathRule('Edit', x, p.backend, home)]);
@@ -282,7 +329,133 @@ export function keyRules(cfg: Config, name: string, stateDir: string, home = hom
 /** All a profile is denied whatever its capabilities: Angelia's state, your credentials, the other profiles. */
 export function profileFloor(cfg: Config, name: string, stateDir: string, home = homedir()): string[] {
   const p = cfg.profiles[name];
-  return [...new Set([...floorRules(p.backend, stateDir, home), ...credentialRules(p, home), ...otherProfileRules(cfg, name, home), ...keyRules(cfg, name, stateDir, home), ...sharedRules(p, stateDir, home)])];
+  return [...new Set([...floorRules(p.backend, stateDir, home), ...credentialRules(p, home), ...otherProfileRules(cfg, name, home), ...keyRules(cfg, name, stateDir, home), ...sharedRules(p, stateDir, home), ...agyStateRules(cfg, name, stateDir, home), ...stateClosedRules(cfg, name, stateDir, home)])];
+}
+
+/** What in the state folder every agent may reach: the workspace (the profiles' folders, held apart by
+ *  otherProfileRules), the logs and status (STATE_LOGS), the API socket, and the cache and agy folders,
+ *  each held per profile by its own rules (the sandboxes' `cache` and `own`, agyStateRules). Anything
+ *  else there is closed unless the profile reaches it (stateReach): see stateClosedRules. */
+export const STATE_OPEN = ['workspace', ...STATE_LOGS, API_SOCKET, 'daemon.pid', 'cache', 'agy',
+  // Installed programs an owner may keep there (a tool's Python environment, npm packages): code, not data.
+  'venvs', 'packages', 'node_modules', 'bin',
+  // The owner's tool data (meds, health, family...): profiles read it today through their tools and file
+  // tools, so closing it would break them. Per-profile data rules are a separate change. Secrets stay closed.
+  'data',
+  // Code clones (the Angelia checkout and its worktrees): other profiles read them (posts, docs), and no
+  // secret is kept there.
+  'projects'];
+
+/** Programs that run the script named after them: the script is the program whose entry opens. */
+const INTERPRETERS = new Set(['python', 'python3', 'node', 'bash', 'sh', 'zsh', 'ruby', 'perl', 'deno', 'bun', 'tsx', 'uv', 'uvx']);
+
+/** The paths a profile is given: its folder, add_dirs, the extra folders of its settings, and what its
+ *  allowed capabilities name (a folder, a skill, its secret files, an MCP server's program and
+ *  arguments, a path in a command). In the state folder these stay open (stateClosedRules). */
+export function stateReach(cfg: Config, name: string, home = homedir(), stateDir?: string): string[] {
+  const p = cfg.profiles[name];
+  const out = [p.cwd, ...p.add_dirs, ...profilePermissions(p.cwd).dirs];
+  const abs = (x: string) => resolve(expandHome(x.replace(/^\$HOME(?=\/)/, '~'), home));
+  const state = stateDir && resolve(stateDir);
+  // A program's path opens the whole entry of the state folder it sits in: it loads what is beside it.
+  // Only the program itself (an MCP server's command, the first word of a command capability's run);
+  // any other path a capability names opens only itself, and the state folder named as a whole opens
+  // nothing (review 3, M2: one named secret, or a text naming ~/.angelia, opened the whole folder).
+  const program = (x: string): string[] => {
+    const a = abs(x);
+    if (!state) return [a];
+    if (a === state) return [];
+    const rel = relative(state, a);
+    return [rel && !rel.startsWith('..') && !isAbsolute(rel) ? join(state, rel.split(sep)[0]) : a];
+  };
+  const exact = (x: string): string[] => (state && abs(x) === state ? [] : [abs(x)]);
+  const paths = (text: string) => text.match(/(?:~|\$HOME)?\/[^\s"'`;|&<>()]+/g) ?? [];
+  for (const c of resolveProfile(cfg, name).allowed.values()) {
+    if (c.kind === 'directory' || c.kind === 'skill') out.push(c.path);
+    if (c.kind === 'skill' || c.kind === 'mcp') out.push(...c.secrets);
+    // The program: the first word when it is a path, or the script an interpreter runs.
+    const take = (words: string[]) => {
+      const isPath = (w: string) => paths(w)[0] === w;
+      let i = isPath(words[0] ?? '') ? 0 : -1;
+      if (i < 0 && INTERPRETERS.has(basename(words[0] ?? ''))) i = words.findIndex((w, k) => k > 0 && isPath(w));
+      out.push(...(i >= 0 ? program(words[i]) : []), ...words.filter((_, k) => k !== i).flatMap((w) => paths(w)).flatMap(exact));
+    };
+    if (c.kind === 'mcp') take([c.command ?? '', ...c.args]);
+    if (c.kind === 'command') take(c.run.trim().split(/\s+/));
+  }
+  return [...new Set(out.map((x) => resolve(expandHome(x.replace(/^\$HOME(?=\/)/, '~'), home))))];
+}
+
+/**
+ * The state folder closed by default (red team round 2: passkeys, the payment ledger, secrets/, data/,
+ * routing backups were open, since the floor named only what it knew). Every entry there that is not
+ * STATE_OPEN and that the profile does not reach is denied, for reading and writing, in every backend's
+ * form; an entry that holds something the profile reaches is opened down to that, its other entries
+ * closed. This is what the state folder holds now: a name made after the compile is closed at once in
+ * Angelia's own sandboxes (agy, pi's commands, jobs, a grok copy: `closed` in sandboxProfile), and in a
+ * Claude Code or Codex profile's rules at its next compile (floorWarnings names it).
+ */
+export function stateClosedRules(cfg: Config, name: string, stateDir: string, home = homedir()): string[] {
+  const p = cfg.profiles[name];
+  const reach = stateReach(cfg, name, home, stateDir);
+  const out: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return; }
+    for (const n of names.sort()) {
+      if (depth === 0 && STATE_OPEN.includes(n)) continue;
+      const path = join(dir, n);
+      if (reach.some((r) => isInside(path, r, home))) continue;
+      let isDir = false;
+      try { isDir = lstatSync(path).isDirectory(); } catch { continue; }
+      if (isDir && depth < 4 && reach.some((r) => isInside(r, path, home))) { walk(path, depth + 1); continue; }
+      out.push(isDir ? glob(path) : path);
+    }
+  };
+  walk(resolve(stateDir), 0);
+  return out.flatMap((x) => (['Read', 'Edit'] as const).map((t) => pathRule(t, x, p.backend, home)));
+}
+
+/** The paths in the state folder an Angelia sandbox keeps open for a profile (sandboxProfile `closed`):
+ *  STATE_OPEN and what the profile reaches. The rules still hold inside them. */
+export function stateOpenPaths(cfg: Config, name: string, stateDir: string, home = homedir()): string[] {
+  const s = resolve(stateDir);
+  return [...STATE_OPEN.map((n) => join(s, n)), ...stateReach(cfg, name, home, s).filter((r) => isInside(r, s, home) && r !== s)];
+}
+
+/** One warning per agy profile that would not start: what agy would load that Angelia did not give
+ *  it (agyLaunchProblems), for check-config. The daemon refuses the start on the same lines. */
+export function agyWarnings(cfg: Config, stateDir = INSTANCE_DIR, home = homedir()): string[] {
+  return Object.entries(cfg.profiles).filter(([, p]) => p.backend === 'agy').flatMap(([name, p]) => {
+    const problems = agyLaunchProblems(p.cwd, p.add_dirs, agyGeminiPath(stateDir, name), readGuard(stateDir, name)?.agy?.skills ?? [], home);
+    return problems.length ? [`profiles.${name}: agy will not start: ${problems.join('; ')}`] : [];
+  });
+}
+
+/** agy keeps each profile's conversations, settings and MCP config in `<state>/agy/<hash>/`
+ *  (agyGeminiPath). A profile on another backend is denied the whole folder; an agy profile every other
+ *  profile's folder there, not its own, which agy itself reads and writes from inside the sandbox. */
+export function agyStateRules(cfg: Config, name: string, stateDir: string, home = homedir()): string[] {
+  const p = cfg.profiles[name];
+  const dirs = p.backend === 'agy'
+    ? Object.keys(cfg.profiles).filter((n) => n !== name).map((n) => agyGeminiPath(stateDir, n))
+    : [join(stateDir, 'agy')];
+  return dirs.flatMap((d) => (['Read', 'Edit'] as const).map((t) => pathRule(t, glob(d), p.backend, home)));
+}
+
+/**
+ * agy's own inputs a profile's agent must not change: in its folder `.agents/` (skills, and an
+ * mcp_config.json whose servers agy starts on its own) and the two instruction files agy reads; in
+ * its --gemini-dir the rules files, the MCP config, the skills compile links and its settings (the agy
+ * sandbox closes these again after it opens the folder, agySandboxProfile). Measured on agy 1.5.14:
+ * with an empty config/mcp_config.json made beforehand (agy makes one itself on its first start) and
+ * these paths closed to writing by the sandbox, agy starts and its write_file there is refused.
+ */
+export function agyLaunchRules(cwd: string, geminiDir: string, home = homedir()): string[] {
+  return [
+    ...[join('.agents', '**'), AGY_INSTRUCTIONS, 'AGENTS.md'].map((f) => join(cwd, f)),
+    ...agyGeminiInputs(geminiDir),
+  ].map((f) => pathRule('Edit', f, 'agy', home));
 }
 
 /** The workspace folders that reach every profile: _shared/ (doctrine their instructions import, the
@@ -337,10 +510,42 @@ function settingsDeny(cwd: string): string[] {
 /** The deny rules and extra folders a profile's settings hold; with `local`, merged with the owner's
  *  own settings.local.json, as Claude Code merges them. An unreadable file counts as empty. */
 export function profilePermissions(cwd: string, local = true): { deny: string[]; dirs: string[] } {
-  const perms = (f: string): Record<string, unknown> => { try { return JSON.parse(readFileSync(join(cwd, '.claude', f), 'utf8'))?.permissions ?? {}; } catch { return {}; } };
+  const perms = (f: string): Record<string, unknown> => { try { return JSON.parse(readPlainText(join(cwd, '.claude', f)))?.permissions ?? {}; } catch { return {}; } };
   const files = [perms('settings.json'), ...(local ? [perms('settings.local.json')] : [])];
   const list = (k: string) => [...new Set(files.flatMap((x) => (Array.isArray(x[k]) ? (x[k] as unknown[]).filter((v): v is string => typeof v === 'string') : [])))];
   return { deny: list('deny'), dirs: list('additionalDirectories') };
+}
+
+/**
+ * An owner's Read or Edit rule, written as Claude Code reads it in the project's .claude/settings.json
+ * (code.claude.com/docs/en/permissions, "How path patterns match"), in the absolute form Angelia's own
+ * gate and sandbox read (pi's and agy's): `//abs` is absolute; `~/x` is the home's; `x` and `./x` are
+ * the profile folder's; `/x` is the profile folder's (the settings source) for Claude Code, but
+ * absolute in pi's and grok's own form, so both are denied (fails closed). Other rules as they are.
+ */
+export function placeRule(rule: string, cwd: string, _home = homedir()): string[] {
+  const m = /^(Read|Edit)\(([\s\S]+)\)$/.exec(rule);
+  if (!m) return [rule];
+  const [, tool, raw] = m;
+  if (raw.startsWith('//')) return [`${tool}(${raw.slice(1)})`];
+  if (raw === '~' || raw.startsWith('~/')) return [rule];
+  const rel = raw.startsWith('/') ? raw.slice(1) : raw;
+  // join keeps a glob as written and folds `./` and `../` in.
+  const inFolder = `${tool}(${join(resolve(cwd), rel)}${rel.endsWith('/') && rel.length > 1 ? '/' : ''})`;
+  return raw.startsWith('/') ? [...new Set([rule, inFolder])] : [inFolder];
+}
+
+/**
+ * profilePermissions for every reader that takes rules absolute (pi's and agy's gate and sandbox,
+ * Codex's sandbox, a job's sandbox, the daemon's own checks; never Claude Code's settings): the rules the last compile wrote (already
+ * absolute, `/abs` meaning the root, as pathRule writes them for these CLIs) as they are; every other
+ * rule (the owner's own) placed as Claude Code reads it, and for `/x` as written too (placeRule). Without this a relative rule such
+ * as `Read(./secret.txt)` was resolved against `/` and held nothing.
+ */
+export function placedPermissions(cwd: string, home = homedir()): { deny: string[]; dirs: string[] } {
+  const s = profilePermissions(cwd);
+  const compiled = new Set(readRecord(cwd)?.deny ?? []);
+  return { ...s, deny: [...new Set(s.deny.flatMap((r) => (compiled.has(r) ? [r] : placeRule(r, cwd, home))))] };
 }
 
 /** Two profiles, one inside the other's folder: the outer one cannot be denied to the inner. */
@@ -357,6 +562,8 @@ export function nestingWarnings(cfg: Config, home = homedir()): string[] {
 function userSkillDirs(backend: Profile['backend'], home: string): string[] {
   if (backend === 'pi') return [join(home, '.pi', 'agent', 'skills'), join(home, '.agents', 'skills')];
   if (backend === 'codex') return [join(process.env.CODEX_HOME ?? join(home, '.codex'), 'skills'), join(home, '.agents', 'skills')];
+  // agy with its own --gemini-dir reads no skills from ~/.gemini; ~/.agents/skills is not measured, so it counts.
+  if (backend === 'agy') return [join(home, '.agents', 'skills')];
   return [join(home, '.claude', 'skills')];
 }
 
@@ -391,7 +598,7 @@ export function blockText(self: string | undefined, lines: string[]): string {
 
 function readJson(path: string): Record<string, any> {
   if (!existsSync(path)) return {};
-  try { return JSON.parse(readFileSync(path, 'utf8')); } catch (e) { throw new Error(`${path} is not valid JSON (${(e as Error).message}); fix it by hand first`); }
+  try { return JSON.parse(readPlainText(path)); } catch (e) { throw new Error(`${path} is not valid JSON (${(e as Error).message}); fix it by hand first`); }
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -414,7 +621,7 @@ export function userMcpServers(home = homedir()): string[] {
   const names = new Set<string>();
   // A missing file means no servers. Any other failure throws: a malformed file read as "no servers"
   // would drop every mcp__ deny on the next --write.
-  const read = (f: string) => { try { return readFileSync(f, 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw e; } };
+  const read = (f: string) => { try { return readPlainText(f); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw e; } };
   const claude = read(join(home, '.claude.json'));
   if (claude) {
     let servers: object;
@@ -478,9 +685,12 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
 
   // Skills: a link per allowed skill; a denied one must not be there at all.
   // Codex finds project skills in .agents/skills (measured with skills/list), not in Claude's folder.
+  // agy: in its own --gemini-dir, config/skills (measured 1.5.14: a linked skill folder there loads).
   const skillsRel = p.backend === 'codex' ? ['.agents', 'skills'] : ['.claude', 'skills'];
-  const skillsDir = join(p.cwd, ...skillsRel);
-  for (const l of linkedFolders(p.cwd, [['.claude'], skillsRel])) conflicts.push(`${l} is a link: compile writes only into plain folders, so move it aside by hand`);
+  const gdir = p.backend === 'agy' ? agyGeminiPath(stateDir, name) : undefined;
+  const skillsDir = gdir ? join(gdir, 'config', 'skills') : join(p.cwd, ...skillsRel);
+  for (const l of linkedFolders(p.cwd, [['.claude'], ...(gdir ? [] : [skillsRel])])) conflicts.push(`${l} is a link: compile writes only into plain folders, so move it aside by hand`);
+  if (gdir) for (const l of linkedFolders(dirname(gdir), [[basename(gdir)], [basename(gdir), 'config'], [basename(gdir), 'config', 'skills']])) conflicts.push(`${l} is a link: compile writes only into plain folders, so move it aside by hand`);
   const wantLinks: Record<string, string> = {};
   for (const [n, c] of allowed) if (c.kind === 'skill') wantLinks[n] = c.path;
   const oldLinks = rec?.links ?? {};
@@ -524,6 +734,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   const wantMcp: Record<string, Record<string, unknown>> = {};
   for (const [n, c] of allowed) if (c.kind === 'mcp') wantMcp[n] = mcpEntry(c);
   let mcpOp: (() => void) | undefined;
+  const agyMcp: AgyMcpServer[] = [];
   if (p.backend === 'claude-code') {
     const cur = readJson(mcpPath);
     const servers: Record<string, unknown> = { ...cur.mcpServers };
@@ -541,6 +752,14 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     if (!strict && rec?.mcpStrict) changes.push('- strict MCP: user-level servers (such as github, tavily) load again');
     if (!strict) notes.push('no MCP server is denied here, so MCP is not strict: user-level servers (such as github, tavily) load as well');
     if (touched) mcpOp = () => writePlain(p.cwd, mcpPath, JSON.stringify({ ...cur, mcpServers: servers }, null, 2) + '\n');
+  } else if (p.backend === 'agy') {
+    // Given in session/new, never written to a file agy reads by itself (ADR 0017, D).
+    for (const [n, c] of allowed) {
+      if (c.kind !== 'mcp') continue;
+      if (c.url) notes.push(`agy: the MCP server ${n} is reached by URL, which Angelia does not give agy yet; it is left out`);
+      else agyMcp.push({ name: n, command: c.command!, args: c.args, env: c.env });
+    }
+    if (agyMcp.some((m) => m.env.length)) notes.push('agy: the MCP servers get their environment variables from the daemon\'s environment at each start');
   } else if (p.backend === 'codex') {
     if (Object.keys(wantMcp).length) notes.push(`codex: allowed MCP servers are not written yet (${Object.keys(wantMcp).join(', ')}); add them with codex mcp add`);
   } else if (p.backend === 'pi') {
@@ -550,7 +769,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     // pi puts the prefix in front of the command Angelia's gate already wrapped: it runs unsandboxed.
     if (p.sandbox !== false) for (const f of [join(home, '.pi', 'agent', 'settings.json'), join(p.cwd, '.pi', 'settings.json')]) {
       let set: unknown;
-      try { set = JSON.parse(readFileSync(f, 'utf8'))?.shellCommandPrefix; } catch { continue; }
+      try { set = JSON.parse(readPlainText(f))?.shellCommandPrefix; } catch { continue; }
       if (set) notes.push(`pi's shellCommandPrefix (${f}) runs before each command outside the sandbox, and what it sets does not reach the command; remove it`);
     }
   } else {
@@ -563,6 +782,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   const perms: Record<string, any> = { ...settings.permissions };
   const launch = [...LAUNCH_FILES, ...(p.backend === 'pi' ? PI_LAUNCH_DIRS : p.backend === 'codex' ? CODEX_LAUNCH_DIRS : [])].map((f) => pathRule('Edit', join(p.cwd, f), p.backend, home));
   if (p.backend === 'pi') launch.push(...piHomeRules(home));
+  if (gdir) launch.push(...agyLaunchRules(p.cwd, gdir, home));
   const wantDeny = [...new Set([...profileFloor(cfg, name, stateDir, home), ...launch, ...[...denied].flatMap(([n, c]) => denyEntries(n, c, p.backend, home))])];
   // grok has no strict mode: servers set up for the whole user reach every folder, so each one this
   // profile was not given is denied by name. (Claude leaves them out through --strict-mcp-config.)
@@ -597,6 +817,15 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   for (const x of rec?.sockets ?? []) if (!wantSockets.includes(x) && sockets.includes(x)) { sockets.splice(sockets.indexOf(x), 1); changes.push(`- sandbox socket ${x}`); sandboxChanged = true; }
   for (const x of wantSockets) if (!sockets.includes(x)) { sockets.push(x); changes.push(`+ sandbox socket ${x}`); sandboxChanged = true; }
   const wantSandbox = p.backend === 'claude-code' && p.sandbox;
+  if (p.backend === 'agy') {
+    notes.push(p.sandbox === false
+      ? 'agy: sandbox: false: agy and every command it runs are not in a sandbox; Angelia answers its permission requests from the deny rules, but a Read deny inside the folder does not bind (agy reads files there without asking), nor any rule for a shell command\'s own reads'
+      : 'agy: Angelia answers every permission request from the deny rules, and agy runs inside a macOS sandbox made from them (shell commands included)');
+    notes.push(`agy: CLAUDE.md is copied to ${AGY_INSTRUCTIONS} with its imports expanded before every start; edit CLAUDE.md, never that file`);
+    const lacks = ['tmux mode (tui)', ...(p.chrome ? ['chrome: true (agy has no browser tool here)'] : []), 'prompt caching'];
+    notes.push(`agy has none of these Claude Code features: ${lacks.join(', ')}`);
+    conflicts.push(...agyLaunchProblems(p.cwd, p.add_dirs, gdir!, undefined, home));
+  }
   if (p.sandbox && p.backend === 'grok') notes.push('sandbox: true is for Claude Code, Codex and pi; grok has no such setting here, so it is ignored');
   if (p.backend === 'pi') notes.push(p.sandbox === false ? 'pi: sandbox: false, so shell commands run outside the sandbox: the deny rules hold only pi\'s file tools' : 'pi: the deny rules hold pi\'s file tools (Angelia\'s gate) and every shell command (each runs in a macOS sandbox made from them)');
   if (p.backend === 'codex') notes.push(p.sandbox === false ? 'codex: sandbox: false, so the agent runs with full access: the deny rules bind nothing, and in every mode it runs commands without asking' : 'codex: the deny rules and the writable folders are held by Codex\'s own sandbox (the OS), shell commands included');
@@ -619,7 +848,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   // The managed block in the instruction file.
   const lines = blockLines(allowed);
   const claudeMd = join(p.cwd, 'CLAUDE.md');
-  const selfText = p.backend === 'grok' ? opts.self?.(name) : undefined;
+  const selfText = p.backend === 'grok' || p.backend === 'agy' ? opts.self?.(name) : undefined;
   const text = blockText(selfText, lines);
   const md = openAgentFile(claudeMd);
   if (md === 'link') conflicts.push(`${claudeMd} is a link or has another name (a hard link); Angelia writes only a plain file there, so make it one`);
@@ -638,7 +867,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     };
   }
   if (existsSync(claudeMd)) {
-    const outside = stripBlock(readFileSync(claudeMd, 'utf8'));
+    const outside = stripBlock(readPlainText(claudeMd));
     for (const [n, c] of allowed) {
       if (c.kind !== 'command') continue;
       const key = c.run.split(/\s+/).slice(0, 2).join(' ');
@@ -656,7 +885,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   if (p.backend === 'pi') {
     // pi's global settings can add skill folders and packages for every folder; compile cannot filter those.
     let global: Record<string, unknown> = {};
-    try { global = JSON.parse(readFileSync(join(home, '.pi', 'agent', 'settings.json'), 'utf8')); } catch { /* none, or not ours to fix */ }
+    try { global = JSON.parse(readPlainText(join(home, '.pi', 'agent', 'settings.json'))); } catch { /* none, or not ours to fix */ }
     const extra = ['skills', 'packages'].filter((k) => Array.isArray(global[k]) && (global[k] as unknown[]).length);
     if (extra.length) notes.push(`pi's global settings list ${extra.join(' and ')} for every folder (${join(home, '.pi', 'agent', 'settings.json')}); a denied skill there still loads`);
   }
@@ -665,7 +894,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   const record: CompiledRecord = {
     version: 1, backend: p.backend, links: wantLinks, // written only by apply(), which refuses on any conflict
     // Codex: the servers it may load, checked against Codex's merged config at every start (codex.ts).
-    mcpServers: p.backend === 'claude-code' || p.backend === 'codex' ? Object.keys(wantMcp) : [], mcpStrict: strict,
+    mcpServers: p.backend === 'claude-code' || p.backend === 'codex' ? Object.keys(wantMcp) : p.backend === 'agy' ? agyMcp.map((m) => m.name) : [], mcpStrict: strict,
     deny: wantDeny, additionalDirectories: wantDirs, blockLines: lines, compiledAt: new Date().toISOString(),
     ...(wantSandbox ? { sandbox: true } : {}), ...(wantSockets.length ? { sockets: wantSockets } : {}),
   };
@@ -674,6 +903,15 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     profile: name, changes, conflicts, duplicates, notes,
     apply() {
       if (conflicts.length) throw new Error(`not compiling ${name}: ${conflicts.length} conflict(s)`);
+      if (gdir) {
+        // agy makes this file on its first start; made empty here first, so the sandbox can close it.
+        agyGeminiDir(stateDir, name);
+        mkdirSync(join(gdir, 'config', 'skills'), { recursive: true, mode: 0o700 });
+        const mcp = join(gdir, 'config', 'mcp_config.json');
+        if (!existsOrLink(mcp)) writeFileSync(mcp, '', { mode: 0o600, flag: 'wx' });
+        const conf = join(gdir, 'config', 'config.json');
+        if (!existsOrLink(conf)) writeFileSync(conf, AGY_CONFIG_DEFAULT, { mode: 0o600, flag: 'wx' });
+      }
       for (const op of linkOps) op();
       mcpOp?.();
       if (settingsChanged || sandboxChanged) {
@@ -686,7 +924,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
       if (wantDirs.includes(common)) mkdirSync(common, { recursive: true });
       mkdirSync(join(p.cwd, '.claude'), { recursive: true });
       writePlain(p.cwd, join(p.cwd, RECORD), JSON.stringify(record, null, 2) + '\n');
-      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}), ...(p.backend === 'pi' && p.sandbox !== false ? { piSandbox: true } : {}) });
+      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}), ...(p.backend === 'pi' && p.sandbox !== false ? { piSandbox: true } : {}), ...(p.backend === 'agy' && p.sandbox !== false ? { agySandbox: true } : {}), ...(gdir ? { agy: { mcpServers: agyMcp, skills: Object.keys(wantLinks) } } : {}) });
     },
   };
 }
@@ -750,9 +988,9 @@ const HANDOFF_MARK = '<!-- Written by angelia compile, and replaced on the next 
  */
 export function planHandoffSkill(home = homedir(), source = HANDOFF_SKILL): { change?: string; conflict?: string; apply(): void } {
   const at = join(home, '.claude', 'skills', HANDOFF_NAME, 'SKILL.md');
-  const want = readFileSync(source, 'utf8').replace(/^(---\n[\s\S]*?\n---\n)/, `$1${HANDOFF_MARK}\n`);
+  const want = readPlainText(source).replace(/^(---\n[\s\S]*?\n---\n)/, `$1${HANDOFF_MARK}\n`);
   let cur: string | undefined;
-  try { cur = readFileSync(at, 'utf8'); } catch { /* not there yet */ }
+  try { cur = readPlainText(at); } catch { /* not there yet */ }
   if (cur === want) return { apply() {} };
   if (cur !== undefined && !cur.includes(HANDOFF_MARK)) return { conflict: `${at} exists and is not Angelia's; move it aside to get /angelia-handoff`, apply() {} };
   return {

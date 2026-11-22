@@ -189,9 +189,10 @@ Found a hole? Report it privately: [SECURITY.md](SECURITY.md).
 | Grok Build | `grok` | supported | 1.0.13 or newer, `grok login` |
 | Codex | `codex` | supported | 0.157 or newer, `codex login` |
 | pi | `pi` | supported | 0.80.4 or newer (tested on 0.86 and 0.87), macOS, a login or key for a provider |
+| Antigravity CLI | `agy` | supported | 1.5.14 or newer (Gemini models), macOS, a Google sign-in (run `agy` once) |
 | OpenCode | | coming soon | |
 
-Each chat keeps one warm process, so a message never waits for a CLI to start. Permission prompts reach the chat on all four. Codex runs inside its own sandbox, which the operating system enforces: Angelia hands it the profile's rules, so it writes only in its folders and cannot read your credentials or the other profiles, shell commands included. pi has no sandbox of its own, so Angelia puts every pi shell command and every file read and write inside macOS's sandbox, made from the same rules. Every CLI plugs into the same small interface in `src/brain/`, and nothing else in Angelia knows which one is running.
+Each chat keeps one warm process, so a message never waits for a CLI to start. Permission prompts reach the chat on all five. Codex runs inside its own sandbox, which the operating system enforces: Angelia hands it the profile's rules, so it writes only in its folders and cannot read your credentials or the other profiles, shell commands included. pi has no sandbox of its own, so Angelia puts every pi shell command and every file read and write inside macOS's sandbox, made from the same rules. agy runs whole inside macOS's sandbox the same way, and Angelia's gate answers each of its permission requests from the rules; tmux mode and `chrome: true` stay Claude Code only, and subagents are partial on agy ([what works on each backend](docs/reference.md#what-works-on-each-backend)). agy reads a `GEMINI.md` that Angelia writes from `CLAUDE.md` before each start. Every CLI plugs into the same small interface in `src/brain/`, and nothing else in Angelia knows which one is running.
 
 ---
 

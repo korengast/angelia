@@ -56,7 +56,7 @@ export function permissionPolicy(p: { permissions?: z.infer<typeof Permissions>;
   return { default: p.permission_prompts === 'deny' ? 'refuse' : 'ask', refuse: [], ask: [], approve: [] };
 }
 
-export const BACKENDS = ['claude-code', 'grok', 'pi', 'codex'] as const;
+export const BACKENDS = ['claude-code', 'grok', 'pi', 'codex', 'agy'] as const;
 // One word that cannot pass for a flag: it goes on the CLI's command line, and needs no confirm (accepted.ts).
 const Model = z.string().regex(/^[^\s-]\S*$/, 'a model name: one word, not starting with -');
 
@@ -89,9 +89,10 @@ export const Profile = z.object({
   /** The start of this profile's tmux pane and Remote Control name: <prefix>-<folder>-<id>. Unset:
    *  defaults.session_prefix, else angelia. Tells several instances apart in the Claude app. */
   session_prefix: SessionPrefix.optional(),
-  /** Which local CLI answers this profile. claude-code: Claude Code. grok: Grok Build. pi: pi. codex: Codex. */
+  /** Which local CLI answers this profile. claude-code: Claude Code. grok: Grok Build. pi: pi. codex: Codex.
+   *  agy: Antigravity CLI over ACP (brain/agy.ts: Angelia's gate answers its requests, and it runs in macOS's sandbox). */
   backend: z.enum(BACKENDS).default('claude-code'),
-  /** The backend's executable, when it is not `claude` / `grok` / `pi` / `codex` on PATH or in the usual
+  /** The backend's executable, when it is not `claude` / `grok` / `pi` / `codex` / `agy` on PATH or in the usual
    *  install folders. A full path; `~` is allowed. */
   bin: z.string().optional(),
   /** Claude Code only: run the agent as a real interactive session in tmux instead of print mode.

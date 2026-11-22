@@ -20,7 +20,7 @@ function setup(name: string) {
   return { path, cfg, instance };
 }
 
-for (const name of ['עוזרת-בריאות-שיר', "it's", 'a/b']) {
+for (const name of ['יומן-מטבח-ביתי', "it's", 'a/b']) {
   test(`/backend switches a profile named ${JSON.stringify(name)} without counting its own change as someone else's`, () => {
     const s = setup(name);
     switchBackend({ table: s.path, cfg: s.cfg, profile: name, backend: 'pi', instance: s.instance });
@@ -32,10 +32,10 @@ test('tablePath writes each part as the change list writes it', () => {
   const was = loadConfig(setup('x').path);
   const now = structuredClone(was);
   now.profiles["it's"] = { ...was.profiles.x };
-  now.profiles['עוזרת'] = { ...was.profiles.x };
+  now.profiles['יומן'] = { ...was.profiles.x };
   const lines = tableChanges(was, now);
   assert.ok(lines.some((l) => l.startsWith(`${tablePath('profiles', "it's")}: `)), lines.join('\n'));
-  assert.ok(lines.some((l) => l.startsWith(`${tablePath('profiles', 'עוזרת')}: `)), 'Hebrew is shown as it is');
+  assert.ok(lines.some((l) => l.startsWith(`${tablePath('profiles', 'יומן')}: `)), 'Hebrew is shown as it is');
   assert.equal(tablePath('profiles', 'a\nb'), 'profiles."a\\nb"', 'a line break is never shown raw');
   assert.equal(tablePath('profiles', 'a‏b'), 'profiles."a‏b"', 'nor a bidi mark');
 });

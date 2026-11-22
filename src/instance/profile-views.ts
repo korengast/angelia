@@ -145,11 +145,14 @@ function frontMatter(text: string): { name?: string; description?: string } {
   return { name: get('name', NAME_MAX), description: get('description', DESCRIPTION_MAX) };
 }
 
-/** The skill folders a profile's CLI reads in its own folder, and those installed for every profile. */
+/** The skill folders a profile's CLI reads in its own folder, and those installed for every profile.
+ *  agy has none of its own: it does not start beside a `.agents/skills` (agyLaunchProblems), and the
+ *  skills compile gives it are the table's, listed as capabilities. */
 function skillDirs(backend: string, cwd: string, home: string): { dir: string; source: SkillEntry['source'] }[] {
-  const own = backend === 'claude-code' ? ['.claude/skills'] : backend === 'pi' ? ['.pi/skills', '.agents/skills', '.claude/skills'] : backend === 'codex' ? ['.agents/skills', '.codex/skills'] : ['.agents/skills', '.grok/skills', '.claude/skills'];
+  const own = backend === 'claude-code' ? ['.claude/skills'] : backend === 'pi' ? ['.pi/skills', '.agents/skills', '.claude/skills'] : backend === 'codex' ? ['.agents/skills', '.codex/skills'] : backend === 'agy' ? [] : ['.agents/skills', '.grok/skills', '.claude/skills'];
   const everyone = backend === 'pi' ? [join(home, '.pi', 'agent', 'skills'), join(home, '.agents', 'skills')]
     : backend === 'codex' ? [join(process.env.CODEX_HOME ?? join(home, '.codex'), 'skills'), join(home, '.agents', 'skills')]
+      : backend === 'agy' ? [join(home, '.agents', 'skills')]
       : backend === 'grok' ? [join(home, '.grok', 'skills'), join(home, '.agents', 'skills')]
         : [join(home, '.claude', 'skills')];
   return [...own.map((d) => ({ dir: join(cwd, d), source: 'profile' as const })), ...everyone.map((dir) => ({ dir, source: 'everyone' as const }))];

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { Config } from '../src/instance/config/schema.js';
 import { loadConfig, ConfigError } from '../src/instance/config/load.js';
 import { createBrain, type Brain } from '../src/brain/index.js';
@@ -323,4 +323,18 @@ test('codex: a Codex that never answers fails the turn with a reason instead of 
     for (let i = 0; i < 50 && h.alive; i++) await new Promise((r) => setTimeout(r, 20));
     assert.equal(h.alive, false, 'the hung child is ended');
   } finally { CodexBrain.startTimeoutMs = saved; }
+});
+
+test("codex: the owner's .claude rules are read as Claude Code reads them (./x, x, /x in the folder; //abs; ~/x) and reach Codex's sandbox", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'angelia-cx-rules-'));
+  mkdirSync(join(cwd, '.claude'), { recursive: true });
+  writeFileSync(join(cwd, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Read(./dot.txt)', 'Read(bare.txt)', 'Read(/slash.txt)', 'Read(//opt/abs.txt)', 'Read(~/tilde.txt)'] } }));
+  const b = make('acceptEdits', false, {}, { cwd });
+  const { argv } = JSON.parse(((await collect(b, 'ARGS'))[0] as any).text);
+  const fs = argv.find((a: string) => a.startsWith('permissions.angelia.filesystem=')) ?? '';
+  for (const f of ['dot.txt', 'bare.txt', 'slash.txt']) assert.ok(fs.includes(`"${join(cwd, f)}"="deny"`), `${f} in the profile folder: ${fs}`);
+  assert.ok(fs.includes('"/opt/abs.txt"="deny"'), '//abs is the disk\'s');
+  assert.ok(fs.includes('"/slash.txt"="deny"'), '/x as an absolute path too (fails closed)');
+  assert.ok(fs.includes(`"${join(homedir(), 'tilde.txt')}"="deny"`) || fs.includes('"~/tilde.txt"="deny"'), `~/x in the home folder: ${fs}`);
+  await b.stop();
 });

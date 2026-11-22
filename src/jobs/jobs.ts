@@ -9,7 +9,8 @@ import type { Config, Profile } from '../instance/config/schema.js';
 import { sessionKey } from '../core/types.js';
 import { profileEnv, tableSecrets } from '../core/env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
-import { LAUNCH_FILES, agentDenyRules, launchCheck, profilePermissions } from '../capabilities/compile.js';
+import { INSTANCE_DIR } from '../instance/instance.js';
+import { LAUNCH_FILES, agentDenyRules, launchCheck, profilePermissions, stateOpenPaths } from '../capabilities/compile.js';
 import { SANDBOX_EXEC, sandboxProblem, sandboxProfile } from '../brain/pi-gate.js';
 import { codexSandboxed } from '../brain/codex-config.js';
 import { tmuxSocketPath } from '../brain/tmux.js';
@@ -339,7 +340,7 @@ export interface Deliver { (kind: 'send' | 'turn', key: string, text: string, as
 /** Is the profile's agent held by an OS sandbox? Then so is its `run:` job: the script it runs sits
  *  in a folder that agent may write, and a timer outside the sandbox would run whatever it wrote. */
 export function jobSandboxed(p: Profile): boolean {
-  return p.backend === 'claude-code' ? !!p.sandbox : p.backend === 'codex' ? codexSandboxed(p) : p.backend === 'pi' ? p.sandbox !== false : false;
+  return p.backend === 'claude-code' ? !!p.sandbox : p.backend === 'codex' ? codexSandboxed(p) : p.backend === 'pi' || p.backend === 'agy' ? p.sandbox !== false : false;
 }
 
 /** The sandbox a profile's job runs in: the deny rules its agent is held to, writes only in the folders
@@ -350,7 +351,7 @@ export function jobSandbox(cfg: Config, profile: string, stateDir?: string, home
   if (process.platform !== 'darwin') throw new Error(`profile ${profile} is sandboxed, and a job's sandbox is macOS only for now; its run: jobs do not run here`);
   // The job stands on the same rules as its agent: a profile whose agent would not be started (never
   // compiled, a deny rule gone, the sandbox switched off) does not run its jobs either.
-  const refused = launchCheck(cfg, profile, stateDir);
+  const refused = launchCheck(cfg, profile, stateDir, home);
   if (refused.length) throw new Error(`profile ${profile}'s agent would not be started (${refused.join('; ')}), so its run: jobs do not run either; angelia compile ${profile} --write`);
   const p = cfg.profiles[profile];
   const abs = (d: string) => resolve(p.cwd, d.startsWith('~/') ? join(home, d.slice(2)) : d);
@@ -358,24 +359,16 @@ export function jobSandbox(cfg: Config, profile: string, stateDir?: string, home
   const rules = agentDenyRules(cfg, profile, stateDir, home);
   // The files that decide the next launch and the job's own folders, closed to the job itself.
   const launch = LAUNCH_FILES.map((f) => `Edit(/${join(p.cwd, f)})`);
-  const deny = [...(p.backend === 'claude-code' ? rules.map((r) => claudeRuleAbs(r, p.cwd)) : rules), ...launch];
-  const sb = sandboxProfile(deny, home, { writable: dirs, sockets: [tmuxSocketPath()], noLaunch: true });
+  // Every rule here is absolute already: the compile's own (pathRule), the floor, and the owner's,
+  // placed once as Claude Code reads them (agentDenyRules, placeRule). Placing them again here read an
+  // absolute `/cwd/x` as `cwd/x` inside the folder and closed nothing (review 2).
+  const deny = [...rules, ...launch];
+  // The state folder closed but for what this profile reaches (stateClosedRules), new files included.
+  const state = resolve(stateDir ?? INSTANCE_DIR);
+  const sb = sandboxProfile(deny, home, { writable: dirs, sockets: [tmuxSocketPath()], noLaunch: true, closed: { dir: state, open: [...stateOpenPaths(cfg, profile, state, home), ...dirs] } });
   const problem = sandboxProblem(sb);
   if (problem) throw new Error(`the sandbox for profile ${profile}'s jobs does not work here: ${problem}`);
   return sb;
-}
-
-/** A Claude Code rule's path as Claude reads it, written absolute for the sandbox: `//x` is the disk
- *  root, `~/x` home, and `/x`, `./x` or a bare `x` are inside the profile folder (where its settings
- *  file sits). The sandbox's own reading takes `/x` from the disk root, which would miss the folder. */
-export function claudeRuleAbs(rule: string, cwd: string): string {
-  const m = /^(Read|Edit)\(([\s\S]+)\)$/.exec(rule);
-  if (!m) return rule;
-  const path = m[2];
-  const abs = path.startsWith('//') ? path.slice(1)
-    : path.startsWith('~/') || path === '~' ? path
-    : join(cwd, path.replace(/^\.?\//, ''));
-  return `${m[1]}(${abs.startsWith('/') && !abs.startsWith('//') ? '/' + abs : abs})`;
 }
 
 const SILENT = '[SILENT]';

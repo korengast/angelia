@@ -14,6 +14,7 @@ import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadB
 import { paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { readRecord } from '../capabilities/compile.js';
+import { readPlainText } from '../core/paths.js';
 
 export { transcriptPath } from './transcripts.js';
 
@@ -152,7 +153,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export function otherStopHooks(cwd: string, home = homedir()): string[] {
   const files = [join(home, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json')];
   return files.filter((f) => {
-    try { const h = JSON.parse(readFileSync(f, 'utf8'))?.hooks?.Stop; return Array.isArray(h) && h.length > 0; } catch { return false; }
+    try { const h = JSON.parse(readPlainText(f))?.hooks?.Stop; return Array.isArray(h) && h.length > 0; } catch { return false; }
   });
 }
 
@@ -226,7 +227,7 @@ export function claudeSettingsFiles(cwd: string, home = homedir()): string[] {
 export async function tuiLaunchProblem(bin: string, cwd: string, env: NodeJS.ProcessEnv, home = homedir()): Promise<string | null> {
   for (const f of claudeSettingsFiles(cwd, home)) {
     let s: { apiKeyHelper?: unknown } | undefined;
-    try { s = JSON.parse(readFileSync(f, 'utf8')); } catch { continue; }
+    try { s = JSON.parse(readPlainText(f)); } catch { continue; }
     if (s?.apiKeyHelper) return `billing: ${f} sets apiKeyHelper, so this session would bill an API key instead of the subscription`;
   }
   const out = await new Promise<string>((done) => execFile(bin, ['--version'], { env, timeout: 15_000 }, (_e, stdout) => done(String(stdout ?? ''))));

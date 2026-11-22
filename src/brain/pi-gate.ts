@@ -43,6 +43,8 @@ export interface PiPolicy {
   sockets?: string[];
   /** The profile's own cache folder (npm, pip, uv, XDG point there), writable to its commands. */
   cache?: string;
+  /** The state folder, closed but for these paths in every command's sandbox (SandboxOptions.closed). */
+  closed?: { dir: string; open: string[] };
 }
 
 /** The title prefix PiBrain recognises; any other dialog is not ours. */
@@ -301,12 +303,23 @@ export function withIdCache<T>(fn: () => T): T {
 }
 
 /** What the gate does with one tool call. Pure but for the file system lookups, so the tests can walk every mode. */
-export function decide(policy: PiPolicy, tool: string, input: Record<string, unknown>, home = homedir()): Verdict {
-  ids = new Map(); chains = new Map(); folds = new Map(); decision++;
-  try { return decideOnce(policy, tool, input, home); } finally { ids = chains = folds = null; }
+/** Where `abs` meets the closed state folder (PiPolicy.closed): the folder itself (its names), a path in
+ *  it outside every open one, or, for a tool that walks, a folder above it. Undefined when open. */
+export function closedAt(policy: Pick<PiPolicy, 'closed'>, abs: string, walk: boolean): string | undefined {
+  if (!policy.closed) return undefined;
+  const dir = real(policy.closed.dir);
+  const open = policy.closed.open.map((x) => real(x));
+  if (fold(abs) === fold(dir)) return dir;
+  if (under(abs, dir)) return open.some((o) => under(abs, o)) ? undefined : abs;
+  return walk && under(dir, abs) ? dir : undefined;
 }
 
-function decideOnce(policy: PiPolicy, tool: string, input: Record<string, unknown>, home: string): Verdict {
+export function decide(policy: PiPolicy, tool: string, input: Record<string, unknown>, home = homedir(), agent = 'pi'): Verdict {
+  ids = new Map(); chains = new Map(); folds = new Map(); decision++;
+  try { return decideOnce(policy, tool, input, home, agent); } finally { ids = chains = folds = null; }
+}
+
+function decideOnce(policy: PiPolicy, tool: string, input: Record<string, unknown>, home: string, agent: string): Verdict {
   const { rules, folders, writable, cache, cacheParent } = compile(policy, home);
   const at = (p: unknown) => real(piPath(typeof p === 'string' && p ? p : '.', policy.cwd, home));
   const inside = (abs: string) => folders.some((d) => under(abs, d));
@@ -323,7 +336,12 @@ function decideOnce(policy: PiPolicy, tool: string, input: Record<string, unknow
     const clean = piPath(typeof input.path === 'string' && input.path ? input.path : '.', policy.cwd, home);
     const spellings = (tool === 'read' ? readVariants(clean) : [clean]).map((sp) => real(sp));
     for (const abs of spellings) {
+      // Read through links one component at a time (real), so a link in the folder that points out is outside.
       if (foreignCache(abs)) return blocked(`${tool} of ${abs}, another profile's cache`);
+      // The state folder, closed but for what the profile reaches (policy.closed): pi's file tools run
+      // outside the sandbox, so a file made there after the compile is held here (review 3, L1, L2).
+      const shut = closedAt(policy, abs, WALK_TOOLS.has(tool));
+      if (shut) return blocked(`${tool} of ${abs} (${shut}, closed in the state folder)`);
       const r = denied(abs, kinds, WALK_TOOLS.has(tool) && !NAME_WALKS.has(tool));
       if (r) return blocked(`${tool} of ${abs}${fold(r.root()) !== fold(abs) ? ` (rule on ${r.root()})` : ''}`);
       // find over a folder that holds a denied one would list names in it: asked, not refused.
@@ -335,7 +353,7 @@ function decideOnce(policy: PiPolicy, tool: string, input: Record<string, unknow
     // would get around the sandbox with the file tool. With `sandbox: false` it writes anywhere.
     if (policy.mode === 'bypassPermissions') {
       if (!policy.sandbox || writable.some((d) => under(spellings[0], d))) return { action: 'allow' };
-      return { action: 'block', reason: `In bypass, pi writes without asking only in the profile's folders (${folders.join(', ')}), its cache folder and temp; ${spellings[0]} is outside them. It did not run. Tell the owner: adding the folder to add_dirs lets you write there.` };
+      return { action: 'block', reason: `In bypass, ${agent} writes without asking only in the profile's folders (${folders.join(', ')}), its cache folder and temp; ${spellings[0]} is outside them. It did not run. Tell the owner: adding the folder to add_dirs lets you write there.` };
     }
     if (policy.mode === 'acceptEdits' && inside(spellings[0])) return { action: 'allow' };
     return { action: 'ask' };
@@ -358,7 +376,7 @@ function decideOnce(policy: PiPolicy, tool: string, input: Record<string, unknow
 export const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
 
 /** A string in a sandbox profile (SBPL, a Scheme dialect): backslash and double quote escaped. */
-const sbpl = (s: string) => `"${s.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
+export const sbpl = (s: string) => `"${s.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
 
 /** Text matched as itself in the sandbox's regex, ASCII letters in either case: the kernel compares
  *  the name as stored on disk, and APFS lets a file be reached, or made, under another case. */
@@ -385,7 +403,7 @@ export function globRegex(tail: string): string | undefined {
 
 /** A path as the kernel names it: links resolved (real), and the part that exists in the case and
  *  Unicode form stored on disk (realpath(3)); the part that does not exist yet as written. */
-function onDisk(abs: string): string {
+export function onDisk(abs: string): string {
   const r = real(abs);
   for (let cur = r; ; cur = dirname(cur)) {
     try { return join(realpathSync.native(cur), relative(cur, r)); } catch { /* not there yet */ }
@@ -400,16 +418,37 @@ const DEVICES = ['(literal "/dev/null")', '(literal "/dev/zero")', '(literal "/d
  *  folder ($TMPDIR), not the rest of /var/folders, which holds other apps' caches. */
 const TEMP_DIRS = [...new Set(['/private/tmp', onDisk(tmpdir())])];
 
-interface SandboxOptions {
+export interface SandboxOptions {
   /** Unix sockets no command may connect to, besides those under a Read rule. */
   sockets?: string[];
   /** When given, the only folders a command may write in (with temp and the output devices). */
   writable?: string[];
+  /** With `writable`: not the shared temp folders either (a program given a temp folder of its own). */
+  noTemp?: boolean;
   /** The profile's own cache folder: the others next to it are closed, for reading and writing. */
   cache?: string;
+  /** More folders of this profile's own, each kept among the other profiles' (agy's --gemini-dir):
+   *  closed like `cache`, every folder next to each one, for reading and writing. */
+  own?: string[];
   /** Close the doors to programs that run outside the sandbox on the command's behalf: LaunchServices
    *  (`open` of an app the command just wrote starts it unsandboxed) and Apple Events. */
   noLaunch?: boolean;
+  /** Paths opened again after every rule, for a program that must itself use them under a closed
+   *  folder (a grok copy of a chat: its own session, its login): read, or read and write. `subpath`
+   *  is the path and all below it, `literal` the path alone, `prefix` every path that starts with it. */
+  open?: { path: string; match: 'subpath' | 'literal' | 'prefix'; write?: boolean }[];
+  /** Deny rules (as `deny`) placed after `open`: a file the program may not change inside a folder
+   *  opened again for it (agy's MCP config and rules in its --gemini-dir). The sandbox takes the last
+   *  rule that matches, so in `deny` an `open` folder would make them writable again. */
+  last?: string[];
+  /** A folder closed for reading and writing but for the paths in `open` (and the folders on the way
+   *  to them, as entries only): the state folder, closed by default (compile.ts stateClosedRules, red
+   *  team round 2), so a file made there after the last compile is closed too. Placed first: the deny
+   *  rules still hold inside what is open. */
+  closed?: { dir: string; open: string[] };
+  /** Programs that may not be started at all (agy: /usr/bin/security, the one door to the keychain
+   *  items that trust it). */
+  noExec?: string[];
 }
 
 /**
@@ -426,6 +465,58 @@ interface SandboxOptions {
 export function sandboxProfile(deny: string[], home = homedir(), o: SandboxOptions = {}): string {
   const out = new Set<string>();
   const kept = new Set<string>();
+  denyLines(deny, home, out, kept);
+  const last = new Set<string>(), lastKept = new Set<string>();
+  denyLines(o.last ?? [], home, last, lastKept);
+  for (const s of o.sockets ?? []) {
+    out.add(`(deny network-outbound (remote unix-socket (path-literal ${sbpl(s)})))`);
+    out.add(`(deny file-write* (literal ${sbpl(s)}))`);
+    for (let cur = dirname(s); ; cur = dirname(cur)) { kept.add(cur); if (dirname(cur) === cur) break; }
+  }
+  // launchd's ssh-agent socket: the key it holds would sign for a command that cannot read ~/.ssh.
+  const lines = ['(version 1)', '(allow default)', `(deny network-outbound (remote unix-socket (path-regex ${sbpl('^/private/(tmp|var/run)/com\\.apple\\.launchd\\.[^/]+/Listeners$')})))`];
+  if (o.closed) {
+    const dirs = [...new Set([o.closed.dir, onDisk(o.closed.dir)])];
+    const opens = [...new Set(o.closed.open.flatMap((x) => [x, onDisk(x)]))];
+    const above = new Set<string>();
+    for (const x of opens) for (const d of dirs) if (x.startsWith(d + '/')) for (let cur = dirname(x); cur.length > d.length; cur = dirname(cur)) above.add(cur);
+    const keep = [...opens.map((x) => `(subpath ${sbpl(x)})`), ...[...above].map((x) => `(literal ${sbpl(x)})`)];
+    lines.push(`(deny file-read* file-write* (require-all (require-any ${dirs.map((d) => `(regex ${sbpl(`^${reText(d)}/`)})`).join(' ')})${keep.length ? ` (require-not (require-any ${keep.join(' ')}))` : ''}))`);
+    // The folder itself: its names are not listed (review 3, L2). Only reading its entries is refused:
+    // a path through it still resolves (measured: realpath, cd, the files below an open entry).
+    lines.push(`(deny file-read-data ${dirs.map((d) => `(literal ${sbpl(d)})`).join(' ')})`);
+  }
+  for (const mine of [...(o.cache ? [o.cache] : []), ...(o.own ?? [])]) {
+    const own = [...new Set([mine, onDisk(mine)])], parent = [...new Set([dirname(mine), onDisk(dirname(mine))])];
+    // Strictly below the shared folder: tools such as npx look at the folders above their cache.
+    out.add(`(deny file-read* file-write* (require-all (require-any ${parent.map((d) => `(regex ${sbpl(`^${reText(d)}/`)})`).join(' ')}) (require-not (require-any ${own.map((d) => `(subpath ${sbpl(d)})`).join(' ')}))))`);
+  }
+  if (o.noLaunch) {
+    lines.push('(deny appleevent-send)');
+    // Whole prefixes: naming launchservicesd and com.apple.lsd.* alone still let `open` start an app
+    // (measured on macOS 26); these two prefixes stop it, and plain tools (python, node, git, curl) run.
+    lines.push(`(deny mach-lookup (global-name-prefix ${sbpl('com.apple.coreservices')}) (global-name-prefix ${sbpl('com.apple.lsd')}))`);
+  }
+  if (o.writable) {
+    const where = [...new Set([...o.writable.flatMap((d) => [d, onDisk(d)]), ...(o.noTemp ? [] : TEMP_DIRS)])].map((d) => `(subpath ${sbpl(d)})`);
+    lines.push(`(deny file-write* (require-not (require-any ${[...where, ...DEVICES].join(' ')})))`);
+    // What git runs later, outside any sandbox, when someone runs git there: a repo's config and hooks,
+    // and a new `.git` (git init, or a gitdir file pointing elsewhere). Commits still work. Codex
+    // keeps `.git` read-only in its writable folders for the same reason.
+    const git = `/${reText('.git')}(/(${reText('config')}|${reText('hooks')}(/.*)?|${reText('info/attributes')}))?$`;
+    lines.push(`(deny file-write* (regex ${sbpl(git)}))`);
+  }
+  // Last: the sandbox takes the last rule that matches.
+  const opened = (o.open ?? []).flatMap(({ path, match, write }) => [...new Set([path, onDisk(path)])].map((d) =>
+    `(allow file-read*${write ? ' file-write*' : ''} (${match === 'prefix' ? 'regex' : match} ${sbpl(match === 'prefix' ? `^${reText(d)}` : d)}))`));
+  const noExec = (o.noExec ?? []).flatMap((x) => [...new Set([x, onDisk(x)])]).map((x) => `(deny process-exec* (literal ${sbpl(x)}))`);
+  const literal = (k: string) => `(deny file-write* (literal ${sbpl(k)}))`;
+  return [...lines, ...out, ...[...kept].map(literal), ...noExec, ...opened, ...last, ...[...lastKept].map(literal)].join('\n');
+}
+
+/** The sandbox lines of Read and Edit deny rules (sandboxProfile), into `out`; the folders above each
+ *  rule's path into `kept`. */
+function denyLines(deny: string[], home: string, out: Set<string>, kept: Set<string>): void {
   const keepAbove = (p: string) => { for (let cur = dirname(p); ; cur = dirname(cur)) { kept.add(cur); if (dirname(cur) === cur) break; } };
   for (const r of deny) {
     const m = /^(Read|Edit)\(([\s\S]+)\)$/.exec(r);
@@ -466,34 +557,6 @@ export function sandboxProfile(deny: string[], home = homedir(), o: SandboxOptio
       }
     }
   }
-  for (const s of o.sockets ?? []) {
-    out.add(`(deny network-outbound (remote unix-socket (path-literal ${sbpl(s)})))`);
-    out.add(`(deny file-write* (literal ${sbpl(s)}))`);
-    keepAbove(s);
-  }
-  // launchd's ssh-agent socket: the key it holds would sign for a command that cannot read ~/.ssh.
-  const lines = ['(version 1)', '(allow default)', `(deny network-outbound (remote unix-socket (path-regex ${sbpl('^/private/(tmp|var/run)/com\\.apple\\.launchd\\.[^/]+/Listeners$')})))`];
-  if (o.cache) {
-    const own = [...new Set([o.cache, onDisk(o.cache)])], parent = [...new Set([dirname(o.cache), onDisk(dirname(o.cache))])];
-    // Strictly below the shared folder: tools such as npx look at the folders above their cache.
-    out.add(`(deny file-read* file-write* (require-all (require-any ${parent.map((d) => `(regex ${sbpl(`^${reText(d)}/`)})`).join(' ')}) (require-not (require-any ${own.map((d) => `(subpath ${sbpl(d)})`).join(' ')}))))`);
-  }
-  if (o.noLaunch) {
-    lines.push('(deny appleevent-send)');
-    // Whole prefixes: naming launchservicesd and com.apple.lsd.* alone still let `open` start an app
-    // (measured on macOS 26); these two prefixes stop it, and plain tools (python, node, git, curl) run.
-    lines.push(`(deny mach-lookup (global-name-prefix ${sbpl('com.apple.coreservices')}) (global-name-prefix ${sbpl('com.apple.lsd')}))`);
-  }
-  if (o.writable) {
-    const where = [...new Set([...o.writable.flatMap((d) => [d, onDisk(d)]), ...TEMP_DIRS])].map((d) => `(subpath ${sbpl(d)})`);
-    lines.push(`(deny file-write* (require-not (require-any ${[...where, ...DEVICES].join(' ')})))`);
-    // What git runs later, outside any sandbox, when someone runs git there: a repo's config and hooks,
-    // and a new `.git` (git init, or a gitdir file pointing elsewhere). Commits still work. Codex
-    // keeps `.git` read-only in its writable folders for the same reason.
-    const git = `/${reText('.git')}(/(${reText('config')}|${reText('hooks')}(/.*)?|${reText('info/attributes')}))?$`;
-    lines.push(`(deny file-write* (regex ${sbpl(git)}))`);
-  }
-  return [...lines, ...out, ...[...kept].map((k) => `(deny file-write* (literal ${sbpl(k)}))`)].join('\n');
 }
 
 /** A shell word in single quotes: the one POSIX quoting with no escapes inside. */
@@ -580,6 +643,20 @@ export function sandboxProblem(profile: string): string {
   return r.status === 0 ? '' : `the sandbox did not start (${(r.stderr || r.error?.message || `exit ${r.status}`).trim().slice(0, 200)})`;
 }
 
+/** sandboxProblem without holding the event loop: for the daemon, which checks a new profile per question. */
+export function sandboxProblemAsync(profile: string): Promise<string> {
+  if (process.platform !== 'darwin' || !existsSync(SANDBOX_EXEC)) return Promise.resolve(sandboxProblem(profile));
+  return new Promise((done) => {
+    const c = spawn(SANDBOX_EXEC, ['-p', profile, '/usr/bin/true'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    c.stderr.setEncoding('utf8');
+    c.stderr.on('data', (d: string) => { if (err.length < 4000) err += d; });
+    const t = setTimeout(() => c.kill('SIGKILL'), 15_000);
+    c.on('error', (e) => { clearTimeout(t); done(`the sandbox did not start (${e.message.trim().slice(0, 200)})`); });
+    c.on('close', (code, signal) => { clearTimeout(t); done(code === 0 ? '' : `the sandbox did not start (${(err || (signal ? `killed ${signal}` : `exit ${code}`)).trim().slice(0, 200)})`); });
+  });
+}
+
 /**
  * A command acceptEdits may run unasked: one command from READ_ONLY, nothing a shell would expand
  * or redirect (no quotes, globs, variables, operators, `~`, `=`), every flag a plain one (no value
@@ -651,7 +728,7 @@ export default async function angeliaGate(pi: any): Promise<void> {
     let sb = profiles[kind];
     if (!sb) {
       const writable = kind === 'unasked' ? unaskedWritable(policy, homedir()) : undefined;
-      const profile = sandboxProfile(policy.deny, homedir(), { sockets: policy.sockets, writable, cache: policy.cache });
+      const profile = sandboxProfile(policy.deny, homedir(), { sockets: policy.sockets, writable, cache: policy.cache, closed: policy.closed });
       sb = { profile, problem: sandboxProblem(profile) };
       if (!sb.problem) profiles[kind] = sb;
     }

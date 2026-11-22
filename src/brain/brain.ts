@@ -44,6 +44,15 @@ export interface BrainOptions {
   apiSocket?: string;
   /** The profile's name in the table, for text the agent is told (Codex's sandbox note). */
   profileName?: string;
+  /** Deny rules for this session only, on top of the compiled ones, in the backend's own form (agy;
+   *  tests). Unset: the compiled ones alone. */
+  deny?: string[];
+  /** The paths in the state folder this profile reaches (compile.ts stateOpenPaths): Angelia's own
+   *  sandboxes (pi's commands, agy) close the rest of the state folder. Unset: no such closing. */
+  stateOpen?: string[];
+  /** agy: its `--gemini-dir`, instead of the profile's own folder in the state folder (agyGeminiDir).
+   *  Tests and the live probe set a scratch one; the daemon sets none. */
+  geminiDir?: string;
 }
 
 export interface BrainSession {
@@ -269,6 +278,30 @@ export function onJsonLines(stdout: NodeJS.ReadableStream & { setEncoding(e: Buf
   });
   // A last line with no newline, as readline would have given it.
   stdout.on('end', () => { if (parts.length) emit(parts.join('')); parts = []; });
+}
+
+/**
+ * The wiring every print-mode brain gives its CLI child: its group tracked (trackGroup); its exit
+ * reported, and so is a spawn that never happened at all (no such binary, no permission to execute it),
+ * which raises `error` and never `exit`: without it the turn waits for a line that can never come, and
+ * the queue behind it waits with it. EPIPE from a write to a child that has already gone is ignored: it
+ * is an unhandled error event on the process otherwise, which is the daemon. stderr is kept, never
+ * logged as it arrives (it can carry file paths and message text): its last 400 characters, or the
+ * spawn's error, are the failure text, the reason given when the child dies without an answer, so a
+ * deterministic failure (not logged in, an unknown flag) is not invisible. stdout is read as JSON lines.
+ */
+export function wireChild(child: import('node:child_process').ChildProcessWithoutNullStreams, w: {
+  exit(code: number | null, signal: NodeJS.Signals | null): void;
+  failure(text: string, from: 'error' | 'stderr'): void;
+  line(obj: any): void;
+}): void {
+  trackGroup(child);
+  let failure = '';
+  child.on('exit', w.exit);
+  child.on('error', (err) => { failure = err.message; w.failure(failure, 'error'); w.exit(null, null); });
+  child.stdin.on('error', () => {});
+  child.stderr.on('data', (b: Buffer) => { failure = (failure + b.toString('utf8')).slice(-400); w.failure(failure, 'stderr'); });
+  onJsonLines(child.stdout, w.line);
 }
 
 /** One JSON line for a CLI's stdin, with U+2028 and U+2029 escaped: JSON.stringify leaves them raw,
