@@ -19,10 +19,12 @@ import { matchRoute } from '../core/router/match.js';
 import { gate as routeGate } from '../core/router/gate.js';
 import { API_SOCKET, ApiServer, claimSocket, loadOrMintToken, sessionToken } from './api/server.js';
 import { selfPrompt, selfOverrideWarning, upsertSelfBlock, FILE_BACKENDS } from './self.js';
-import { blockText, floorWarnings, launchCheck, nestingWarnings, readRecord, seedGuards } from '../capabilities/compile.js';
+import { blockText, floorWarnings, nestingWarnings, readRecord, seedGuards } from '../capabilities/compile.js';
+import { makeLaunchGuard } from './launch-guard.js';
 import { launchChatRestart, takeRestartNote } from './restart.js';
 import { CUT_LINE, takeCutTurns } from '../core/cut-turns.js';
 import { onboardChat } from '../instance/onboard.js';
+import { connectWiring } from '../instance/connect.js';
 import { apiDeps } from './api/deps.js';
 import { switchBackend as switchProfileBackend } from '../instance/switch-backend.js';
 import { nodeAdvice, nodeFixProblem } from './node-fix.js';
@@ -41,7 +43,8 @@ export function envFile(stateDir = STATE_DIR): Record<string, string> {
 const LOG_MAX = 10 << 20;
 let logSize = -1;
 
-export function logLine(line: string): void {
+/** `quiet`: the file only (a terminal command such as `angelia profile connect` prints its own words). */
+export function logLine(line: string, quiet = false): void {
   const stamp = new Date().toISOString();
   // Masked before either copy: a library's error line can quote the request it made, token and all.
   line = redactLog(line);
@@ -52,7 +55,7 @@ export function logLine(line: string): void {
     appendFileSync(file, text, { mode: 0o600 });
     logSize += Buffer.byteLength(text);
   } catch {}
-  if (process.stdout.isTTY) console.log(`${stamp} ${line}`);
+  if (process.stdout.isTTY && !quiet) console.log(`${stamp} ${line}`);
 }
 
 /** Backoff for a platform that failed to start: 30 s, then doubling, at most 5 minutes. */
@@ -136,10 +139,8 @@ export async function runDaemon(configPath: string): Promise<void> {
   // closed: a profile never compiled, or whose check cannot run, is not started (compile.ts, launchCheck).
   const seeded = seedGuards(cfg, STATE_DIR);
   if (seeded.length) logLine(`launch guard: took the compiled deny rules of ${seeded.join(', ')} from their own records (first start with the state-side guard)`);
-  const launchGuard = (name: string): string[] => {
-    try { return launchCheck(cfg, name, STATE_DIR); }
-    catch (e) { logLine(`launch check ${name}: ${(e as Error).message}`); return [`the check failed: ${(e as Error).message}`]; }
-  };
+  const launchGuard = makeLaunchGuard(cfg, STATE_DIR, logLine);
+
   // The owner's API token; each agent gets one derived from it that works only for its own chat.
   const apiToken = loadOrMintToken(join(STATE_DIR, 'api.token'), (mode) => logLine(`api.token was mode ${mode.toString(8)}; set back to 600`));
   const restart = {
@@ -184,12 +185,14 @@ export async function runDaemon(configPath: string): Promise<void> {
     if (note) logLine(`onboard profile=${made.name} ${note}`);
     return made;
   };
+  // A profile armed with `angelia profile connect` takes an owner's first message in a new chat (connect.ts).
+  const connect = connectWiring({ table, cfg, instance: STATE_DIR, self, log: logLine });
   const switchBackend = async (profile: string, backend: BackendName) => {
     const done = switchProfileBackend({ table, cfg, profile, backend, instance: STATE_DIR, self });
     const note = await grokTrust(profile);
     return note ? { ...done, notes: [...done.notes, note] } : done;
   };
-  const orch = new Orchestrator(cfg, senders, { stateDir: STATE_DIR, log: logLine, selfPrompt: self, restart, onboard, switchBackend, transcripts: true, secrets, sessionToken: (key) => sessionToken(apiToken, key), launchGuard });
+  const orch = new Orchestrator(cfg, senders, { stateDir: STATE_DIR, log: logLine, selfPrompt: self, restart, onboard, connect, switchBackend, transcripts: true, secrets, sessionToken: (key) => sessionToken(apiToken, key), launchGuard });
   // A tmux server outlives the daemon and keeps the environment it was started with. One started by an
   // older build still carries the bot token and hands it to every new pane: take the secrets out.
   if (Object.values(cfg.profiles).some((p) => p.tui)) {
@@ -216,7 +219,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   if (cfg.telegram) {
     const token = process.env[cfg.telegram.token_env] ?? secrets[cfg.telegram.token_env];
     if (!token) throw new Error(`telegram: ${cfg.telegram.token_env} is not set`);
-    const tg = new TelegramAdapter({ token, log: logLine, inboxFor, onInbound, onPress: (i, id, allow) => orch.pressed(i, id, allow), menuChats: cfg.routes.filter((r) => r.platform === 'telegram').map((r) => r.chat) });
+    const tg = new TelegramAdapter({ token, log: logLine, inboxFor, onInbound, onJoined: (chat, by, at) => orch.joined('telegram', chat, by, at), onPress: (i, id, allow) => orch.pressed(i, id, allow), menuChats: cfg.routes.filter((r) => r.platform === 'telegram').map((r) => r.chat) });
     senders.telegram = tg;
     telegram = tg;
     adapters.push(tg);
@@ -224,7 +227,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   }
   let waAdapter: WhatsAppAdapter | undefined;
   if (cfg.whatsapp) {
-    const wa = new WhatsAppAdapter({ authDir: cfg.whatsapp.auth_dir, pairing: cfg.whatsapp.pairing, phone: cfg.whatsapp.phone, log: logLine, inboxFor, onInbound });
+    const wa = new WhatsAppAdapter({ authDir: cfg.whatsapp.auth_dir, pairing: cfg.whatsapp.pairing, phone: cfg.whatsapp.phone, log: logLine, inboxFor, onInbound, onJoined: (chat, by, at) => orch.joined('whatsapp', chat, by, at) });
     senders.whatsapp = wa;
     waAdapter = wa;
     wa.on('open', () => { waState = 'connected'; });

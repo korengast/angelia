@@ -86,7 +86,9 @@ export type BrainEvent =
   /** An answer of the session that this turn did not ask for, found as the turn was typed: told to the
    *  chat before the turn's own answer (UnaskedAnswer). Between turns a brain emits it as `unasked`. */
   | ({ kind: 'unasked' } & UnaskedAnswer)
-  | { kind: 'result'; text: string; isError: boolean; reason?: string };
+  /** `keep`: a failed turn whose session is alive and untouched (tmux mode: the message was never typed
+   *  into a pane busy with work of its own). The session is not ended for it: background agents live in it. */
+  | { kind: 'result'; text: string; isError: boolean; reason?: string; keep?: boolean };
 
 /**
  * An answer of a session that no turn of Angelia's is waiting for (tmux mode, brain/tui.ts).

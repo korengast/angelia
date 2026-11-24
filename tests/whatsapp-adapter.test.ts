@@ -1,10 +1,12 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { WhatsAppAdapter, type WhatsAppAdapterOptions } from '../src/adapters/whatsapp/adapter.js';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { WhatsAppAdapter, transientNetError, errorLine, type WhatsAppAdapterOptions } from '../src/adapters/whatsapp/adapter.js';
+import type { Inbound } from '../src/core/types.js';
 
 /** The slice of a Baileys socket the adapter's connection handling uses. Nothing here touches the network or pairs. */
 class FakeSocket {
@@ -331,4 +333,163 @@ test('a reply carries the quoted text to the handler, and a plain message carrie
   await until(() => got.length === 2, 'two inbound messages');
   assert.equal(got[0].quoted, 'line 1\nline 2');
   assert.equal('quoted' in got[1], false);
+});
+
+/** A join as Baileys 7 hands it: the participant-add stub message (messageTimestamp from the
+ *  notification's `t`), in a messages.upsert of type append. */
+let stubN = 0;
+const addStub = (o: { group?: string; author?: string; authorPn?: string; participants: unknown[]; t?: number; type?: number }) => ({ type: 'append', messages: [{
+  key: { remoteJid: o.group ?? G, fromMe: false, id: `STUB${++stubN}`, participant: o.author, participantAlt: o.authorPn },
+  messageStubType: o.type ?? 27,
+  messageStubParameters: o.participants.map((p) => (typeof p === 'string' ? p : JSON.stringify(p))),
+  messageTimestamp: o.t ?? Math.floor(Date.now() / 1000),
+}] });
+
+test('the bot added to a group: onJoined gets the group and who added it, by phone when the lid map knows it', async (t) => {
+  const joined: [string, string[]][] = [];
+  const { a, sock, authDir } = await connected({ onJoined: async (chat, by) => { joined.push([chat, by]); } }); t.after(() => a.stop());
+  // The bot's own ids, as a linked device's socket has them.
+  (sock as { user: unknown }).user = { id: '15550000000:12@s.whatsapp.net', lid: '11111111111111:3@lid' };
+  writeFileSync(join(authDir, 'lid-mapping-15550004444.json'), JSON.stringify('44444444444444@lid'));
+  sock.ev.emit('creds.update', {});
+  sock.ev.emit('messages.upsert', addStub({ author: '44444444444444@lid', participants: [{ id: '11111111111111@lid' }] }));
+  // Someone else added, the bot removed (another stub type), a participants event alone (no stub): nothing.
+  sock.ev.emit('messages.upsert', addStub({ author: '44444444444444@lid', participants: [{ id: '15559990000@s.whatsapp.net' }] }));
+  sock.ev.emit('messages.upsert', addStub({ author: '44444444444444@lid', participants: [{ id: '11111111111111@lid' }], type: 28 }));
+  sock.ev.emit('group-participants.update', { id: G, author: '44444444444444@lid', participants: [{ id: '11111111111111@lid' }], action: 'add' });
+  // An older Baileys hands jids, with the device suffix; the author's phone may come as participantAlt; an invite link's join.
+  sock.ev.emit('messages.upsert', addStub({ author: '55555555555555@lid', authorPn: '15556667777@s.whatsapp.net', participants: ['15550000000:12@s.whatsapp.net'], type: 31 }));
+  await settle();
+  assert.deepEqual(joined, [[G, ['15550004444', '44444444444444']], [G, ['15556667777', '55555555555555']]]);
+});
+
+test('an add carries the stub\'s own time; one handed over while the socket catches up is not used (L4, L5)', async (t) => {
+  const joined: [string, string[], number][] = [];
+  const logs: string[] = [];
+  const { a, sock } = await connected({ onJoined: async (chat, by, at) => { joined.push([chat, by, at]); }, log: (l) => logs.push(l) }); t.after(() => a.stop());
+  (sock as { user: unknown }).user = { id: '15550000000:12@s.whatsapp.net', lid: '11111111111111:3@lid' };
+  const add = (t?: number) => addStub({ author: '44444444444444@lid', participants: [{ id: '11111111111111@lid' }], ...(t ? { t } : {}) });
+  // A reconnect: Baileys says the missed notifications are still coming, then replays the old add.
+  sock.ev.emit('connection.update', { receivedPendingNotifications: false });
+  sock.ev.emit('messages.upsert', add());
+  await settle();
+  assert.deepEqual(joined, [], 'a replay is not used');
+  assert.ok(logs.some((l) => /add of the bot arrived while catching up/.test(l)));
+  sock.ev.emit('connection.update', { receivedPendingNotifications: true });
+  // One that comes after the catching up, from an hour ago (a queued stub): its own time, not now.
+  const hourAgo = Math.floor(Date.now() / 1000) - 3600;
+  sock.ev.emit('messages.upsert', add(hourAgo));
+  // A protobuf Long, as fromObject may make it.
+  sock.ev.emit('messages.upsert', { ...add(), messages: [{ ...add().messages[0], messageTimestamp: { low: hourAgo + 5, high: 0 } }] });
+  await settle();
+  assert.deepEqual(joined.map((j) => j[2]), [hourAgo * 1000, (hourAgo + 5) * 1000]);
+});
+
+test('join, end to end: an owner adds the bot (seen by lid), the adapter tells the orchestrator, the group is routed to the armed profile, and a message sent at once waits for that and routes there', async (t) => {
+  const { loadConfig } = await import('../src/instance/config/load.js');
+  const { writeAccepted } = await import('../src/instance/accepted.js');
+  const { arm, armedFor, connectWiring } = await import('../src/instance/connect.js');
+  const { Orchestrator } = await import('../src/core/orchestrator.js');
+  const FAKE_CLAUDE = join(dirname(fileURLToPath(import.meta.url)), 'fake-claude.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-wa-join-'));
+  const inst = join(dir, 'instance'), folder = join(dir, 'agents', 'recipes');
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, 'CLAUDE.md'), '# recipes\n');
+  const table = join(dir, 'routing.yaml');
+  writeFileSync(table, `profiles:\n  recipes: {cwd: ${folder}}\nroutes: []\nwhatsapp: {}\ndefaults: {max_out_per_min: 1000}\nonboard: {owners: ["15550004444"], allow_from: ["*"], mention: any, connect_mention: any, folder: ${join(dir, 'agents')}}\n`);
+  const cfg = loadConfig(table);
+  writeAccepted(cfg, inst);
+  arm(inst, { profile: 'recipes', platform: 'whatsapp' });
+  let o: InstanceType<typeof Orchestrator> | undefined;
+  const logs: string[] = [];
+  const { a, sock, authDir } = await connected({ onInbound: (i) => o!.handle(i), onJoined: (chat, by, at) => o!.joined('whatsapp', chat, by, at) });
+  t.after(() => a.stop());
+  const US = { id: '15550000000:12@s.whatsapp.net', lid: '11111111111111:3@lid' };
+  // The bot's ids, and the typing signal the turn sends, which this fake socket lacks.
+  Object.assign(sock, { user: US, sendPresenceUpdate: async () => {} });
+  o = new Orchestrator(cfg, { whatsapp: a }, { stateDir: inst, bins: { 'claude-code': FAKE_CLAUDE }, chunkGapMs: [0, 0], log: (l) => logs.push(l), connect: connectWiring({ table, cfg, instance: inst }) });
+  t.after(() => o!.shutdown());
+  // Baileys knows the owner's lid; the add names the owner by lid only.
+  writeFileSync(join(authDir, 'lid-mapping-15550004444.json'), JSON.stringify('44444444444444@lid'));
+  sock.ev.emit('creds.update', {});
+  sock.ev.emit('group-participants.update', { id: G, author: '44444444444444@lid', participants: [{ id: US.lid }], action: 'add' });
+  sock.ev.emit('messages.upsert', addStub({ author: '44444444444444@lid', participants: [{ id: US.lid }] }));
+  // Someone else in the group writes at once, before the route is there.
+  sock.ev.emit('messages.upsert', { type: 'notify', messages: [{ key: { remoteJid: G, fromMe: false, participant: '22222222222222@lid', id: 'J1' }, pushName: 'Pat', message: { conversation: 'what is for dinner' } }] });
+  await until(() => sock.posts.some((s) => String(s.content.text).startsWith('echo:')), 'the answer');
+  assert.equal(cfg.routes.at(-1)!.chat, G);
+  assert.equal(cfg.routes.at(-1)!.profile, 'recipes');
+  assert.equal(armedFor(inst, 'whatsapp'), undefined);
+  assert.ok(logs.includes(`connected key=whatsapp:${G} profile=recipes on=join`), logs.join('\n'));
+  const out = sock.posts.map((s) => String(s.content.text));
+  assert.equal(out.length, 1, 'no Connected line, only the answer');
+  assert.match(out[0], /^echo: \[whatsapp group 120363000000000001@g\.us · Pat \(22222222222222\)\]\n\nwhat is for dinner$/);
+});
+
+/** An adapter on one open fake socket that hands every inbound message to `got`, for the download tests. */
+async function receiving(t: TestContext, extra: Partial<WhatsAppAdapterOptions>) {
+  const got: Inbound[] = [];
+  const r = rig({ onInbound: async (i) => { got.push(i); }, ...extra });
+  t.after(() => r.a.stop());
+  await r.a.start();
+  r.sockets[0].open();
+  return { ...r, got, upsert: (messages: unknown[]) => r.sockets[0].ev.emit('messages.upsert', { type: 'notify', messages }) };
+}
+
+/** What undici's fetch throws when the network drops: "fetch failed", the reason in `cause`. */
+const fetchFailed = (code = 'ECONNRESET') => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(`read ${code}`), { code }) });
+const DM = '15551111111@s.whatsapp.net';
+
+test('a media download that fails on the network is tried again, and the photo arrives; the log names the cause', async (t) => {
+  const profile = mkdtempSync(join(tmpdir(), 'angelia-wa-profile-'));
+  let calls = 0;
+  const download = (async () => {
+    calls++;
+    if (calls === 1) throw fetchFailed('ETIMEDOUT');
+    // The second try breaks while the file streams in: its partial file must not stay.
+    if (calls === 2) return (async function* () { yield Buffer.from('JP'); throw fetchFailed('ECONNRESET'); })();
+    return (async function* () { yield Buffer.from('JPEG'); })();
+  }) as never;
+  const { got, log, upsert } = await receiving(t, { inboxFor: () => profile, download, retryMs: [5, 5] });
+  upsert([{ key: { remoteJid: DM, id: 'FLAP' }, message: { imageMessage: { caption: 'look', mimetype: 'image/jpeg', fileLength: 4 } } }]);
+  await until(() => got.length === 1, 'the photo');
+  assert.equal(calls, 3);
+  assert.equal(got[0].text, 'look');
+  assert.equal(got[0].media.length, 1);
+  assert.equal(readFileSync(got[0].media[0], 'utf8'), 'JPEG');
+  assert.deepEqual(readdirSync(join(profile, '.inbox')).length, 1, 'no partial file from the broken try');
+  assert.ok(log.some((l) => /media download try 1 failed .*fetch failed \(cause: ETIMEDOUT read ETIMEDOUT\); again in 0 s/.test(l)), log.join('\n'));
+  assert.ok(log.some((l) => /media download try 2 failed .*cause: ECONNRESET/.test(l)));
+  assert.ok(!log.some((l) => /media download failed/.test(l)));
+});
+
+test('a network error on every try: three tries, then the agent is told, with the cause in the log', async (t) => {
+  const profile = mkdtempSync(join(tmpdir(), 'angelia-wa-profile-'));
+  let calls = 0;
+  const { got, log, upsert } = await receiving(t, { inboxFor: () => profile, download: (async () => { calls++; throw fetchFailed('ENOTFOUND'); }) as never, retryMs: [5, 5] });
+  upsert([{ key: { remoteJid: DM, id: 'DOWN' }, message: { imageMessage: { mimetype: 'image/jpeg', fileLength: 4 } } }]);
+  await until(() => got.length === 1, 'the note');
+  assert.equal(calls, 3);
+  assert.equal(got[0].text, '[the photo sent could not be downloaded]');
+  assert.ok(log.some((l) => /media download failed .*fetch failed \(cause: ENOTFOUND read ENOTFOUND\)/.test(l)));
+});
+
+test('an error that is not the network (an HTTP status) is not tried again', async (t) => {
+  const profile = mkdtempSync(join(tmpdir(), 'angelia-wa-profile-'));
+  let calls = 0;
+  const { got, upsert } = await receiving(t, { inboxFor: () => profile, download: (async () => { calls++; throw new Error('media host said 500'); }) as never, retryMs: [5, 5] });
+  upsert([{ key: { remoteJid: DM, id: 'BAD' }, message: { imageMessage: { caption: 'see this', mimetype: 'image/jpeg', fileLength: 10 } } }]);
+  await until(() => got.length === 1, 'the caption of the failed photo');
+  assert.equal(calls, 1);
+  assert.equal(got[0].text, 'see this\n[the photo sent could not be downloaded]');
+});
+
+test('transientNetError: network breaks yes; an HTTP status, an abort or a size error no', () => {
+  assert.equal(transientNetError(fetchFailed()), true);
+  assert.equal(transientNetError(Object.assign(new Error('x'), { code: 'UND_ERR_SOCKET' })), true);
+  assert.equal(transientNetError(new Error('socket hang up')), true);
+  assert.equal(transientNetError(new Error('media host said 500')), false);
+  assert.equal(transientNetError(new Error('no answer in 60 s')), false);
+  assert.equal(transientNetError(undefined), false);
+  assert.equal(errorLine(new Error('plain')), 'plain');
 });

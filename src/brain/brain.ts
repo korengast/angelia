@@ -16,6 +16,11 @@ export interface BrainOptions {
   quietMs?: number;
   quietTextMs?: number;
   quietOpenMs?: number;
+  /** tmux mode: how long a message waits for the pane's prompt before it goes back to the chat as not
+   *  delivered (tui.ts: PROMPT_TIMEOUT_MS). Tests shorten it. */
+  promptTimeoutMs?: number;
+  /** tmux mode: how long a paste may take to show in the input box (tui.ts: LAND_MS). Tests shorten it. */
+  landMs?: number;
   /** tmux mode: how often the Stop marker is looked for between turns (tui.ts: IDLE_POLL_MS). Tests shorten it. */
   idlePollMs?: number;
   /** The agent's environment: no secret except the ones its profile was given (core/env.ts). */

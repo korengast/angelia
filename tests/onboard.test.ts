@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,6 +88,19 @@ test('onboarding writes the profile, the route and the folder, and adds them to 
   const second = onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'other@g.us', chatName: 'Home Reno', instance: join(t.dir, 'instance') });
   assert.equal(second.name, 'home-reno-2');
   assert.match(readFileSync(t.path, 'utf8'), /owners: \["15550000001"\], allow_from: \["15550000001"\]\}/, 'the same list twice is written twice, not as a YAML anchor');
+});
+
+test('onboarding holds the table lock: while another writer has it, a clean refusal with no path, nothing made (L6)', () => {
+  const t = table();
+  const cfg = loadConfig(t.path);
+  const before = readFileSync(t.path, 'utf8');
+  writeFileSync(`${t.path}.lock`, String(process.pid)); // a live writer: this process
+  assert.throws(() => onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'new@g.us', chatName: 'Home Reno', instance: join(t.dir, 'instance') }),
+    (e: Error) => e.message === 'not onboarding: the routing table is being written by another process; try again in a moment');
+  assert.equal(readFileSync(t.path, 'utf8'), before);
+  assert.deepEqual(Object.keys(cfg.profiles), ['a']);
+  rmSync(`${t.path}.lock`);
+  assert.equal(onboardChat({ table: t.path, cfg, platform: 'whatsapp', chat: 'new@g.us', chatName: 'Home Reno', instance: join(t.dir, 'instance') }).name, 'home-reno');
 });
 
 test('a new profile gets its capabilities compiled before its first turn', () => {

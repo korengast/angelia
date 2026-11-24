@@ -179,6 +179,9 @@ onboard:
   folder: ~/agents                 where new folders go (default: workspace/profiles)
   mention: any                     the new route's mention setting; with any, an owner's first
                                    group message needs no mention either
+  connect_mention: required        the same for a chat an armed profile is connected to
+                                   (angelia profile connect, below). Default required: the agent
+                                   answers there only when mentioned. any: every message.
   skip: ["whatsapp:1203…@g.us"]    chats never onboarded: ones another gateway still serves, or
                                    archived ones. Fill it before turning onboard on, since every
                                    chat not in routes: counts as new. Take a key off when it moves.
@@ -195,7 +198,37 @@ Angelia package; copy it and point onboard.prompt at the copy to change it.
 
 \`angelia profile add <platform:chat> [name]\` does the same by hand, for a chat nobody has written in
 yet; the daemon picks it up at the next restart. Adding the bot to a group is not enough to get an
-agent: only an owner's message is.`,
+agent: only an owner's message is.
+
+Set up first, then connect a group (opt-in; with nothing armed, new chats go as above):
+1. Have the profile ready: its entry under profiles: in routing.yaml, and its folder with the
+   CLAUDE.md it should start from. It may have no route yet, or other chats already.
+2. Arm it for the next new chat on one platform:
+   angelia profile connect <profile> whatsapp|telegram [--hours N]
+     [--allow <id,id,...>] [--owners <id,...>] [--mention required|any]
+   It holds for 24 hours (1 to 168 with --hours). One profile per platform: a new arm replaces the
+   old one, and says which. --allow replaces this block's allow_from for that route, --mention its
+   connect_mention (default required: the agent answers only when mentioned); --owners adds to its
+   owners. Only this block's owners use an arm, whoever made it.
+3. Add the bot to the group, as an owner. The chat is routed to the armed profile at once, before
+   anyone writes, so the group's next messages go to it. Nothing is posted in the group and no turn
+   runs; messages sent meanwhile wait for the route. If the add names no owner, an owner's first
+   message there does the same (in a group it must mention the bot; the mention setting is for later messages); that message gets its answer,
+   with a short note to the agent that the chat is new to it, not the onboarding prompt. A join by an
+   invite link names no owner, and one by an approved join request names the admin who approved it:
+   then too, an owner's first message is the way in. An add older than the arm (a replay after a
+   reconnect) does not use it, on WhatsApp and Telegram alike; nor does a WhatsApp add that arrives
+   while the connection catches up after a reconnect.
+A bind that fails says nothing in a group; a DM gets one line. The daemon log has the reason.
+The route is built from this block as onboarding builds it, the profile is compiled again, and
+nothing else changes. The chat gets its own session; what the agent knows comes from its folder.
+The arm is used once, and works whatever defaults.unmatched says. Anyone else adding the bot or
+writing, a command, a chat in skip:, or a group message with no mention goes the way it went before.
+\`angelia profile connect\` lists what is armed (so does \`angelia profiles\`);
+\`angelia profile connect --cancel whatsapp\` takes the arm back.
+For a chat whose id you know (a group already there, with no route):
+\`angelia profile connect <profile> whatsapp:<id>\` routes it now (the same flags apply); the daemon
+picks it up at the next restart, and an arm does not route that chat a second time meanwhile. A profile with shared_write is refused: write its routes by hand.`,
   },
   capabilities: {
     title: 'skills, scripts and tools: where each one lives',

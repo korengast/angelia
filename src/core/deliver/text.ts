@@ -12,6 +12,16 @@ export function failureLine(reason?: string, home?: string, group = false): stri
   const tidy = home ? said.split(home).join('~') : said;
   return `Something broke on my side (${tidy.slice(0, 300)}). Try again, or /new.`;
 }
+/** tmux mode: the message was not typed into a session that is alive (busy with work of its own, or a
+ *  dialog open). The session and its background work go on; the chat sends the message again. `reason`:
+ *  the turn's, `not delivered: <why>` (brain/tui.ts, NOT_TYPED). */
+export function notDeliveredLine(reason?: string): string {
+  const why = (reason ?? '').replace(/^not delivered:\s*/, '').trim();
+  return `Your message did not reach the agent${why ? `: ${why}` : ''}. Nothing was stopped, and its background work goes on. Send the message again in a few minutes. /stop ends the session, and its background work with it.`;
+}
+/** tmux mode: the session was handed to another reader (a handoff) while this message waited for the
+ *  prompt, so it was never typed. No ids in it. */
+export const RELEASED_LINE = 'Your message did not reach the agent: the session changed while the message waited. Send the message again.';
 export const PERMISSION_TIMEOUT_LINE = 'No answer to the permission request in time, so it was denied.';
 /** A turn that ended well with nothing new for the chat. Grok Build ends its turn this way after a denial
  *  (measured 2026-10-27), so the chat saw its own "no" and then nothing; Claude Code in print mode, Codex

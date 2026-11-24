@@ -3,12 +3,22 @@ import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import pino from 'pino';
 import { ChatChains, MAX_INBOUND, SenderQuota, saveInbound } from '../inbox.js';
-import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage, DisconnectReason, type AnyMessageContent, type GroupMetadata, type WASocket } from 'baileys';
+import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage, DisconnectReason, WAMessageStubType, type AnyMessageContent, type GroupMetadata, type WASocket } from 'baileys';
 import qrcode from 'qrcode-terminal';
 import type { Inbound } from '../../core/types.js';
 import type { Sender, SendOptions, Sent } from '../../core/orchestrator.js';
-import { LidMap, normalizeJid } from './ids.js';
-import { MAX_MENTIONS, parseMessage, SeenIds, toInbound, withMentions, type WaMessageLike } from './parse.js';
+import { bareId, isGroupJid, LidMap, normalizeJid } from './ids.js';
+import { byteLength, MAX_MENTIONS, parseMessage, SeenIds, toInbound, withMentions, type WaMessageLike } from './parse.js';
+
+/** The stub types of a participant joining a group: Baileys emits its participants 'add' for these three. */
+const ADD_STUBS = new Set<number>([WAMessageStubType.GROUP_PARTICIPANT_ADD, WAMessageStubType.GROUP_PARTICIPANT_INVITE, WAMessageStubType.GROUP_PARTICIPANT_ADD_REQUEST_JOIN]);
+/** The fields of a join stub message read here. */
+interface AddStub {
+  key?: { remoteJid?: string | null; fromMe?: boolean | null; participant?: string | null; participantAlt?: string | null };
+  messageStubType?: unknown;
+  messageStubParameters?: unknown[] | null;
+  messageTimestamp?: unknown;
+}
 import { GroupCache } from './groups.js';
 import { SentMessages } from './sent.js';
 import { isOpus, type Media } from '../../core/deliver/media.js';
@@ -22,6 +32,10 @@ export interface WhatsAppAdapterOptions {
   /** Profile cwd for a message that would pass routing and gating, else undefined: nothing is downloaded for anyone else. */
   inboxFor: (i: Omit<Inbound, 'media'>) => string | undefined;
   onInbound: (i: Inbound) => Promise<void>;
+  /** The bot was added to a group: the group, the one who added it by every id known (phone, lid), and
+   *  when the add was seen (ms). Baileys gives the event no time of its own, so an add that arrives while
+   *  the socket catches up on what it missed (a replay) is not passed on at all. */
+  onJoined?: (chat: string, by: string[], at: number) => Promise<void>;
   log?: (line: string) => void;
   /** Pairing only: exit once the socket is open and credentials are saved. */
   pairOnly?: boolean;
@@ -29,6 +43,10 @@ export interface WhatsAppAdapterOptions {
   say?: (line: string) => void;
   /** Baileys' socket maker, unless given (tests pass a fake: no network, no pairing). */
   makeSocket?: typeof makeWASocket;
+  /** Baileys' media fetch, unless given (tests pass a fake: no network). */
+  download?: typeof downloadMediaMessage;
+  /** The waits before a media download is tried again after a network error (tests pass short ones). */
+  retryMs?: number[];
   /** The clock and the pace of the not-connected check (tests pass a fake clock and a short pace). */
   now?: () => number;
   watchEveryMs?: number;
@@ -37,6 +55,37 @@ export interface WhatsAppAdapterOptions {
 const MAX_MEDIA = MAX_INBOUND;
 /** How a note to the agent names a kind of file: "a photo", "a voice note", never "a image". */
 const KIND_NAME: Record<string, string> = { image: 'photo', audio: 'voice note', video: 'video', document: 'document', sticker: 'sticker' };
+/** A file download gives up after this long: a stalled one would hold its chat for good, /stop included. */
+const DOWNLOAD_MS = 60_000;
+/** A download that fails on the network is tried again after these waits, inside DOWNLOAD_MS: three tries
+ *  in all. A flapping connection often has a good window seconds later. */
+const RETRY_MS = [3_000, 10_000];
+/** Node's and undici's codes for a connection that broke, or never came up. */
+const NET_CODES = /^(ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|ENETDOWN|EHOSTUNREACH|EPIPE|UND_ERR_[A-Z_]+)$/;
+
+/** A network error worth another try: fetch's "fetch failed" (the real reason is in `cause`), a
+ *  connection code, a hang-up. Not an HTTP status, an abort, or a file that is too big: those stay. */
+export function transientNetError(e: unknown): boolean {
+  const err = e as { message?: unknown; code?: unknown; cause?: { code?: unknown; message?: unknown } } | undefined;
+  if ([err?.code, err?.cause?.code].some((c) => typeof c === 'string' && NET_CODES.test(c))) return true;
+  return /fetch failed|socket hang up|other side closed/i.test(`${String(err?.message ?? '')} ${String(err?.cause?.message ?? '')}`);
+}
+
+/** The error as one log line, with its cause: "fetch failed" alone hides what went wrong. */
+export function errorLine(e: unknown): string {
+  const err = e as { message?: unknown; cause?: { code?: unknown; message?: unknown } } | undefined;
+  const cause = err?.cause ? [err.cause.code, err.cause.message].filter((x) => typeof x === 'string' && x).join(' ') : '';
+  return `${String(err?.message ?? e)}${cause ? ` (cause: ${cause})` : ''}`.slice(0, 240);
+}
+
+/** A wait that an abort cuts short. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return before(new Promise<void>((resolve) => { const t = setTimeout(resolve, ms); signal.addEventListener('abort', () => clearTimeout(t), { once: true }); }), signal);
+}
+/** `p`, or the signal's reason once it aborts, whichever comes first. */
+function before<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  return Promise.race([p, new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(signal.reason as Error), { once: true }))]);
+}
 /** Paired and not connected for this long, the adapter says 'dead' (see check()). Baileys' own keepalive turns a
  *  dead socket into a close within about a minute, and a reconnect takes seconds, so five minutes is never a
  *  working session. */
@@ -163,16 +212,21 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     // close from it would start a second socket beside this one, and a late save would write its credentials.
     const old = this.sock;
     this.sock = sock;
+    this.catchingUp = false;
     this.retire(old);
     // A change made while no socket listened was never heard: a new socket starts with no cached group.
     this.groups.clear();
     sock.ev.on('groups.update', (us) => { for (const u of us) this.groups.drop(u.id); });
-    sock.ev.on('group-participants.update', (u) => this.groups.drop(u.id));
+    // The cached members only: an add of the bot is read from its stub message below, which has a time.
+    sock.ev.on('group-participants.update', (u) => { this.groups.drop(u.id); });
     sock.ev.on('creds.update', () => { if (sock !== this.sock) return; void saveCreds(); this.lids.reload(); });
     sock.ev.on('connection.update', (u) => { if (sock === this.sock) void this.onConnection(u as Record<string, any>, sock); });
     sock.ev.on('messages.upsert', ({ messages, type }) => {
       if (type !== 'notify' && type !== 'append') return;
-      for (const m of messages) void this.onMessage(m as unknown as WaMessageLike).catch((e) => this.log(`whatsapp: message error ${(e as Error).message}`));
+      for (const m of messages) {
+        if (ADD_STUBS.has(Number((m as { messageStubType?: unknown }).messageStubType))) this.onAddStub(m as unknown as AddStub);
+        void this.onMessage(m as unknown as WaMessageLike).catch((e) => this.log(`whatsapp: message error ${(e as Error).message}`));
+      }
     });
     if (!this.registered && this.opts.pairing === 'qr') this.say('Scan the QR below with WhatsApp > Linked devices > Link a device.');
   }
@@ -210,6 +264,9 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
   }
 
   private async onConnection(u: Record<string, any>, sock: WASocket): Promise<void> {
+    // Baileys says false as a socket starts and true once the notifications it missed are handled.
+    if (u.receivedPendingNotifications === false) this.catchingUp = true;
+    else if (u.receivedPendingNotifications === true) this.catchingUp = false;
     if (u.qr && !this.registered) {
       if (this.opts.pairing === 'qr') { this.emit('qr', String(u.qr)); qrcode.generate(u.qr, { small: true }, (s: string) => this.say(s)); }
       else void this.requestCode(sock);
@@ -270,9 +327,37 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     try { sock?.end(undefined)?.catch(() => {}); } catch { /* already closed */ }
   }
 
+  /** The socket is still handed the notifications it missed while closed (review fix L4). */
+  private catchingUp = false;
+
   private ourIds(): string[] {
     const u = this.sock?.user as { id?: string; lid?: string } | undefined;
     return [normalizeJid(u?.id), normalizeJid(u?.lid)].filter(Boolean);
+  }
+
+  /**
+   * Someone added to a group, as its stub message has it: the bot itself, and who added it, as a phone
+   * number when the lid map knows it, and as given. Read from the stub, not from Baileys'
+   * group-participants event (made from the same stub, emitted before it and with no time): the stub
+   * carries the time of the add (messageTimestamp, from the notification's `t`), so an add from before
+   * the arm, replayed after a reconnect, does not use it (review fix L5). Participants come as JSON
+   * text (Baileys 7: {id, phoneNumber}) or as bare jids (older).
+   */
+  private onAddStub(m: AddStub): void {
+    const chat = m.key?.remoteJid;
+    if (!this.opts.onJoined || !chat || !isGroupJid(chat) || m.key?.fromMe) return;
+    const ours = this.ourIds();
+    const parse = (x: unknown): unknown => { if (typeof x !== 'string') return x; try { return JSON.parse(x); } catch { return x; } };
+    const ids = (p: unknown) => (typeof p === 'string' ? [p] : [(p as { id?: string })?.id, (p as { lid?: string })?.lid, (p as { phoneNumber?: string })?.phoneNumber]).filter((x): x is string => typeof x === 'string' && !!x).map(normalizeJid);
+    const added = (Array.isArray(m.messageStubParameters) ? m.messageStubParameters : []).map(parse);
+    if (!added.some((p) => ids(p).some((id) => ours.includes(id)))) return;
+    // A second net: one handed over while the socket catches up happened while it was closed (review
+    // fix L4). An owner's first message still connects.
+    if (this.catchingUp) { this.log('whatsapp: an add of the bot arrived while catching up after a connect; not used (it may be from before the arm)'); return; }
+    const sec = byteLength(m.messageTimestamp);
+    const at = sec && sec > 0 ? sec * 1000 : this.now();
+    const by = [...new Set([m.key?.participantAlt, m.key?.participant].filter((x): x is string => typeof x === 'string' && !!x).flatMap((a) => [this.lids.phoneFor(a), bareId(a)]))];
+    void this.opts.onJoined(normalizeJid(chat), by, at).catch((e) => this.log(`whatsapp: join handler error ${(e as Error).message}`));
   }
 
   private seen = new SeenIds();
@@ -302,17 +387,35 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     await this.chains.run(p.chat, async () => {
       const media: string[] = [];
       if (fetchIt && inbox && p.media) {
+        // Baileys' fetch takes no signal, so the wait is cut here, and a stream already flowing is
+        // destroyed, which removes its partial file. The text still goes on.
+        const halt = new AbortController();
+        const timer = setTimeout(() => halt.abort(new Error(`no answer in ${DOWNLOAD_MS / 1000} s`)), DOWNLOAD_MS);
+        const waits = this.opts.retryMs ?? RETRY_MS;
         try {
-          const stream = (await downloadMediaMessage(m as never, 'stream', {}, { logger: pino({ level: 'silent' }), reuploadRequest: this.sock!.updateMediaMessage })) as AsyncIterable<Buffer>;
-          const ext = p.media.fileName?.match(/\.[A-Za-z0-9]{1,5}$/)?.[0] ?? EXT[p.media.mime ?? ''] ?? '';
-          const dest = await saveInbound(inbox, ext, stream, MAX_MEDIA);
-          if (dest) media.push(dest);
-          else { this.log(`whatsapp: media passed ${MAX_MEDIA >> 20} MB while downloading, dropped chat=${p.chat.slice(0, 8)}…`); note(`a ${KIND_NAME[p.media.kind] ?? p.media.kind} over ${MAX_MEDIA >> 20} MB was sent and not downloaded`); }
+          for (let tried = 0; ; tried++) {
+            try {
+              const stream = (await before((this.opts.download ?? downloadMediaMessage)(m as never, 'stream', {}, { logger: pino({ level: 'silent' }), reuploadRequest: this.sock!.updateMediaMessage }), halt.signal)) as AsyncIterable<Buffer> & { destroy?: () => void };
+              // Without an error: one not yet read from would raise it with no listener, an uncaught exception.
+              halt.signal.addEventListener('abort', () => stream.destroy?.(), { once: true });
+              const ext = p.media.fileName?.match(/\.[A-Za-z0-9]{1,5}$/)?.[0] ?? EXT[p.media.mime ?? ''] ?? '';
+              const dest = await before(saveInbound(inbox, ext, stream, MAX_MEDIA), halt.signal);
+              if (dest) media.push(dest);
+              else { this.log(`whatsapp: media passed ${MAX_MEDIA >> 20} MB while downloading, dropped chat=${p.chat.slice(0, 8)}…`); note(`a ${KIND_NAME[p.media.kind] ?? p.media.kind} over ${MAX_MEDIA >> 20} MB was sent and not downloaded`); }
+              break;
+            } catch (e) {
+              // Only a network error is tried again, and only while the overall limit has time left.
+              if (halt.signal.aborted || tried >= waits.length || !transientNetError(e)) throw e;
+              this.log(`whatsapp: media download try ${tried + 1} failed chat=${p.chat.slice(0, 8)}…: ${errorLine(e)}; again in ${Math.round(waits[tried] / 1000)} s`);
+              await pause(waits[tried], halt.signal);
+            }
+          }
         } catch (e) {
           // Said to the agent too (#35): a file with no caption would otherwise be no turn at all.
-          this.log(`whatsapp: media download failed chat=${p.chat.slice(0, 8)}…: ${String((e as Error).message ?? e).slice(0, 160)}`);
+          this.log(`whatsapp: media download failed chat=${p.chat.slice(0, 8)}…: ${errorLine(e)}`);
           note(`the ${KIND_NAME[p.media.kind] ?? p.media.kind} sent could not be downloaded`);
         }
+        finally { clearTimeout(timer); }
       }
       if (!head.text && !media.length) return;
       // Not awaited: the chat's turn queue keeps the order from here, and a turn can run for hours.

@@ -452,3 +452,18 @@ test('the buttons go when the request is answered by typing, and when its turn e
   assert.deepEqual(open(), []);
   assert.match(logs.find((l) => l.startsWith('telegram: buttons not removed'))!, /message to edit not found/);
 });
+
+test('my_chat_member: the bot added to a group calls onJoined with who added it; leaving, a DM or a promotion does not', async () => {
+  const joined: [string, string[]][] = [];
+  const tg = new TelegramAdapter({ token: '000:fake', botInfo: ME, inboxFor: () => undefined, onInbound: async () => {}, onJoined: async (chat, by) => { joined.push([chat, by]); } });
+  const bot = { id: ME.id, is_bot: true, first_name: 'Angelia' };
+  const change = (was: string, now: string, type = 'supergroup') => ({ update_id: ++n, my_chat_member: {
+    chat: type === 'private' ? { id: 7, type, first_name: 'A' } : { id: -100300, type, title: 'Kitchen' }, from: { id: 7, is_bot: false, first_name: 'A' }, date: 1,
+    old_chat_member: { status: was, user: bot }, new_chat_member: { status: now, user: bot } } }) as unknown as Update;
+  await tg.bot.handleUpdate(change('left', 'member'));
+  await tg.bot.handleUpdate(change('member', 'left'));
+  await tg.bot.handleUpdate(change('member', 'administrator'));
+  await tg.bot.handleUpdate(change('kicked', 'member', 'private'));
+  await tg.bot.handleUpdate(change('kicked', 'administrator', 'group'));
+  assert.deepEqual(joined, [['-100300', ['7']], ['-100300', ['7']]]);
+});

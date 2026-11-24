@@ -10,7 +10,7 @@ import { cleanText, type BrainEvent, type UnaskedAnswer } from '../core/types.js
 import { isLimitText } from '../core/deliver/text.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
-import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { readRecord } from '../capabilities/compile.js';
@@ -27,7 +27,21 @@ const POLL_MS = 700;
 /** How long claude's add-dir dialog must stand before keys reach it (it drops them for ~1 s, 2.1.326). */
 const ADD_DIR_SETTLE_MS = 1500;
 const START_TIMEOUT_MS = 90_000;
+/** How long a message waits for the pane's prompt. Past it the message goes back to the chat as not
+ *  delivered, and a pane that works or waits for a person is kept (notTyped). */
 const PROMPT_TIMEOUT_MS = 10 * 60_000;
+/** How long a paste may take to show in the input box before it counts as not shown. */
+const LAND_MS = 2400;
+/** How many times one message is pasted when it never showed in the box (nothing was submitted). */
+const PASTE_TRIES = 3;
+
+/** How a paste went. `keep`: the pane is alive and was left as it was, so it must not be ended for
+ *  this: it may hold background agents, a dialog for a person, or a turn of its own. `why`: for the chat. */
+type Pasted = { ok: true } | { ok: false; why: string; keep: boolean };
+
+/** The reason of a turn whose message was not typed into a live pane that is kept: the chat is told to
+ *  send it again (core/deliver/text.ts, notDeliveredLine), and the pane is not ended. */
+export const NOT_TYPED = 'not delivered';
 /** A turn has no end time: a long build or a run of subagents may take hours, and `/stop` ends a
  *  stuck one. Each full hour the chat gets one line saying so, so a silent turn is not taken for a
  *  crash. */
@@ -526,32 +540,86 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  transcript size, the Stop marker, the time) starts there, not before a wait in which someone
    *  else's turn in the Claude app could finish. `gen`: the reader this paste is for; a handoff
    *  during the wait takes the pane, and then nothing is typed into it. */
-  private async paste(raw: string, submit: () => void = () => {}, gen = this.gen): Promise<boolean> {
+  private async paste(raw: string, submit: () => void = () => {}, gen = this.gen): Promise<Pasted> {
     // The last gate before text becomes keys: whoever called, no control character reaches the pane.
     const text = cleanText(raw);
-    const deadline = Date.now() + PROMPT_TIMEOUT_MS;
-    while (!paneIdle(await this.capture(30))) {
-      if (Date.now() > deadline || !(await this.sessionAlive())) return false;
-      await sleep(POLL_MS);
-    }
-    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    if ((await loadBuffer(this.name, text, this.dir, (a) => this.tm(a))).code !== 0) return false;
-    await this.tm(['paste-buffer', '-p', '-d', '-b', this.name, '-t', this.name]);
-    for (let i = 0; i < 8; i++) {
-      await sleep(300);
-      const pane = await this.capture(20);
-      if (pasteLanded(pane, text)) {
+    const deadline = Date.now() + (this.opts.promptTimeoutMs ?? PROMPT_TIMEOUT_MS);
+    // Whether the screen changed while the message waited: a CLI at work redraws its spinner clock,
+    // background agents their rows. A screen that never moved for the whole wait is a hung CLI.
+    let moved = false;
+    for (let attempt = 1; ; attempt++) {
+      let pane = await this.capture(30);
+      while (!paneIdle(pane)) {
+        if (!(await this.sessionAlive())) return { ok: false, why: 'exit', keep: false };
+        if (gen !== this.gen) return { ok: false, why: 'released', keep: true };
+        if (Date.now() > deadline) return this.notTyped(pane, moved);
+        await sleep(POLL_MS);
+        const now = await this.capture(30);
+        if (now !== pane) moved = true;
+        pane = now;
+      }
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      if ((await loadBuffer(this.name, text, this.dir, (a) => this.tm(a))).code !== 0) {
+        this.emit('log', `tmux: the message could not be loaded into a paste buffer pane=${this.name}`);
+        return { ok: false, why: 'tmux could not load the message into the session', keep: true };
+      }
+      await this.tm(['paste-buffer', '-p', '-d', '-b', this.name, '-t', this.name]);
+      const landBy = Date.now() + (this.opts.landMs ?? LAND_MS);
+      let why = 'the pasted message never showed in the box';
+      // Nothing was submitted, so the paste may be tried again from the wait for the prompt.
+      let again = true;
+      while (Date.now() < landBy) {
+        await sleep(300);
+        const now = await this.capture(20);
+        if (!pasteLanded(now, text)) continue;
         // A turn started in the app between the idle check and now: Claude would queue our text
         // after it, and its answer would look like ours. Clear the box and say no.
-        if (gen !== this.gen || paneBusy(pane)) break;
+        if (gen !== this.gen || paneBusy(now)) { why = 'the pane became busy before Enter'; break; }
         submit();
-        if (await submitPasted(text, () => this.capture(20), () => this.tm(['send-keys', '-t', this.name, 'Enter']))) return true;
-        this.emit('log', `tmux: the pasted message was not taken after three Enters pane=${this.name}`);
+        if (await submitPasted(text, () => this.capture(20), () => this.tm(['send-keys', '-t', this.name, 'Enter']))) return { ok: true };
+        // Enter was pressed: Claude may yet take it, and a second paste would send it twice.
+        why = 'the pasted message was not taken after three Enters';
+        again = false;
         break;
       }
+      this.emit('log', `tmux: ${why} (attempt ${attempt}) pane=${this.name}`);
+      await this.tm(['send-keys', '-t', this.name, 'C-u']); // clear whatever landed, submit nothing
+      if (gen !== this.gen) return { ok: false, why: 'released', keep: true };
+      if (!again || attempt >= PASTE_TRIES || Date.now() > deadline) {
+        return { ok: false, why: again ? 'Claude Code did not show the pasted message' : 'Claude Code did not take the message', keep: true };
+      }
+      moved = true; // it drew a prompt since the wait began
     }
-    await this.tm(['send-keys', '-t', this.name, 'C-u']); // clear whatever landed, submit nothing
-    return false;
+  }
+
+  /** The message waited the whole bound for a prompt that never came. Kept (the chat is told to send
+   *  it again, the pane goes on) unless the pane looks hung: its screen never moved, no dialog waits
+   *  for a person, and no turn of this chat ever started background work in it. Only then may it be
+   *  ended, as a dead one would. Never a key into what holds it: a dialog is answered by a person.
+   *  Only a real permission dialog counts as one. Any other screen with no input box that is not at
+   *  work (a stuck login, a menu, an error) is ended and started fresh, as before 0.4.1: kept, it
+   *  would hold the chat for good (review fix L5). */
+  private notTyped(pane: string, moved: boolean): Pasted {
+    const dialog = permissionDialog(pane) !== null;
+    // Which background tasks are still open is not tracked here: any the chat's turns started counts.
+    const tasks = this.ours.size;
+    const mins = Math.round((this.opts.promptTimeoutMs ?? PROMPT_TIMEOUT_MS) / 60_000);
+    const wait = mins >= 1 ? `${mins} minute${mins === 1 ? '' : 's'}` : 'a while';
+    this.keepScreen('not-typed.txt', `no prompt for ${wait}`);
+    if (!dialog && !paneBusy(pane) && !paneHasBox(pane)) {
+      this.emit('log', `tmux: no prompt for ${wait}, no input box and no permission dialog (a login, a menu or an error screen): the pane is ended to start fresh pane=${this.name}`);
+      return { ok: false, why: 'stuck', keep: false };
+    }
+    if (!moved && !dialog && !tasks) {
+      this.emit('log', `tmux: no prompt for ${wait} and the screen never moved, no dialog, no background work: the pane looks hung pane=${this.name}`);
+      return { ok: false, why: 'hung', keep: false };
+    }
+    this.emit('log', `tmux: no prompt for ${wait}; the message goes back to the chat and the pane is kept (screen ${moved ? 'moving' : 'still'}, ${dialog ? 'a dialog open' : 'no dialog'}, ${tasks} background task(s) started by this chat) pane=${this.name}`);
+    return {
+      ok: false, keep: true,
+      why: dialog ? 'a dialog is open in the session and waits for an answer in the Claude app or its pane'
+        : `the session stayed busy for ${wait} with work of its own (a background task's report, or a turn typed in the Claude app)`,
+    };
   }
 
   /** Keep the screen of a pane whose turn ended or was held on what the screen showed, next to its
@@ -596,11 +664,16 @@ export class TuiBrain extends EventEmitter implements Brain {
     };
     const typed = await this.paste(text, submit, gen);
     if (left.over) yield { kind: 'unasked', ...left.over };
-    if (!typed) {
+    if (!typed.ok) {
       // Typed or not, no turn of ours runs: a marker that comes now is not this message's answer.
       if (this.turnSentAt === sentAt) this.turnSentAt = undefined;
       this.recording = false;
-      yield { kind: 'result', text: '', isError: true, reason: this.up ? 'the message could not be typed into the session (no prompt, or Claude Code did not take it)' : 'exit' };
+      if (!this.up || typed.why === 'exit') { yield { kind: 'result', text: '', isError: true, reason: 'exit' }; return; }
+      if (typed.why === 'released') { yield { kind: 'result', text: '', isError: true, reason: 'released', keep: true }; return; }
+      // A pane that is alive goes on with what it does: its background agents live in it. Only a hung
+      // one (notTyped) is given back to be ended.
+      if (typed.keep) { yield { kind: 'result', text: '', isError: true, reason: `${NOT_TYPED}: ${typed.why}`, keep: true }; return; }
+      yield { kind: 'result', text: '', isError: true, reason: 'the message could not be typed into the session (no prompt, or Claude Code did not take it)' };
       return;
     }
     yield* this.watch(sentAt, false, gen, text.trimStart().startsWith('/'));

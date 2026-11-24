@@ -486,6 +486,28 @@ test('a profile whose protections were loosened is not launched, and the chat is
   assert.match(sent.at(-1)!, /^echo:/);
 });
 
+test('a refusal with a path, a raw error or a pid stays in the log; the chat gets one fixed line', async (t) => {
+  const cfg = Config.parse({ profiles: { a: { cwd: here } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000 } });
+  const sent: string[] = [];
+  const log: string[] = [];
+  const details = [
+    'its deny rules could not be brought up to date (the compile lock is held by pid 4242)',
+    '2 of the deny rules every agent must have are missing from its settings, such as Read(/Users/example/.angelia/state/agy/**)',
+    'the check failed: EACCES: permission denied, open \'/Users/example/.angelia/compiled/a.json\'',
+  ];
+  let refused = [details[0]];
+  const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } },
+    { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, log: (l) => log.push(l), launchGuard: () => refused });
+  t.after(() => o.shutdown());
+  for (const d of details) {
+    refused = [d];
+    await o.handle(dm('1', 'hello'));
+    assert.equal(sent.at(-1), 'This chat\'s agent was not started: its protections could not be checked (the daemon log says why). Nothing was sent to it. The owner can fix it with: angelia compile --write a');
+    assert.doesNotMatch(sent.at(-1)!, /\/Users|pid|EACCES/);
+    assert.ok(log.some((l) => l.includes(d)), 'the detail is logged');
+  }
+});
+
 test('a pane let go of by the idle reap is ended by /new, not left running with nobody to reach it', async (t) => {
   const { o } = setup(); t.after(() => o.shutdown());
   const events: string[] = [];

@@ -24,7 +24,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, selfCapLine } from './deliver/text.js';
+import { failureLine, notDeliveredLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, RELEASED_LINE, selfCapLine } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -97,7 +97,8 @@ export interface OrchestratorOptions {
   sessionToken?: (key: string) => string;
   /** Why a profile's agent may not start (capabilities/compile.ts, launchCheck): never compiled, or a
    *  protection its last compile wrote is gone. Asked before a session starts; anything listed stops it. */
-  launchGuard?: (profile: string) => string[];
+  /** Why the profile's agent may not start; `start`: it is about to (it may write, refreshFloor), else a question that writes nothing. */
+  launchGuard?: (profile: string, start?: boolean) => string[];
   log?: (line: string) => void;
   /** The self-awareness prompt for a profile, by name (self.ts). Absent in tests: agents get none. */
   selfPrompt?: (profileName: string) => string;
@@ -113,6 +114,14 @@ export interface OrchestratorOptions {
   /** defaults.unmatched: onboard. Makes the profile and route for a new chat, adds them to the live
    *  config, and returns the new profile's name and the prompt for its first turn (onboard.ts). */
   onboard?: (i: Inbound, chatName?: string) => Onboarded | Promise<Onboarded>;
+  /** `angelia profile connect`: a profile armed for the next new chat on a platform (instance/connect.ts).
+   *  armed() names the profile armed for it now, if any, who may use the arm, and the mention a group
+   *  message needs; bind() routes the chat to it and returns its name and the short preface of the first
+   *  turn. Absent: unknown chats are handled as before. */
+  connect?: {
+    armed(platform: Platform): { profile: string; owners: string[]; mention?: 'required' | 'any'; at?: number } | undefined;
+    bind(i: { platform: Platform; chat: string }, chatName?: string): Onboarded | Promise<Onboarded>;
+  };
   /** /backend: moves a profile to another CLI in the table, compiled, and in the live config (switch-backend.ts). */
   switchBackend?: (profile: string, backend: BackendName) => Switched | Promise<Switched>;
   /** What a backend offers for /model and /effort (catalog.ts); a test passes its own. */
@@ -131,6 +140,15 @@ export const AGY_TOKEN_NOTE = 'One limit to know: agy must read its own sign-in 
 const CATALOG_MS = 10 * 60_000;
 
 const DROP_LOG_MS = 10 * 60_000;
+/** A bind that failed, in a DM: the reason is in the daemon log, never in the chat. */
+/** A /backend that failed: nothing changed, and the reason is in the daemon log only. */
+export const BACKEND_FAILED_LINE = 'Nothing changed: the backend could not be switched. The daemon log says why; try again in a moment.';
+export const CONNECT_FAILED_LINE = 'Could not connect this chat to its agent. The daemon log says why.';
+/** How far before the arm an add's time may say it was and still use it (see joined). */
+const JOIN_CLOCK_SLACK_MS = 60_000;
+/** A failed onboarding, in the chat: a fixed line. The error (a lock's pid, an fs error's path) goes to
+ *  the daemon log only (review fix C3). */
+export const ONBOARD_FAILED_LINE = 'Could not set up an agent for this chat. The daemon log says why.';
 /** Messages that may wait behind a chat's running turn. Past it, the chat is told once, and the rest dropped. */
 const QUEUE_MAX = 10;
 /** The waits between attempts at a failed send: about two minutes in all, enough for a reconnect. */
@@ -226,6 +244,9 @@ export class Orchestrator {
    *  that was running at the time sees its era go stale, and knows the failure it is about to
    *  report was the user pulling the plug rather than the agent crashing. */
   private era = new Map<string, number>();
+  /** The era a handoff moved each chat to: a reader released in that era was taken by the handoff, not
+   *  by /stop, /new or a model change, whose own reply already tells the chat. */
+  private handoffEra = new Map<string, number>();
   /** The grants /restart last listed per chat, so /restart confirm accepts only what the owner saw. */
   private shownWider = new Map<string, string>();
   /** Answers a chat could not be sent, to go out with the next thing it is told (at most OWED_MAX). */
@@ -282,20 +303,14 @@ export class Orchestrator {
     const g = gate(i, matchRoute(this.cfg, i));
     const key = sessionKey(i);
     if (!g.ok) {
-      if (g.reason === 'unmatched' && this.cfg.defaults.unmatched === 'onboard' && this.opts.onboard && !parseCommand(i.text)
-        && !this.cfg.onboard?.skip.includes(`${i.platform}:${i.chat}`)) {
-        // Only an owner makes a new profile. Anyone can add the bot's number to a group. And in a
-        // group the message must address the bot, as the new route will (onboard.mention, required by
-        // default): an owner chatting in a group the bot happens to be in must not wake up to a new
-        // profile. With mention: any the owner wants the bot to answer every message there anyway.
-        if (!this.cfg.onboard?.owners.includes(i.sender)) { this.dropped(key, `reason=unmatched-not-owner sender=${i.sender}`); return; }
-        if (i.isGroup && !i.mentioned && this.cfg.onboard?.mention !== 'any') { this.dropped(key, 'reason=unmatched-not-mentioned'); return; }
-        return this.queue.enqueue(key, () => this.onboard(i, key));
+      // An owner armed a profile for this chat's platform: the chat goes to it, whatever unmatched says.
+      // The bot was just added here and the chat is being routed (joined): the message waits for that,
+      // then goes through the gate again. Run, not awaited, from the queue: its own turn queues behind.
+      if (g.reason === 'unmatched' && this.joining.has(key)) {
+        return this.queue.enqueue(key, async () => { void this.handle(raw).catch((e: Error) => this.log(`handle error key=${key}: ${e.message}`)); });
       }
-      // The sender is named when it is the reason, so an allow list missing someone can be fixed.
-      this.dropped(key, `reason=${g.reason}${g.reason === 'sender' ? ` sender=${i.sender}` : ''}`);
-      if (g.reason === 'unmatched' && this.cfg.defaults.unmatched === 'reply') await this.notifyUnmatched(i);
-      return;
+      if (g.reason === 'unmatched' && this.connectable(i)) return this.queue.enqueue(key, () => this.connect(i, key));
+      return this.notRouted(i, key, g.reason);
     }
     const { route } = g;
     const profile = this.cfg.profiles[route.profile];
@@ -547,6 +562,114 @@ export class Orchestrator {
     this.log(`drop key=${key} ${what}${seen?.held ? ` (+${seen.held} more since the last line)` : ''}`);
   }
 
+  /** A message the gate did not let through, with no arm to take it: dropped, answered once, or (an
+   *  owner in an unknown chat, with unmatched: onboard) onboarded. `inQueue`: called from a task already
+   *  in the chat's queue (an arm lost to a race), which runs the onboarding itself. */
+  private async notRouted(i: Inbound, key: string, reason: string, inQueue = false): Promise<void> {
+    if (reason === 'unmatched' && this.cfg.defaults.unmatched === 'onboard' && this.opts.onboard && !parseCommand(i.text)
+      && !this.cfg.onboard?.skip.includes(`${i.platform}:${i.chat}`)) {
+      // Only an owner makes a new profile. Anyone can add the bot's number to a group. And in a
+      // group the message must address the bot, as the new route will (onboard.mention, required by
+      // default): an owner chatting in a group the bot happens to be in must not wake up to a new
+      // profile. With mention: any the owner wants the bot to answer every message there anyway.
+      if (!this.cfg.onboard?.owners.includes(i.sender)) { this.dropped(key, `reason=unmatched-not-owner sender=${i.sender}`); return; }
+      if (i.isGroup && !i.mentioned && this.cfg.onboard?.mention !== 'any') { this.dropped(key, 'reason=unmatched-not-mentioned'); return; }
+      // An arm waits for this platform's next new chat: an owner's unmentioned line in a group the bot is
+      // in must neither take it (connectable) nor make a new profile instead (review fix C1).
+      if (i.isGroup && !i.mentioned && this.armedFor(i.platform)) { this.dropped(key, 'reason=unmatched-armed-not-mentioned'); return; }
+      return inQueue ? this.onboard(i, key) : this.queue.enqueue(key, () => this.onboard(i, key));
+    }
+    // The sender is named when it is the reason, so an allow list missing someone can be fixed.
+    this.dropped(key, `reason=${reason}${reason === 'sender' ? ` sender=${i.sender}` : ''}`);
+    if (reason === 'unmatched' && this.cfg.defaults.unmatched === 'reply') await this.notifyUnmatched(i);
+  }
+
+  /** Is a profile armed for this platform now? A failed check counts as armed: nothing is onboarded on it. */
+  private armedFor(platform: Platform): boolean {
+    const c = this.opts.connect;
+    if (!c) return false;
+    try { return !!c.armed(platform); } catch (e) { this.log(`connect check failed: ${(e as Error).message}`); return true; }
+  }
+
+  /** Would this message in an unknown chat take the profile armed for its platform? The same senders
+   *  and chats onboarding takes (onboard.owners, not skipped, not a command, the bot mentioned in a
+   *  group, whatever the arm's mention), and an entry that is there now. Anything else goes the way it always went. */
+  private connectable(i: Inbound): boolean {
+    const c = this.opts.connect, ob = this.cfg.onboard;
+    if (!c || !ob || parseCommand(i.text) || ob.skip.includes(`${i.platform}:${i.chat}`)) return false;
+    let a: ReturnType<NonNullable<OrchestratorOptions['connect']>['armed']>;
+    try { a = c.armed(i.platform); } catch (e) { this.log(`connect check failed: ${(e as Error).message}`); return false; }
+    if (!a || !a.owners.includes(i.sender)) return false;
+    // In a group the bot must be mentioned, whatever the route to come will answer (review fix M2):
+    // with mention: any on the arm, any unmentioned owner line in any unrouted group the bot is in
+    // would take the profile. The route's mention governs only the messages after the bind.
+    return !(i.isGroup && !i.mentioned);
+  }
+
+  /**
+   * The bot was added to a group (WhatsApp group-participants add, Telegram my_chat_member). With a
+   * profile armed for the platform and the one who added it an owner (any of `by`: a phone, a lid),
+   * the chat is routed to it at once, before anyone writes, so the group's next messages go to the
+   * agent. No line in the chat and no turn: the group is other people's conversation. Anything else
+   * does nothing here; an owner's first message stays the way in.
+   */
+  /** `at`: when the add happened (ms), if the platform says: an add from before the arm (a replay after a
+   *  reconnect) does not use it. */
+  /** Chats a join event is routing now: their messages wait for it (handle). */
+  private readonly joining = new Set<string>();
+
+  async joined(platform: Platform, chat: string, by: string[], at?: number): Promise<void> {
+    const c = this.opts.connect, ob = this.cfg.onboard, key = `${platform}:${chat}`;
+    if (!c || !ob || ob.skip.includes(key) || this.cfg.routes.some((r) => r.platform === platform && r.chat === chat && r.thread === undefined)) return;
+    let a: ReturnType<typeof c.armed>;
+    try { a = c.armed(platform); } catch (e) { this.log(`connect check failed: ${(e as Error).message}`); return; }
+    if (!a) return;
+    if (!by.some((id) => a.owners.includes(id))) { this.log(`connect skipped key=${key} reason=added-by-not-owner by=${by.join('/') || 'unknown'}`); return; }
+    // The add's time is the platform's, in whole seconds, and the arm's this machine's: an add a moment
+    // before the arm (truncated, or a clock a little off) is the owner's add, not a replay.
+    if (at !== undefined && a.at !== undefined && at + JOIN_CLOCK_SLACK_MS < a.at) { this.log(`connect skipped key=${key} reason=added-before-arm`); return; }
+    this.joining.add(key);
+    await this.queue.enqueue(key, async () => {
+      try {
+        if (this.cfg.routes.some((r) => r.platform === platform && r.chat === chat)) return;
+        const chatName = await this.senders[platform]?.chatName?.(chat).catch(() => undefined);
+        const made = await c.bind({ platform, chat }, chatName);
+        this.log(`connected key=${key} profile=${made.name} on=join`);
+        void made.git?.then((g) => this.log(`connect git key=${key} profile=${made.name} ${g}`));
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        this.log(code === 'not-armed' || code === 'routed' ? `connect skipped key=${key} reason=${code}` : `connect failed key=${key} ${(e as Error).message}`);
+      } finally { this.joining.delete(key); }
+    });
+  }
+
+  /** First message from an owner in a new chat with a profile armed: route the chat to it, then run the turn with a short preface. */
+  private async connect(i: Inbound, key: string): Promise<void> {
+    // A second message that queued behind the first finds the route already made.
+    const route = matchRoute(this.cfg, i);
+    if (route) { await this.turn(i, key, route.profile, { bare: isAgentCommand(i) }); return; }
+    let made: Onboarded;
+    try {
+      const chatName = await this.senders[i.platform]?.chatName?.(i.chat).catch(() => undefined);
+      made = await this.opts.connect!.bind(i, chatName);
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      // Another chat took the arm, or it expired, while this one waited: as if nothing had been armed.
+      if (code === 'not-armed') { this.log(`connect skipped key=${key} reason=not-armed`); return this.notRouted(i, key, 'unmatched', true); }
+      // Routed on disk and waiting for a restart: the owner's route, not to be doubled. Nothing is said.
+      if (code === 'routed') { this.log(`connect skipped key=${key} reason=routed`); return; }
+      this.log(`connect failed key=${key} ${(e as Error).message}`);
+      // Never in a group, where others read along; a DM gets one fixed line, with no ids in it.
+      if (!i.isGroup) await this.reply(i, CONNECT_FAILED_LINE);
+      return;
+    }
+    this.log(`connected key=${key} profile=${made.name}`);
+    const name = made.name;
+    void made.git?.then((g) => this.log(`connect git key=${key} profile=${name} ${g}`));
+    // No "Connected" line: in a group already in use, the others would read it. The log has it.
+    await this.turn(i, key, made.name, { preface: made.prompt });
+  }
+
   /** First message from an owner in an unknown chat: make its profile, then run the turn with the onboarding prompt. */
   private async onboard(i: Inbound, key: string): Promise<void> {
     // A second message that queued behind the first finds the route already made.
@@ -558,7 +681,7 @@ export class Orchestrator {
       made = await this.opts.onboard!(i, chatName);
     } catch (e) {
       this.log(`onboard failed key=${key} ${(e as Error).message}`);
-      return this.reply(i, `Could not set up an agent for this chat: ${(e as Error).message}`);
+      return this.reply(i, ONBOARD_FAILED_LINE);
     }
     this.log(`onboarded key=${key} profile=${made.name}`);
     const name = made.name;
@@ -665,7 +788,8 @@ export class Orchestrator {
     try { done = await this.opts.switchBackend(profileName, b); }
     catch (e) {
       this.log(`backend switch failed key=${key} profile=${profileName} to=${b} ${(e as Error).message}`);
-      return this.reply(i, `Nothing changed: ${(e as Error).message}`);
+      // A fixed line: the error can hold a pid (a lock) or a path (an fs error). The log has it.
+      return this.reply(i, BACKEND_FAILED_LINE);
     }
     this.log(`backend switched key=${key} profile=${profileName} to=${b} sender=${i.sender}`);
     // Every chat on this profile: its running CLI is the old one. Each starts on the new one at its next message.
@@ -795,12 +919,14 @@ export class Orchestrator {
     }
     // A session starts only with the protections its last compile wrote. An edit that removed a deny
     // rule or turned the sandbox off, by an agent or by hand, stops here instead of widening the next launch.
-    const refused = this.brains.get(key)?.alive ? [] : this.opts.launchGuard?.(name) ?? [];
+    const refused = this.brains.get(key)?.alive ? [] : this.opts.launchGuard?.(name, true) ?? [];
     if (refused.length) {
       this.log(`launch refused key=${key} profile=${name}: ${refused.join('; ')}`);
+      // Only a fixed line reaches the chat (groups too): a refusal can carry a deny rule with a home
+      // path, a raw file error or a lock holder's pid, so the detail stays in the log (review fix M1).
       const why = refused[0] === 'never compiled' ? 'its profile was never compiled, so it has no deny rules yet'
         : refused.every((r) => r.startsWith('deny ') || r.startsWith('sandbox off')) ? `${refused.length} of its protections were changed outside Angelia`
-        : refused[0];
+        : 'its protections could not be checked (the daemon log says why)';
       await this.reply(i, `This chat's agent was not started: ${why}. Nothing was sent to it. The owner can fix it with: angelia compile --write ${name}`);
       return 'launch refused';
     }
@@ -931,11 +1057,28 @@ export class Orchestrator {
       return 'denied';
     }
     if (!result || result.isError) {
+      // Released while the message waited for the prompt: it was never typed. Every release moves the
+      // era on first (clearForHandoff, dropBrain), so this comes before the check for a stop below, or
+      // the message would be lost without a word. One fixed line (review fix L3).
+      // Only a handoff: /stop, /new and /model release the reader too, and their own reply says what happened.
+      if (result?.reason === 'released' && result.keep && this.handoffEra.get(key) === (this.era.get(key) ?? 0)) {
+        this.log(`turn failed key=${key} reason=released`);
+        if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
+        await this.reply(i, RELEASED_LINE).catch(() => {});
+        return 'released';
+      }
       const stopped = (this.era.get(key) ?? 0) !== era;
       this.log(`turn failed key=${key} reason=${stopped ? 'stopped by the user' : result?.reason ?? 'exception'}`);
       // /stop, /new and a model change all kill the child mid-turn on purpose. The chat was already
       // told what happened; a failure line on top of it reads like a bug that is not there.
       if (stopped) return 'stopped';
+      if (result?.keep) {
+        // The message never reached a session that is alive and busy with work of its own (tmux mode):
+        // the session is not ended for it, since its background agents live in it. The chat sends again.
+        if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
+        await this.reply(i, notDeliveredLine(result.reason));
+        return result.reason ?? 'not delivered';
+      }
       if (!retried && !row.started && freshRetry(result?.reason)) {
         // First turn of a brand-new session died: retry exactly once with a fresh id, per plan E.
         // Once. A deterministic failure - not logged in, a flag this build rejects, no tmux - fails
@@ -1339,7 +1482,8 @@ export class Orchestrator {
     if (profile.backend === 'agy') throw new AskError(`profile ${route.profile} cannot answer here now`, 501, 'an agy profile takes no questions: agy cannot fork the chat\'s conversation into a read-only copy');
     const bin = this.binFor(profile);
     if (!bin) throw new AskError(`profile ${route.profile} cannot answer here now`, 502, `${profileBin(profile)} not installed`);
-    const refused = this.opts.launchGuard?.(route.profile) ?? [];
+    // A copy of the session starts here: a real start (launchGuard).
+    const refused = this.opts.launchGuard?.(route.profile, true) ?? [];
     if (refused.length) throw new AskError(`profile ${route.profile} cannot answer here now`, 409, refused.join('; '));
     if ((this.asking.get(canon) ?? 0) >= ASK_MAX) throw new AskError(`this chat is already answering ${ASK_MAX} questions; ask again in a minute`, 429);
     if (this.questions.size >= ASK_TOTAL) throw new AskError(`${ASK_TOTAL} questions are being answered already; ask again in a minute`, 429);
@@ -1486,6 +1630,7 @@ export class Orchestrator {
       throw new HandoffError(`${key} is in the middle of a turn, and its agent cannot go on in the background. Wait for the answer, or /stop it there, then try again.`);
     }
     this.era.set(key, (this.era.get(key) ?? 0) + 1); // the turn being read ends quietly: its chat moved on
+    this.handoffEra.set(key, this.era.get(key)!);
     this.brains.delete(key);
     await b.release();
     this.toBackground(key, row.id, b, b.turnSentAt ?? Date.now());

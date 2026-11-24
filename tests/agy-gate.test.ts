@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -296,6 +296,10 @@ test('sandbox (macOS): a denied file is refused through a real sandbox-exec; the
 // ---- through the fake agy, with the real gate ----
 
 const made: AgyBrain[] = [];
+// A test that fails before its own stop() must not leave fake agy running: it ends only when its stdin
+// closes, and this process holds that pipe open, so the file (and the whole `npm test`) never ends.
+// Seen 2026-11-21: a run under load waited 8 hours. Every brain still alive is killed after each test.
+afterEach(() => { for (const b of made.splice(0)) if (b.alive) b.kill(); });
 process.on('exit', () => made.forEach((b) => b.kill()));
 function brain(dir: string, mode: Profile['permission_mode'], o: { deny?: string[]; env?: NodeJS.ProcessEnv; sandbox?: boolean } = {}) {
   const p = { cwd: dir, add_dirs: [], unsafe_ok: false, shell: false, shell_timeout_seconds: 60, chrome: false, backend: 'agy', permission_mode: mode, sandbox: o.sandbox ?? false } as unknown as Profile;
@@ -412,7 +416,9 @@ test('fake agy: a tool that never asks (a subagent) is logged', async () => {
 
 test('fake agy: a subagent\'s requests are surfaced by resuming its conversation; its text is not the answer; one not found is said', async (t) => {
   const was = [AgyBrain.quietMs, AgyBrain.childScanMs];
-  AgyBrain.quietMs = 50; AgyBrain.childScanMs = [20, 60, 150];
+  // Scans up to 3 s: under load the fake can be held more than 150 ms between the invoke_subagent line
+  // and writing the conversation, and the last scan then said "not found" (load rerun, 2026-11-24).
+  AgyBrain.quietMs = 50; AgyBrain.childScanMs = [20, 100, 400, 1500, 3000];
   t.after(() => { [AgyBrain.quietMs, AgyBrain.childScanMs] = was as [number, number[]]; });
   const d = ws();
   const log = join(scratch(), 'log');
@@ -438,9 +444,11 @@ test('fake agy: a subagent\'s requests are surfaced by resuming its conversation
   next = unasked(gr);
   await turn(gr, 'CHILD');
   await next;
-  for (let i = 0; i < 40 && gr.children.size < 2; i++) await new Promise((r) => setTimeout(r, 100));
+  // The brain counts a child before fake agy has read its session/resume and logged it: wait for both.
+  const resumed = () => readFileSync(gl, 'utf8').split('\n').filter((x) => x.startsWith('resume-child')).length;
+  for (let i = 0; i < 100 && (gr.children.size < 2 || resumed() < 2); i++) await new Promise((r) => setTimeout(r, 100));
   assert.equal(gr.children.size, 2, 'child and grandchild attached');
-  assert.equal((await import('node:fs')).readFileSync(gl, 'utf8').split('\n').filter((x) => x.startsWith('resume-child')).length, 2);
+  assert.equal(resumed(), 2);
   await gr.stop();
   // Not found: one line, nothing attached.
   const l = brain(d, 'default');
@@ -459,4 +467,17 @@ test('fake agy (macOS): the whole process runs under sandbox-exec and still answ
   assert.deepEqual(await turn(b, 'hello'), [{ kind: 'result', text: 'echo: hello', isError: false }]);
   await b.stop();
   assert.ok(!b.alive);
+});
+
+test('fake agy: a subagent whose conversation is on disk before its invoke_subagent line is still attached', async (t) => {
+  const was = [AgyBrain.quietMs, AgyBrain.childScanMs];
+  AgyBrain.quietMs = 50; AgyBrain.childScanMs = [20, 100, 400, 1500, 3000];
+  t.after(() => { [AgyBrain.quietMs, AgyBrain.childScanMs] = was as [number, number[]]; });
+  const log = join(scratch(), 'log');
+  const b = brain(ws(), 'default', { env: { FAKE_AGY_LOG: log, FAKE_AGY_CHILD_FIRST: '1' } });
+  const next = unasked(b);
+  assert.deepEqual(await turn(b, 'CHILD'), [{ kind: 'result', text: 'delegated', isError: false }]);
+  assert.deepEqual(await next, { answer: 'self', text: 'subagent: refused' });
+  assert.equal(b.children.size, 1, 'the subagent is attached');
+  await b.stop();
 });

@@ -1,12 +1,13 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 import { stringify } from 'yaml';
 import { Config } from './config/schema.js';
 import { INSTANCE_DIR, buildSkeleton, createPrivateRepo, defaultConfigPath, ghReady, initRepo, isRepo, profileDir, profilesDir } from './instance.js';
 import { expandHome, loadConfig } from './config/load.js';
 import { isInside } from '../core/paths.js';
 import { AGY_LOGIN_HINT } from '../brain/agy-login.js';
-import { planProfile } from '../capabilities/compile.js';
+import { LOCK_STALE_MS, planProfile } from '../capabilities/compile.js';
 import { readEnvFile, setEnvVar } from '../core/env.js';
 import { voiceLines, voiceQuestions, type VoiceTools } from '../voice/setup.js';
 
@@ -72,6 +73,156 @@ const MODES = [
   { key: 'default', label: 'default — asks before every tool' },
   { key: 'bypassPermissions', label: 'bypassPermissions — never asks (only for a directory you trust the agent with)' },
 ] as const;
+
+/**
+ * The routing table written whole or not at all: aside in its folder, flushed, renamed into place, with
+ * the mode it had. A reader (the daemon's watch, `angelia check-config`) never sees half a table, and
+ * power lost after the rename never leaves an empty one. A table that is a link is written where it
+ * points, and stays a link.
+ */
+export function writeTable(path: string, text: string | Buffer): void {
+  let real = path;
+  try { real = realpathSync(path); } catch { /* a new table */ }
+  let mode = 0o600;
+  try { mode = statSync(real).mode & 0o777; } catch { /* a new table */ }
+  // A name of its own (never one a link was planted at: 'wx'), the folder flushed after the rename so
+  // the new name itself survives power lost then.
+  const tmp = join(dirname(real), `.${basename(real)}.${randomBytes(6).toString('hex')}.tmp`);
+  const fd = openSync(tmp, 'wx', mode);
+  try {
+    try { writeFileSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+    chmodSync(tmp, mode);
+    renameSync(tmp, real);
+  } catch (e) { rmSync(tmp, { force: true }); throw e; }
+  const dir = openSync(dirname(real), 'r');
+  try { fsyncSync(dir); } finally { closeSync(dir); }
+}
+
+/**
+ * `fn` while holding `<path>.lock`, made new (O_EXCL) with this process's pid in it: one writer of a
+ * file at a time across processes (the daemon and a terminal). A lock whose pid is gone (kill(pid, 0)),
+ * or older than LOCK_STALE_MS, was left by a process that died, and is taken over (takeOver). Held by a live
+ * writer past `waitMs` (WAIT_LOCK_MS by default): an error. This waits blocking.
+ */
+export function withLock<T>(path: string, fn: () => T, waitMs = WAIT_LOCK_MS): T {
+  const end = Date.now() + waitMs;
+  while (!tryLock(path)) {
+    if (Date.now() > end) throw new Error(`${path} is being written by another process; try again`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+  try { return fn(); } finally { unlock(path); }
+}
+
+const WAIT_LOCK_MS = 3000;
+
+/** How long the daemon waits for the routing table's lock or the compile lock in a bind or an
+ *  onboarding: the wait blocks its event loop, so every chat (review fixes L6, L7). */
+export const DAEMON_LOCK_WAIT_MS = 200;
+
+/**
+ * `fn` while holding the routing table's lock (`<table>.lock`): one read-change-write of the table at
+ * a time, the daemon's binds and onboardings and a terminal's `profile connect` (review fix L6). Held
+ * by another writer past the short wait: a clean refusal, with no path or pid in it.
+ */
+export function withTableLock<T>(table: string, what: string, fn: () => T): T {
+  let held = false;
+  try {
+    return withLock(table, () => { held = true; return fn(); }, DAEMON_LOCK_WAIT_MS);
+  } catch (e) {
+    if (!held && /is being written by another process/.test((e as Error).message)) throw new Error(`not ${what}: the routing table is being written by another process; try again in a moment`);
+    throw e;
+  }
+}
+
+/** The lock is ours now (true), or held by a live writer (false: the caller's loop tries again). */
+function tryLock(path: string): boolean {
+  const lock = `${path}.lock`;
+  try {
+    const fd = openSync(lock, 'wx', 0o600);
+    try { writeFileSync(fd, String(process.pid)); } finally { closeSync(fd); }
+    return true;
+  } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
+  const stale = staleLock(lock);
+  if (stale !== undefined) takeOver(lock, stale);
+  return false;
+}
+
+/**
+ * A dead lock goes, and only that one (review fix L7). The takeover holds a guard of its own
+ * (`<lock>.takeover`, made new with O_EXCL), so one taker at a time judges and removes. Under it the
+ * lock is judged again and removed only when it is still the same file (its inode) and still dead.
+ * No lock is ever moved aside and put back: a live writer's lock is never off its name, so a third
+ * process cannot take it in between. A writer makes its lock only where none is, and removes only
+ * its own, so the file cannot change between the second look and the removal. Then the caller's loop
+ * makes a new lock the normal way, and a taker that loses that race waits like any other. A guard
+ * left by a taker that died is cleared the same way (clearGuard).
+ */
+export function takeOver(lock: string, ino: number): void {
+  const guard = `${lock}.takeover`;
+  const mine = hold(guard);
+  if (mine === undefined) { clearGuard(guard); return; }
+  try { if (staleLock(lock) === ino) unlinkSync(lock); } catch { /* gone already */ } finally { release(guard, mine); }
+}
+
+/** A file made new (O_EXCL) at `path`: its inode, or undefined when one is there already. */
+function hold(path: string): number | undefined {
+  let fd: number;
+  try { fd = openSync(path, 'wx', 0o600); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') return undefined; throw e; }
+  try { return fstatSync(fd).ino; } finally { closeSync(fd); }
+}
+
+/** Ours only: a guard cleared as stale and made again by another taker is theirs. */
+function release(path: string, ino: number): void {
+  try { if (statSync(path).ino === ino) unlinkSync(path); } catch { /* gone */ }
+}
+
+/**
+ * A guard left by a taker that died holding it (older than TAKEOVER_STALE_MS: a takeover takes a
+ * moment). Removed the way a dead lock is (review recheck, item 4): under a guard of its own
+ * (`<guard>.clear`, O_EXCL), judged again there, and removed only when it is still the same file and
+ * still that old, so two clearers cannot both remove it and let a third taker in beside a live one.
+ * The `.clear` guard is the last level: one left by a clearer that died is removed after a minute.
+ */
+function clearGuard(guard: string): void {
+  const oldIno = () => { try { const st = statSync(guard); return Date.now() - st.mtimeMs > TAKEOVER_STALE_MS ? st.ino : undefined; } catch { return undefined; } };
+  const ino = oldIno();
+  if (ino === undefined) return;
+  const clear = `${guard}.clear`;
+  const mine = hold(clear);
+  if (mine === undefined) {
+    try { if (Date.now() - statSync(clear).mtimeMs > LOCK_STALE_MS) rmSync(clear, { force: true }); } catch { /* gone */ }
+    return;
+  }
+  try { if (oldIno() === ino) unlinkSync(guard); } catch { /* gone already */ } finally { release(clear, mine); }
+}
+
+const TAKEOVER_STALE_MS = 5000;
+
+/** The inode of a lock left by a writer that is gone, or undefined while it may be held. Gone: its pid
+ *  is not a live process, or it is older than LOCK_STALE_MS. The age counts on its own (review fix
+ *  M1): after a SIGKILL or a power loss, a reboot can give its pid to another process, which would
+ *  read as a live writer (EPERM counts as alive) and refuse every bind until the file was deleted.
+ *  No holder keeps the lock near that long. Read through one open file, so the pid and the inode are
+ *  the same file's. */
+export function staleLock(lock: string): number | undefined {
+  let fd: number;
+  try { fd = openSync(lock, 'r'); } catch { return undefined; }
+  try {
+    const st = fstatSync(fd);
+    const age = Date.now() - st.mtimeMs;
+    if (age > LOCK_STALE_MS) return st.ino;
+    const pid = Number(readFileSync(fd, 'utf8').trim());
+    // Being written (empty for a moment): not dead, unless it stays empty.
+    if (!Number.isInteger(pid) || pid <= 0) return age > 5000 ? st.ino : undefined;
+    try { process.kill(pid, 0); return undefined; } catch (e) { return (e as NodeJS.ErrnoException).code === 'ESRCH' ? st.ino : undefined; }
+  } catch { return undefined; } finally { closeSync(fd); }
+}
+
+/** Ours only: one some other process holds is left. */
+function unlock(path: string): void {
+  const lock = `${path}.lock`;
+  try { if (readFileSync(lock, 'utf8').trim() === String(process.pid)) rmSync(lock, { force: true }); } catch { /* gone */ }
+}
 
 /**
  * Move an existing routing table aside, and return where it went. The wizard used to overwrite it

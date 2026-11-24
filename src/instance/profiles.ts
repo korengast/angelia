@@ -1,15 +1,18 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { permissionPolicy, type Config } from './config/schema.js';
 import { sessionKey, type SessionMapFile } from '../core/types.js';
+import { untilText } from './connect.js';
 
 /** `angelia profiles`: what this instance has, for an agent that needs to know its neighbours.
  *  Kept out of the self prompt on purpose: the list changes more often than the code. */
-export function profilesText(cfg: Config): string {
+/** `armed`: what `angelia profile connect` armed (instance/connect.ts), shown next to its profile. */
+export function profilesText(cfg: Config, armed: { profile: string; platform: string; until: string }[] = []): string {
   const rows = Object.entries(cfg.profiles).map(([name, p]) => {
+    const waits = armed.filter((a) => a.profile === name).map((a) => `  armed    takes the next new ${a.platform} chat an owner writes in, until ${untilText(a.until)}`);
     const backend = p.backend === 'claude-code' && p.tui ? 'claude-code (tui)' : p.backend;
     // The same key send, turn, export and a job's chat: take, so a line can be copied from here.
     const chats = cfg.routes.filter((r) => r.profile === name).map((r) => sessionKey(r));
-    return [`${name}`, `  backend  ${backend}${p.model ? ` · ${p.model}` : ''}`, `  folder   ${p.cwd}`, `  chats    ${chats.length ? chats.join(', ') : '(none: no route names it)'}`].join('\n');
+    return [`${name}`, `  backend  ${backend}${p.model ? ` · ${p.model}` : ''}`, `  folder   ${p.cwd}`, `  chats    ${chats.length ? chats.join(', ') : '(none: no route names it)'}`, ...waits].join('\n');
   });
   return rows.join('\n') || 'no profiles';
 }

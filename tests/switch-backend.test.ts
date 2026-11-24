@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -93,4 +93,22 @@ test('/backend looks for a CLI through the bin kept under backends:, so a CLI re
   assert.equal(backendBin(p, 'claude-code'), '/opt/claude-x', 'its own CLI: the profile bin');
   assert.equal(backendBin(p, 'codex'), '/opt/codex-x', 'the kept bin of the CLI it is going back to');
   assert.equal(backendBin(p, 'pi'), 'pi', 'nothing kept: the default name, never the current bin');
+});
+
+test('fix2: /backend whose accepted copy cannot be written puts the table back, as a bind does', () => {
+  const s = setup('x');
+  const before = readFileSync(s.path, 'utf8');
+  mkdirSync(join(s.instance, 'compiled', 'table', 'accepted.json.tmp'), { recursive: true }); // the write fails: a folder there
+  assert.throws(() => switchBackend({ table: s.path, cfg: s.cfg, profile: 'x', backend: 'pi', instance: s.instance }));
+  assert.equal(readFileSync(s.path, 'utf8'), before);
+  assert.equal(s.cfg.profiles.x.backend, 'claude-code');
+});
+
+test('fix2: /backend holds the table lock: while another writer has it, a clean refusal and the table as it was', () => {
+  const s = setup('x');
+  const before = readFileSync(s.path, 'utf8');
+  writeFileSync(`${s.path}.lock`, String(process.pid)); // a live writer: this process
+  assert.throws(() => switchBackend({ table: s.path, cfg: s.cfg, profile: 'x', backend: 'pi', instance: s.instance }),
+    (e: Error) => e.message === 'not switching: the routing table is being written by another process; try again in a moment');
+  assert.equal(readFileSync(s.path, 'utf8'), before);
 });

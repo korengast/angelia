@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync,  readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, linkSync, lstatSync, mkdirSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Capability, Config, Profile } from '../instance/config/schema.js';
@@ -45,6 +45,9 @@ export interface CompiledRecord {
   sandbox?: boolean;
   /** Claude: Unix sockets compile lets the sandbox reach: the daemon's API. */
   sockets?: string[];
+  /** What the profile reached in the state folder at this compile (stateReach): a deny change there
+   *  that touches it is a table change, never only the state folder's own (ProfilePlan.stateOnly). */
+  stateReach?: string[];
 }
 
 export function readRecord(cwd: string): CompiledRecord | undefined {
@@ -77,6 +80,8 @@ export interface LaunchGuard {
   backend?: Profile['backend'];
   /** agy: what the brain gives it at start, kept here where the agent cannot change it (agy-config.ts). */
   agy?: AgyGuard;
+  /** As the record's stateReach, kept where the agent cannot change it. */
+  stateReach?: string[];
 }
 
 /** One MCP server for agy's session/new, in ACP's stdio shape but for `env`: the names of the
@@ -188,10 +193,18 @@ export function seedGuards(cfg: Config, stateDir = INSTANCE_DIR): string[] {
 export interface ProfilePlan {
   profile: string;
   changes: string[];
+  /** The changes that are only the state folder's own entries coming and going: a deny rule, added or
+   *  dropped, for a path in its closed part (stateClosedRules, keyRules) that no table rule names.
+   *  `compile --check` does not count them as drift (review M3): a new log or backup there must not put
+   *  every profile out of date. The agent is denied such an entry at once all the same: Angelia's
+   *  sandboxes and its own checks read the floor live, and the daemon adds the rule to the profile's
+   *  settings before its next start (refreshFloor). A dropped one is a deny of a path that is gone. */
+  stateOnly: string[];
   conflicts: string[];
   duplicates: string[];
   notes: string[];
-  apply(): void;
+  /** `waitMs`: how long to wait for the compile lock (withCompileLock); the daemon asks for a short one. */
+  apply(o?: { waitMs?: number }): void;
 }
 
 /** A path rule in the form this backend reads as absolute. For Claude a path under the home folder
@@ -393,7 +406,7 @@ export function stateReach(cfg: Config, name: string, home = homedir(), stateDir
  * form; an entry that holds something the profile reaches is opened down to that, its other entries
  * closed. This is what the state folder holds now: a name made after the compile is closed at once in
  * Angelia's own sandboxes (agy, pi's commands, jobs, a grok copy: `closed` in sandboxProfile), and in a
- * Claude Code or Codex profile's rules at its next compile (floorWarnings names it).
+ * Claude Code or Codex profile's rules before its agent's next start (refreshFloor, in the daemon's launch guard) or at its next compile. compile --check does not count such an entry as drift (ProfilePlan.stateOnly).
  */
 export function stateClosedRules(cfg: Config, name: string, stateDir: string, home = homedir()): string[] {
   const p = cfg.profiles[name];
@@ -406,6 +419,7 @@ export function stateClosedRules(cfg: Config, name: string, stateDir: string, ho
       if (depth === 0 && STATE_OPEN.includes(n)) continue;
       const path = join(dir, n);
       if (reach.some((r) => isInside(path, r, home))) continue;
+      if (passingLock(dir, n, names)) continue;
       let isDir = false;
       try { isDir = lstatSync(path).isDirectory(); } catch { continue; }
       if (isDir && depth < 4 && reach.some((r) => isInside(r, path, home))) { walk(path, depth + 1); continue; }
@@ -414,6 +428,20 @@ export function stateClosedRules(cfg: Config, name: string, stateDir: string, ho
   };
   walk(resolve(stateDir), 0);
   return out.flatMap((x) => (['Read', 'Edit'] as const).map((t) => pathRule(t, x, p.backend, home)));
+}
+
+/**
+ * A writer's lock beside the file it guards (withLock in init.ts: `<file>.lock`, its takeover guard
+ * `<file>.lock.takeover`, and that guard's `.clear`). It lives for the length of one write and holds only a pid, so no deny rule is
+ * written for it (review fix L6): every bind and onboarding compiles while the table's lock exists, and
+ * each wrote a rule that the next start dropped again, churn in every profile's settings. Only a plain
+ * file with one name and a pid's size: a link or a second name (a hard link to a secret) is denied as
+ * any other entry is.
+ */
+function passingLock(dir: string, n: string, names: string[]): boolean {
+  const m = /^(.+)\.lock(\.takeover(\.clear)?)?$/.exec(n);
+  if (!m || !names.includes(m[1])) return false;
+  try { const st = lstatSync(join(dir, n)); return st.isFile() && st.nlink === 1 && st.size <= 24; } catch { return false; }
 }
 
 /** The paths in the state folder an Angelia sandbox keeps open for a profile (sandboxProfile `closed`):
@@ -805,6 +833,8 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     return changed;
   };
   const settingsChanged = [merge('deny', wantDeny, rec?.deny ?? []), merge('additionalDirectories', wantDirs, rec?.additionalDirectories ?? [])].some(Boolean);
+  const isStateOnly = stateOnlyTest(cfg, name, stateDir, home, readGuard(stateDir, name)?.stateReach ?? rec?.stateReach, launch);
+  const stateOnly = changes.filter((c) => { const m = /^[+-] deny ([\s\S]+)$/.exec(c); return !!m && isStateOnly(m[1]); });
 
   // The CLI's sandbox (Claude only). The API socket is always reachable from it, so turning the
   // sandbox on by hand does not cut the agent off from angelia send; `sandbox: true` turns it on,
@@ -897,11 +927,12 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     mcpServers: p.backend === 'claude-code' || p.backend === 'codex' ? Object.keys(wantMcp) : p.backend === 'agy' ? agyMcp.map((m) => m.name) : [], mcpStrict: strict,
     deny: wantDeny, additionalDirectories: wantDirs, blockLines: lines, compiledAt: new Date().toISOString(),
     ...(wantSandbox ? { sandbox: true } : {}), ...(wantSockets.length ? { sockets: wantSockets } : {}),
+    stateReach: reachInState(cfg, name, stateDir, home),
   };
 
   return {
-    profile: name, changes, conflicts, duplicates, notes,
-    apply() {
+    profile: name, changes, conflicts, duplicates, notes, stateOnly,
+    apply(o = {}) { withCompileLock(stateDir, () => {
       if (conflicts.length) throw new Error(`not compiling ${name}: ${conflicts.length} conflict(s)`);
       if (gdir) {
         // agy makes this file on its first start; made empty here first, so the sandbox can close it.
@@ -924,9 +955,111 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
       if (wantDirs.includes(common)) mkdirSync(common, { recursive: true });
       mkdirSync(join(p.cwd, '.claude'), { recursive: true });
       writePlain(p.cwd, join(p.cwd, RECORD), JSON.stringify(record, null, 2) + '\n');
-      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}), ...(p.backend === 'pi' && p.sandbox !== false ? { piSandbox: true } : {}), ...(p.backend === 'agy' && p.sandbox !== false ? { agySandbox: true } : {}), ...(gdir ? { agy: { mcpServers: agyMcp, skills: Object.keys(wantLinks) } } : {}) });
-    },
+      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}), ...(p.backend === 'pi' && p.sandbox !== false ? { piSandbox: true } : {}), ...(p.backend === 'agy' && p.sandbox !== false ? { agySandbox: true } : {}), ...(gdir ? { agy: { mcpServers: agyMcp, skills: Object.keys(wantLinks) } } : {}), stateReach: record.stateReach });
+    }, o.waitMs); },
   };
+}
+
+/** The absolute path a Read or Edit rule names, in any backend's form (pathRule), without a trailing
+ *  `/**`; undefined for any other rule. */
+function rulePath(rule: string, home: string): string | undefined {
+  const m = /^(?:Read|Edit)\(([\s\S]+)\)$/.exec(rule);
+  if (!m) return undefined;
+  const raw = m[1].replace(/\/\*\*$/, '');
+  const abs = raw.startsWith('~/') ? join(home, raw.slice(2)) : raw.startsWith('//') ? raw.slice(1) : raw;
+  return isAbsolute(abs) ? resolve(abs) : undefined;
+}
+
+/** The paths a profile reaches in the state folder (stateReach), kept in its record. */
+function reachInState(cfg: Config, name: string, stateDir: string, home: string): string[] {
+  const s = resolve(stateDir);
+  return stateReach(cfg, name, home, s).filter((r) => isInside(r, s, home) && r !== s).sort();
+}
+
+/** The floor's rules that come from the table and the version, not from what the state folder holds. */
+function tableFloor(cfg: Config, name: string, stateDir: string, home: string): string[] {
+  const p = cfg.profiles[name];
+  return [...floorRules(p.backend, stateDir, home), ...credentialRules(p, home), ...otherProfileRules(cfg, name, home),
+    ...sharedRules(p, stateDir, home), ...agyStateRules(cfg, name, stateDir, home),
+    ...[...resolveProfile(cfg, name).denied].flatMap(([n, c]) => denyEntries(n, c, p.backend, home))];
+}
+
+/**
+ * ProfilePlan.stateOnly: is this deny rule only the state folder's own entry coming or going? Its path
+ * is inside the state folder, not the folder itself, no rule of the table's own names it, and it
+ * neither lies in nor holds anything the profile reaches there, now (stateOpenPaths) or at its last
+ * compile (the record's stateReach): an add_dirs entry given or taken there is a table change (review
+ * fix M3). A record without stateReach (compiled before it) has nothing to compare: nothing is.
+ */
+function stateOnlyTest(cfg: Config, name: string, stateDir: string, home: string, lastReach: string[] | undefined, extra: string[] = []): (rule: string) => boolean {
+  if (!lastReach) return () => false;
+  const s = resolve(stateDir);
+  const reach = [...stateOpenPaths(cfg, name, s, home), ...lastReach];
+  const named = new Set([...tableFloor(cfg, name, stateDir, home), ...extra]);
+  return (rule) => {
+    if (named.has(rule)) return false;
+    const at = rulePath(rule, home);
+    return !!at && at !== s && isInside(at, s, home) && !reach.some((o) => isInside(at, o, home) || isInside(o, at, home));
+  };
+}
+
+/** Writes a whole file in a profile's folder by a new file renamed over it: a reader never sees it half
+ *  written, and a link in its place is replaced, never written through. No link on the way (openNoFollow). */
+function replacePlain(cwd: string, file: string, text: string, mode = 0o644): void {
+  const path = join(realpathSync(cwd), relative(cwd, file));
+  const tmp = `${path}.angelia-${process.pid}.tmp`;
+  // The file keeps its own mode (a 0600 settings file stays 0600, review fix N2); a new one takes `mode`.
+  try { const st = lstatSync(path); if (st.isFile()) mode = st.mode & 0o777; } catch { /* not there yet */ }
+  rmSync(tmp, { force: true });
+  const fd = openNoFollow(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
+  try { writeSync(fd, text, 0); fchmodSync(fd, mode); } finally { closeSync(fd); }
+  try { renameSync(tmp, path); } catch (e) { rmSync(tmp, { force: true }); throw e; }
+}
+
+const lockDepth = new Map<string, number>();
+const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } };
+/** No compile holds the lock this long: one older is left by a writer that is gone, even when its
+ *  process id now belongs to another process (review fix N3). */
+export const LOCK_STALE_MS = 60_000;
+
+/**
+ * One writer at a time of the compiled files (a profile's settings, record and guard): `angelia compile
+ * --write`, onboarding, a new agent, the daemon's floor refresh. A lock file in the state folder's
+ * compiled/, holding the writer's process id. One whose process is gone, or older than LOCK_STALE_MS,
+ * is taken over by renaming it aside, which only one waiter can do. Held again inside the same process,
+ * it is not waited for. Throws after `waitMs`. The wait blocks its thread, so the daemon asks for a
+ * short one (launch-guard.ts).
+ */
+export function withCompileLock<T>(stateDir: string, fn: () => T, waitMs = 2000): T {
+  const key = resolve(stateDir);
+  const depth = lockDepth.get(key) ?? 0;
+  if (depth) { lockDepth.set(key, depth + 1); try { return fn(); } finally { lockDepth.set(key, depth); } }
+  const dir = join(key, 'compiled');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const lock = join(dir, '.compile.lock');
+  const until = Date.now() + waitMs;
+  for (;;) {
+    try { writeFileSync(lock, `${process.pid}\n`, { flag: 'wx', mode: 0o600 }); break; }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      let pid = NaN, age = 0, ino = 0;
+      try { const st = statSync(lock); ino = st.ino; age = Date.now() - st.mtimeMs; pid = Number(readPlainText(lock).trim()); } catch { continue; }
+      if ((Number.isInteger(pid) && pid > 0 && !alive(pid)) || age > LOCK_STALE_MS) {
+        // Renamed aside, not removed: of two waiters only one rename finds it. A lock made fresh in
+        // between (another inode) is put back with link, which never replaces one made since.
+        const aside = `${lock}.stale-${process.pid}-${Date.now()}`;
+        try { renameSync(lock, aside); } catch { continue; }
+        try { if (statSync(aside).ino !== ino) linkSync(aside, lock); } catch { /* one is there again: wait for it */ }
+        rmSync(aside, { force: true });
+        continue;
+      }
+      if (Date.now() > until) throw new Error(`another compile is writing the compiled files (process ${pid || '?'}); try again`);
+      pause(25);
+    }
+  }
+  lockDepth.set(key, 1);
+  try { return fn(); } finally { lockDepth.delete(key); rmSync(lock, { force: true }); }
 }
 
 function existsOrLink(p: string): boolean {
@@ -997,4 +1130,106 @@ export function planHandoffSkill(home = homedir(), source = HANDOFF_SKILL): { ch
     change: `${cur === undefined ? '+' : '~'} ${at} (/angelia-handoff, for terminal sessions)`,
     apply: () => { mkdirSync(dirname(at), { recursive: true }); writeFileSync(at, want); },
   };
+}
+/** What a floor refresh wrote, and how to put it back. `floor`: the floor it worked from, when it read
+ *  one (the launch guard checks against that same list, review fix L1). */
+export interface FloorRefresh { added: string[]; dropped: string[]; floor?: string[]; undo(): void }
+
+/**
+ * Adds to a compiled profile's deny rules what its floor (profileFloor) holds now and its settings
+ * lack: another profile added to the table (its folder, its agy folder, review M2), a new entry in
+ * the state folder (stateClosedRules, review M3), a floor an update grew. And drops a rule an earlier
+ * compile or refresh wrote for an entry of the state folder that is gone (ProfilePlan.stateOnly), so
+ * passing names (a .tmp) do not pile up. Deny rules only: a deny is never a grant, so this carries no
+ * capability live that the owner has not compiled (compile goes live one profile at a time). Into the
+ * settings, the guard and, when it can be read, the record (the agent can delete that one; nothing
+ * here waits on it). Not a rule the guard holds and the settings lost: that was removed outside
+ * Angelia, and the launch check refuses it. Nothing for a profile never compiled, compiled for another
+ * folder or backend, or whose settings cannot be read: the launch check refuses it anyway. Under the
+ * compile lock. Throws when a write fails, after putting back what it wrote.
+ */
+export function refreshFloor(cfg: Config, name: string, stateDir = INSTANCE_DIR, home = homedir(), o: { waitMs?: number } = {}): FloorRefresh {
+  return withCompileLock(stateDir, () => {
+    const none: FloorRefresh = { added: [], dropped: [], undo() {} };
+    const p = cfg.profiles[name];
+    if (!p) return none;
+    const g = readGuard(stateDir, name);
+    if (!g || resolve(g.cwd) !== resolve(p.cwd) || (g.backend && g.backend !== p.backend)) return none;
+    const settingsPath = join(p.cwd, '.claude', 'settings.json');
+    let settingsText: string, settings: Record<string, any>;
+    try { settingsText = readPlainText(settingsPath); settings = JSON.parse(settingsText); } catch { return none; }
+    if (!settings || typeof settings !== 'object') return none;
+    const have: string[] = Array.isArray(settings.permissions?.deny) ? settings.permissions.deny : [];
+    const ours = g.deny ?? [];
+    const floor = profileFloor(cfg, name, stateDir, home);
+    const added = floor.filter((r) => !have.includes(r) && !ours.includes(r));
+    const recordPath = join(p.cwd, RECORD);
+    let recordText: string | undefined, rec: CompiledRecord | undefined;
+    try { recordText = readPlainText(recordPath); rec = JSON.parse(recordText) as CompiledRecord; } catch { recordText = undefined; }
+    // The record is in the agent's own folder, so it may hold anything: a field of the wrong shape is
+    // read as absent, never thrown on (review fix L4), or the profile would refuse every start.
+    if (!rec || typeof rec !== 'object' || Array.isArray(rec)) { rec = undefined; recordText = undefined; }
+    const recDeny: string[] = Array.isArray(rec?.deny) ? rec.deny.filter((r): r is string => typeof r === 'string') : [];
+    const recReach = Array.isArray(rec?.stateReach) && rec.stateReach.every((r) => typeof r === 'string') ? rec.stateReach : undefined;
+    // A guard from before stateReach takes what the profile reaches now (review fix N1), unless a rule
+    // its compile wrote denies part of that: then the table gave it more since, and only a compile says so.
+    const reachNow = reachInState(cfg, name, stateDir, home);
+    const lastReach = g.stateReach ?? recReach;
+    // (Read rules only: the launch rules close files in the profile's own folder to writing, on purpose.)
+    const seed = !g.stateReach && !ours.some((r) => { const at = r.startsWith('Read(') && rulePath(r, home); return !!at && reachNow.some((x) => isInside(x, at, home) || isInside(at, x, home)); });
+    const stateOnly = stateOnlyTest(cfg, name, stateDir, home, lastReach ?? (seed ? reachNow : undefined));
+    const dropped = ours.filter((r) => !floor.includes(r) && stateOnly(r) && !existsOrLink(rulePath(r, home)!));
+    if (!added.length && !dropped.length && !seed) return { ...none, floor };
+    const guardPath = guardFile(stateDir, name), guardText = readPlainText(guardPath);
+    const next = (list: string[] | undefined) => [...new Set([...(list ?? []).filter((r) => !dropped.includes(r)), ...added])];
+    // With the same wait: in the daemon a failure path must not block every chat either (review fix C2).
+    const undo = () => withCompileLock(stateDir, () => {
+      replacePlain(p.cwd, settingsPath, settingsText);
+      if (recordText !== undefined) replacePlain(p.cwd, recordPath, recordText);
+      replacePlain(dirname(guardPath), guardPath, guardText, 0o600);
+    }, o.waitMs);
+    try {
+      // The settings first: a guard rule the settings lack is a refusal (launchCheck), never a gap.
+      const rules = added.length || dropped.length;
+      if (rules) replacePlain(p.cwd, settingsPath, JSON.stringify({ ...settings, permissions: { ...settings.permissions, deny: next(have) } }, null, 2) + '\n');
+      if (rec && rules) replacePlain(p.cwd, recordPath, JSON.stringify({ ...rec, deny: next(recDeny) }, null, 2) + '\n');
+      replacePlain(dirname(guardPath), guardPath, JSON.stringify({ ...g, deny: next(g.deny), ...(seed ? { stateReach: reachNow } : {}) }, null, 2) + '\n', 0o600);
+    } catch (e) {
+      try { undo(); } catch { /* the first error says what failed; a half-written refresh only adds denies */ }
+      throw e;
+    }
+    return { added, dropped, floor, undo };
+  }, o.waitMs);
+}
+
+/** The floor rules a profile's settings lack now: none may be missing when its agent starts. `floor`:
+ *  the floor to check against (the one refreshFloor just wrote from), else the state folder read now. */
+export function floorMissing(cfg: Config, name: string, stateDir = INSTANCE_DIR, home = homedir(), floor?: string[]): string[] {
+  const deny = settingsDeny(cfg.profiles[name].cwd);
+  return (floor ?? profileFloor(cfg, name, stateDir, home)).filter((r) => !deny.includes(r));
+}
+
+/**
+ * refreshFloor for every compiled profile but those named (the one just added, compiled by itself):
+ * a profile added to the table changes every other profile's floor (otherProfileRules: its folder;
+ * agyStateRules: its agy folder, without which an agy profile refuses to start, agyFloorProblem).
+ * All or nothing: a failure puts back every profile already refreshed, then throws. Under one hold of
+ * the compile lock, waited for `o.waitMs` (the daemon asks for a short one, review fix C2).
+ */
+export function refreshFloors(cfg: Config, skip: string[], stateDir = INSTANCE_DIR, home = homedir(), o: { waitMs?: number } = {}): { refreshed: string[]; undo(): void } {
+  const done: { name: string; r: FloorRefresh }[] = [];
+  const undo = () => { for (const d of [...done].reverse()) d.r.undo(); };
+  withCompileLock(stateDir, () => {
+    try {
+      for (const name of Object.keys(cfg.profiles)) {
+        if (skip.includes(name)) continue;
+        const r = refreshFloor(cfg, name, stateDir, home, o);
+        if (r.added.length || r.dropped.length) done.push({ name, r });
+      }
+    } catch (e) {
+      try { undo(); } catch { /* the first error is the one to report */ }
+      throw e;
+    }
+  }, o.waitMs);
+  return { refreshed: done.map((d) => d.name), undo };
 }

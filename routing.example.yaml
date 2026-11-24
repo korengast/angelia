@@ -30,3 +30,4 @@ defaults: { unmatched: drop, max_out_per_min: 10, max_in_per_hour: 50, idle_exit
 #   owners: ["15551234567"]                          # only these senders start a new agent
 #   profile: { permission_mode: acceptEdits }        # what every new profile starts with
 #   mention: any
+#   connect_mention: required                        # a chat a set-up profile is connected to (angelia profile connect): answer only when mentioned (default) or any

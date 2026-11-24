@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
-import { Orchestrator } from '../src/core/orchestrator.js';
+import { BACKEND_FAILED_LINE, Orchestrator } from '../src/core/orchestrator.js';
 import { parseCommand } from '../src/core/commands.js';
 import { parseCodexModels, parseGrokModels, parsePiModels, effortsFor, type Catalog } from '../src/brain/catalog.js';
 import { limitHint } from '../src/core/deliver/text.js';
@@ -152,4 +152,15 @@ test('switchBackend: the table keeps its layout, loses what belonged to the old 
   assert.throws(() => switchBackend({ table, cfg, profile: 'a', backend: 'pi', instance: dir }), /bypassPermissions on a directory containing \.env/);
   assert.equal(readFileSync(table, 'utf8'), before);
   assert.equal(cfg.profiles.a.backend, 'codex');
+});
+
+test('fix2: a /backend that fails says one fixed line; the error (a pid, a path) is in the log only', async (t) => {
+  const { o, cfg, sent, dm } = setup({ backend: 'claude-code' }, {
+    switchBackend: () => { throw new Error('another compile is writing the compiled files (process 4242); try again'); },
+  });
+  t.after(() => o.shutdown());
+  await o.handle(dm('/backend codex'));
+  assert.equal(sent.at(-1), BACKEND_FAILED_LINE);
+  assert.doesNotMatch(BACKEND_FAILED_LINE, /\d|\//);
+  assert.equal(cfg.profiles.a.backend, 'claude-code');
 });

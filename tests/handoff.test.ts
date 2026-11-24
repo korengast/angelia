@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
+import { RELEASED_LINE } from '../src/core/deliver/text.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from '../src/core/handoff.js';
 import { planHandoffSkill } from '../src/capabilities/compile.js';
 import { handoffCommand } from '../src/cli/handoff-cli.js';
@@ -300,4 +301,47 @@ test('the table refuses a handoff default it cannot resolve', async () => {
     writeFileSync(table, JSON.stringify({ ...w.cfg, defaults: { ...w.cfg.defaults, handoff: v } }));
     assert.throws(() => loadConfig(table), why);
   }
+});
+
+test('fix2 L3: a handoff while the message waits for the prompt: the message was never typed, and the chat is told so with one fixed line', async (t) => {
+  const w = world();
+  const { o, sent, log } = orch(w.cfg); t.after(() => o.shutdown());
+  const p = fakePane('pane-1');
+  // As the tmux brain does: a reader still waiting for the prompt ends with released + keep when the
+  // pane is taken (paste sees the reader changed and types nothing).
+  let waiting: { resolve: (e: BrainEvent) => void } | undefined;
+  p.brain.turn = () => { p.events.push('turn'); return (async function* () { yield await new Promise<BrainEvent>((r) => { waiting = { resolve: r }; }); })(); };
+  const release = p.brain.release.bind(p.brain);
+  p.brain.release = async () => { waiting?.resolve({ kind: 'result', text: '', isError: true, reason: 'released', keep: true }); await release(); };
+  o.map.startNew('telegram:1', 'work');
+  (o as unknown as { brains: Map<string, unknown> }).brains.set('telegram:1', p.brain);
+  const handled = o.handle(dm('1', 'are you there?'));
+  await until(() => p.events.includes('turn'));
+  const r = await o.handoff({ cwd: w.own, session: SESSION, summary: 'New direction' });
+  await handled;
+  await until(() => sent.some((s) => s.text === RELEASED_LINE));
+  assert.ok(sent.some((s) => s.text === r.said), 'the handoff line');
+  assert.equal(sent.filter((s) => s.text === RELEASED_LINE).length, 1);
+  assert.ok(log.includes('turn failed key=telegram:1 reason=released'), log.join('\n'));
+  assert.ok(!log.some((l) => /stopped by the user/.test(l)));
+  assert.doesNotMatch(RELEASED_LINE, /\d|pane|tmux/);
+});
+
+test('a /stop while the message waits for the prompt says only "Stopped.", not the released line', async (t) => {
+  const w = world();
+  const { o, sent } = orch(w.cfg); t.after(() => o.shutdown());
+  const p = fakePane('pane-1');
+  let waiting: { resolve: (e: BrainEvent) => void } | undefined;
+  p.brain.turn = () => { p.events.push('turn'); return (async function* () { yield await new Promise<BrainEvent>((r) => { waiting = { resolve: r }; }); })(); };
+  // As the tmux brain does on stop: the reader still waiting for the prompt ends with released + keep.
+  p.brain.stop = async () => { p.events.push('stop'); p.brain.alive = false; waiting?.resolve({ kind: 'result', text: '', isError: true, reason: 'released', keep: true }); };
+  o.map.startNew('telegram:1', 'work');
+  (o as unknown as { brains: Map<string, unknown> }).brains.set('telegram:1', p.brain);
+  const handled = o.handle(dm('1', 'are you there?'));
+  await until(() => p.events.includes('turn'));
+  await o.handle(dm('1', '/stop'));
+  await handled;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(sent.some((s) => s.text.startsWith('Stopped.')), sent.map((s) => s.text).join(' | '));
+  assert.ok(!sent.some((s) => s.text === RELEASED_LINE), sent.map((s) => s.text).join(' | '));
 });

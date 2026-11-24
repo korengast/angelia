@@ -20,7 +20,7 @@ const L = {
   daemon: '  daemon | status | restart [--force]    run, inspect, restart the daemon',
   service: '  service <install [table]|uninstall [--force]|status>   the daemon as a LaunchAgent (macOS)',
   config: '  check-config | profiles [--json]       validate the table; list profiles and their chats',
-  profile: '  profile add <platform:chat> [name]     a new profile and route, as onboarding makes them',
+  profile: '  profile add <platform:chat> [name]     a new profile and route, as onboarding makes them\n  profile connect <profile> <platform|platform:chat> [--hours N]   a set-up profile takes a new chat, with no onboarding',
   compile: '  compile [profile...] [--write|--check] [--config <routing.yaml>]   capabilities into the profile folder',
   accept: '  accept [--check] [--config <routing.yaml>]   take the routing table as the accepted one (or list its changes)',
   jobs: '  jobs [install|remove|run] [profile] [job] [--config <routing.yaml>]   scheduled jobs (angelia guide jobs)',
@@ -51,7 +51,7 @@ export const COMMANDS: Record<string, Spec> = {
   service: { line: L.service, flags: { '--force': false } },
   'check-config': { line: L.config },
   profiles: { line: L.config, flags: { '--json': false } },
-  profile: { line: L.profile },
+  profile: { line: L.profile, usage: 'usage: angelia profile add <platform:chat> [name]\n       angelia profile connect <profile> whatsapp|telegram [--hours N] [--allow <id,...>] [--owners <id,...>] [--mention required|any]   the next new chat there goes to <profile>\n       angelia profile connect <profile> <platform:chat>   route that chat to <profile> now\n       angelia profile connect --cancel whatsapp|telegram\n       angelia profile connect   what is armed', flags: { '--hours': true, '--cancel': true, '--allow': true, '--owners': true, '--mention': true } },
   compile: { line: L.compile, flags: { '--write': false, '--check': false, '--config': true } },
   // --hash: what a timer passes, so a changed job refuses to run from an old timer; --once, a one-time
   // job's date, so its timer knows it is one whatever the file says by then.

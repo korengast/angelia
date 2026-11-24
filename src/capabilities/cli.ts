@@ -13,7 +13,9 @@ export function compileDrift(cfg: Config, table: string, names: string[] = [], o
   const stateDir = opts.stateDir ?? INSTANCE_DIR;
   const self = (profile: string) => selfPrompt({ profile, table, instance: stateDir });
   const which = names.length ? names : Object.keys(cfg.profiles).filter((n) => readRecord(resolve(cfg.profiles[n].cwd)));
-  const drift = which.map((n) => planProfile(cfg, n, { self, stateDir, home: opts.home })).filter((pl) => pl.changes.length || pl.conflicts.length);
+  const drift = which.map((n) => planProfile(cfg, n, { self, stateDir, home: opts.home }))
+    // The state folder's own entries coming and going are not drift (ProfilePlan.stateOnly).
+    .filter((pl) => pl.changes.some((c) => !pl.stateOnly.includes(c)) || pl.conflicts.length);
   if (!drift.length) return '';
   return [...drift.map((pl) => planText(pl) + '\n'), `Out of date: ${drift.map((pl) => pl.profile).join(', ')}. Run angelia compile <profile> --write.`].join('\n');
 }

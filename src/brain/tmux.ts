@@ -316,6 +316,9 @@ export function inputBox(pane: string): string {
   return inputBoxStrict(pane) ?? pane.replace(/\n+$/, '').split('\n').slice(-3).join('\n');
 }
 
+/** The screen draws an input box: false for a dialog or a menu, which replaces it. */
+export function paneHasBox(pane: string): boolean { return inputBoxStrict(pane) !== null; }
+
 /** The input box, or null when the screen has none: between the last two rules, or, in the older
  *  drawing, inside the last `╭…╰` frame. A dialog draws neither. */
 function inputBoxStrict(pane: string): string | null {

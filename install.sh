@@ -146,7 +146,9 @@ if [ "$tty" = 1 ]; then export ANGELIA_BANNER_SHOWN=1; fi
 # Under `curl … | sh` stdin is the pipe; the terminal is still there as /dev/tty.
 if [ -t 0 ]; then
   exec angelia init
-elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
+# Opened, not only tested: with no controlling terminal (setsid, a service) /dev/tty can look readable
+# and writable, and only opening it fails (No such device or address).
+elif (exec </dev/tty >/dev/tty) 2>/dev/null; then
   exec angelia init </dev/tty >/dev/tty
 else
   say "no terminal attached, so setup was not started. Run: angelia init"

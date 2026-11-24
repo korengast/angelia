@@ -8,9 +8,9 @@ import type { Config } from './config/schema.js';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { INSTANCE_DIR, buildSkeleton, commitFlags, initRepo, isRepo, profilesDir, workspaceDir } from './instance.js';
-import { backupConfig, instructionFile } from './init.js';
+import { backupConfig, DAEMON_LOCK_WAIT_MS, instructionFile, withTableLock } from './init.js';
 import { builtinVoiceTools } from '../voice/setup.js';
-import { planProfile } from '../capabilities/compile.js';
+import { planProfile, refreshFloors } from '../capabilities/compile.js';
 import type { Platform } from '../core/types.js';
 import { beyond, tablePath, pendingRefusal, writeAccepted } from './accepted.js';
 
@@ -71,6 +71,10 @@ export interface Onboarded {
 }
 
 export function onboardChat(o: OnboardOpts): Onboarded {
+  return withTableLock(o.table, 'onboarding', () => onboardLocked(o));
+}
+
+function onboardLocked(o: OnboardOpts): Onboarded {
   const ob = o.cfg.onboard;
   if (!ob) throw new Error('no onboard: block in the routing table');
   const instance = o.instance ?? INSTANCE_DIR;
@@ -115,32 +119,47 @@ export function onboardChat(o: OnboardOpts): Onboarded {
   const extra = beyond(instance, fresh, [tablePath('profiles', name), tablePath('routes', `${o.platform}:${o.chat}`)]);
   if (extra.length) { copyFileSync(backup, o.table); throw new Error(`not onboarding: the routing table changed while it was written (${extra.join('; ')})`); }
   const p = fresh.profiles[name];
+  let others: { undo(): void } | undefined;
   try {
     // An agent must not start before its deny rules are written, so a failure here undoes the route
     // too. Every profile is compiled, capabilities or not: the floor keeps its file tools off
     // Angelia's own secrets, and for grok the same step writes the self block.
     const plan = planProfile(fresh, name, { self: o.self, stateDir: instance });
     if (plan.conflicts.length) throw new Error(`capabilities for ${name}: ${plan.conflicts.join('; ')}`);
-    plan.apply();
-  } catch (e) { copyFileSync(backup, o.table); throw e; }
+    plan.apply({ waitMs: DAEMON_LOCK_WAIT_MS });
+    // Every other profile's floor names the new one (its folder; its agy folder, without which an agy
+    // profile refuses to start): those deny rules are added before the route goes live (review M2).
+    // A short wait for the compile lock, as for the plan above: the wait blocks every chat (review fix C2).
+    others = refreshFloors(fresh, [name], instance, undefined, { waitMs: DAEMON_LOCK_WAIT_MS });
+    writeAccepted(fresh, instance);
+  } catch (e) {
+    // What a later step left behind goes back too: the other profiles' rules for a profile not made.
+    try { others?.undo(); } catch { /* the first error is the one to say */ }
+    copyFileSync(backup, o.table);
+    throw e;
+  }
 
-  writeAccepted(fresh, instance);
   o.cfg.profiles[name] = p;
   o.cfg.routes.push(fresh.routes.find((r) => r.profile === name && r.chat === o.chat)!);
   const prompt = onboardingPrompt(ob.prompt ? resolve(expandHome(ob.prompt)) : DEFAULT_PROMPT, {
     profile: name, folder, instructions: INSTRUCTIONS, chat: `${o.platform}:${o.chat}`, chat_name: o.chatName ? cleanName(o.chatName, 80) : 'no name',
   });
-  return { name, folder, prompt, ...(ws ? { git: commitProfile(ws, name) } : {}) };
+  return { name, folder, prompt, ...(ws ? { git: commitProfile(ws, name, `Onboard ${name}`) } : {}) };
 }
 
 /** One commit with the new folder only, pushed when the workspace has a remote (the owner chose one;
- *  angelia init offers it). A failed push leaves the commit in place for the next push. */
-async function commitProfile(ws: string, name: string): Promise<string> {
+ *  angelia init offers it). A failed push leaves the commit in place for the next push.
+ *  `quietIfNone`: a folder with nothing new is no commit and says 'nothing to commit' (a profile
+ *  connected to a chat); without it, every word as onboarding always had them. */
+export async function commitProfile(ws: string, name: string, message: string, o: { quietIfNone?: boolean } = {}): Promise<string> {
   // This runs inside the daemon: off the event loop, and a remote that does not answer is given up on.
   const git = async (args: string[]) => (await run('git', args, { cwd: ws, encoding: 'utf8', timeout: 20_000 })).stdout;
   try {
     await git(['add', '--', join('profiles', name)]);
-    await git([...commitFlags(ws), 'commit', '-q', '-m', `Onboard ${name}`, '--', join('profiles', name)]);
+    if (o.quietIfNone) {
+      try { await git(['diff', '--cached', '--quiet', '--', join('profiles', name)]); return 'nothing to commit'; } catch { /* staged changes: commit them */ }
+    }
+    await git([...commitFlags(ws), 'commit', '-q', '-m', message, '--', join('profiles', name)]);
     if (!(await git(['remote'])).trim()) return 'committed';
     try { await git(['push', '-q', 'origin', 'HEAD']); return 'committed and pushed'; }
     catch (e) { return `committed, not pushed: ${firstLine(e)}`; }

@@ -390,9 +390,11 @@ export class AgyBrain extends AcpBrain {
    * nothing it asks can be answered.
    */
   private watchForChild(): void {
-    // The conversations here before the first subagent are not this session's: never read. (Later ones
-    // are read, only their heads, until attached: a second subagent may start before the first is found.)
-    if (!this.childTimers.length) for (const id of this.conversations()) if (id !== this.backendSessionId) this.notChildren.add(id);
+    // notChildren holds the conversations that were here when the session opened (openSession): never
+    // read. Later ones are read, only their heads, until attached: a second subagent may start before the
+    // first is found. The list is not taken here: agy can write the subagent's conversation before this
+    // client has read its invoke_subagent line, and a list taken now held the subagent itself, so it was
+    // never attached (CI 2026-11-22 and 2026-11-24, a loaded machine).
     const before = this.children.size;
     const scans = AgyBrain.childScanMs;
     for (const [i, ms] of scans.entries()) {
@@ -460,6 +462,8 @@ export class AgyBrain extends AcpBrain {
       this.backendSessionId = String(s.sessionId);
     }
     const sessionId = this.backendSessionId;
+    // Every conversation here now is another session's or an earlier one: none is a subagent of this turn.
+    for (const id of this.conversations()) if (id !== sessionId) this.notChildren.add(id);
     // Checked before agy is asked: an unknown id is the owner's typo, and the list says what exists.
     const modelId = agyResolveModel(this.model, this.availableModels);
     if (!modelId) {

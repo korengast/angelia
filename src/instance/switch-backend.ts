@@ -2,7 +2,7 @@ import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseDocument, YAMLMap } from 'yaml';
 import { loadConfig } from './config/load.js';
 import type { Config } from './config/schema.js';
-import { backupConfig } from './init.js';
+import { backupConfig, DAEMON_LOCK_WAIT_MS, withTableLock } from './init.js';
 import { planProfile } from '../capabilities/compile.js';
 import type { BackendName } from '../brain/brain.js';
 import { INSTANCE_DIR } from './instance.js';
@@ -37,6 +37,11 @@ export interface Switched { removed: string[]; restored: string[]; notes: string
  * the owner may have changed a field by hand since the last switch.
  */
 export function switchBackend(o: SwitchOpts): Switched {
+  // The table's read-change-write holds its lock, as a bind and an onboarding do.
+  return withTableLock(o.table, 'switching', () => switchLocked(o));
+}
+
+function switchLocked(o: SwitchOpts): Switched {
   // Built on the table as it stands, so that table must be the accepted one (accepted.ts).
   const state = o.instance ?? INSTANCE_DIR;
   const pending = pendingRefusal(loadConfig(o.table), state);
@@ -74,10 +79,12 @@ export function switchBackend(o: SwitchOpts): Switched {
   try {
     const plan = planProfile(fresh, o.profile, { self: o.self, stateDir: o.instance });
     if (plan.conflicts.length) throw new Error(`capabilities for ${o.profile}: ${plan.conflicts.join('; ')}`);
-    plan.apply();
+    // The daemon runs this (/backend): a short wait for the compile lock, since the wait blocks every chat.
+    plan.apply({ waitMs: DAEMON_LOCK_WAIT_MS });
     notes = plan.notes;
+    // Inside the try, as for a bind: a failed write puts the table back.
+    writeAccepted(fresh, state);
   } catch (e) { copyFileSync(backup, o.table); throw e; }
-  writeAccepted(fresh, state);
   o.cfg.profiles[o.profile] = fresh.profiles[o.profile];
   return { removed, restored, notes };
 }

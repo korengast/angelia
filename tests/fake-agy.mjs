@@ -140,13 +140,25 @@ const handle = (m) => {
   }
   if (text.includes('CHILD')) {
     const tc = tool('call_s', 'invoke_subagent', { Role: 'Writer', TypeName: 'self' }, 'Run invoke_subagent', 'other');
-    update(sid, { sessionUpdate: 'tool_call', ...tc, status: 'in_progress' });
-    if (!text.includes('CHILD-LOST')) {
+    const write = () => {
+      if (text.includes('CHILD-LOST')) return;
       const cid = randomUUID(); children.add(cid);
       const dir = join(gemini, 'antigravity-cli', 'conversations'); mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, `${randomUUID()}.db`), 'another conversation');
       writeFileSync(join(dir, `${cid}.db`), `SQLite parent ${sid} steps`);
+    };
+    // FAKE_AGY_CHILD_FIRST: the subagent's conversation is on disk before the client gets the
+    // invoke_subagent line, as on a loaded machine.
+    if (process.env.FAKE_AGY_CHILD_FIRST) {
+      write();
+      return setTimeout(() => {
+        update(sid, { sessionUpdate: 'tool_call', ...tc, status: 'in_progress' });
+        update(sid, { sessionUpdate: 'tool_call_update', ...tc, status: 'completed' });
+        finish('delegated');
+      }, 300);
     }
+    update(sid, { sessionUpdate: 'tool_call', ...tc, status: 'in_progress' });
+    write();
     update(sid, { sessionUpdate: 'tool_call_update', ...tc, status: 'completed' });
     return finish('delegated');
   }

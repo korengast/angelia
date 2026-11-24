@@ -19,6 +19,8 @@ export interface TelegramAdapterOptions {
    *  `yes <id>` to that turn's own permission prompt, and `/stop`. The call is synchronous up to its
    *  first await, so the order of messages within a chat is kept. */
   onInbound: (i: Inbound) => Promise<void> | void;
+  /** The bot was added to a group: the chat, and the id of the one who added it. */
+  onJoined?: (chat: string, by: string[], at?: number) => Promise<void>;
   /** A press on Yes or No under a permission request (Orchestrator.pressed); `id` is the request the
    *  pressed message was sent for, in full (none: a message this adapter put no buttons under since
    *  it started). Gives what to tell the person who pressed, and whether the
@@ -109,6 +111,8 @@ export class TelegramAdapter implements Sender {
     // callback_query is among the update types polling asks for by default (grammY passes an empty
     // allowed_updates: every type but chat_member and the two reaction ones).
     this.bot.on('callback_query', (ctx) => this.onPress(ctx));
+    // my_chat_member is also among the default types: the bot's own membership changed.
+    this.bot.on('my_chat_member', (ctx) => this.onMembership(ctx));
     // grammY rethrows anything a handler throws, and an unhandled rejection out of the polling
     // loop takes the whole daemon down - every other chat on every other platform with it.
     this.bot.catch((err) => this.log(`telegram: handler error ${err.message}`));
@@ -223,6 +227,15 @@ export class TelegramAdapter implements Sender {
    * hold every Telegram chat, `/stop` and `yes <id>` included. The download and the hand-over run on
    * the chat's own chain instead, so a text still arrives after the photo it follows.
    */
+  /** The bot went from out of a group to in it: who did it, for an armed profile (connect.ts). */
+  private onMembership(ctx: Context): void {
+    const u = ctx.myChatMember;
+    if (!u || !this.opts.onJoined || (u.chat.type !== 'group' && u.chat.type !== 'supergroup')) return;
+    const was = u.old_chat_member.status, now = u.new_chat_member.status;
+    if (!(was === 'left' || was === 'kicked') || !(now === 'member' || now === 'administrator')) return;
+    void this.opts.onJoined(String(u.chat.id), [String(u.from.id)], u.date * 1000).catch((e: Error) => this.log(`telegram: join handler error ${e.message}`));
+  }
+
   private onMessage(ctx: Context): void {
     const m = ctx.message!;
     const chat = String(m.chat.id);

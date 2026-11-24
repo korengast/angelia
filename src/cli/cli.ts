@@ -126,15 +126,24 @@ try {
     case 'profiles': {
       const json = rest.includes('--json');
       const cfg = loadConfig(configPath(rest.find((a) => !a.startsWith('--'))));
-      if (!json) { console.log(profilesText(cfg)); break; }
+      if (!json) { const { armedList } = await import('../instance/connect.js'); console.log(profilesText(cfg, armedList(STATE_DIR))); break; }
       console.log(JSON.stringify(profilesJson(cfg, readSessions(join(STATE_DIR, 'sessions.json'))), null, 2));
       break;
     }
     case 'profile': {
       // The same steps onboarding takes, by hand: for a chat that should get an agent before anyone writes in it.
       const [sub, chat, ...words] = rest;
+      if (sub === 'connect') {
+        const { connectCommand } = await import('./connect-cli.js');
+        const { selfPrompt } = await import('../daemon/self.js');
+        const { logLine } = await import('../daemon/daemon.js');
+        const table = resolve(configPath());
+        console.log(await connectCommand(rest.slice(1), { stateDir: STATE_DIR, table, self: (p) => selfPrompt({ profile: p, table, instance: STATE_DIR }), log: (l) => logLine(l, true) }));
+        break;
+      }
+      if (['--hours', '--cancel', '--allow', '--owners', '--mention'].some((f) => rest.includes(f))) throw new Error('--hours, --cancel, --allow, --owners and --mention are for angelia profile connect; a chat\'s profile takes its settings from the onboard: block');
       const { platform, chat: id, thread } = parseSessionKey(chat ?? '');
-      if (sub !== 'add' || !id || (platform !== 'whatsapp' && platform !== 'telegram')) throw new Error('usage: angelia profile add <whatsapp|telegram:chat> [name]');
+      if (sub !== 'add' || !id || (platform !== 'whatsapp' && platform !== 'telegram')) throw new Error('usage: angelia profile add <whatsapp|telegram:chat> [name]\n       angelia profile connect <profile> whatsapp|telegram|<platform:chat> [--hours N] (angelia profile connect --help)');
       if (thread) throw new Error('profile add takes a chat, not a topic: a topic gets its own route under the chat\'s profile, by hand (angelia guide routing)');
       const table = resolve(configPath());
       const cfg = loadConfig(table);

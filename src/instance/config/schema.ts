@@ -186,6 +186,10 @@ export const Config = z.object({
     profile: z.record(z.string(), z.unknown()).default({}),
     /** The new route's mention setting. */
     mention: z.enum(['required', 'any']).optional(),
+    /** The mention setting of a chat an armed profile is connected to (`angelia profile connect`), unless
+     *  the arm says --mention. Default required: such a chat is often a busy group of people, where an
+     *  agent that answers every message is noise, and many bot replies risk a WhatsApp ban. */
+    connect_mention: z.enum(['required', 'any']).default('required'),
     /** Chats that are never onboarded, as platform:chat: ones another gateway still serves, or archived
      *  ones. An owner's message there is dropped as before. Take a key off when its chat moves here. */
     skip: z.array(z.string().regex(/^(whatsapp|telegram):\S+$/, 'onboard.skip: platform:chat, like whatsapp:120363000000000001@g.us')).default([]),
