@@ -8,12 +8,12 @@ import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent, type UnaskedAnswer } from '../core/types.js';
 import { isLimitText } from '../core/deliver/text.js';
-import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, versionAtLeast } from './argv.js';
+import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
 import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
-import { readRecord } from '../capabilities/compile.js';
+import { mcpLaunch, readRecord } from '../capabilities/compile.js';
 import { readPlainText } from '../core/paths.js';
 
 export { transcriptPath } from './transcripts.js';
@@ -368,7 +368,9 @@ export class TuiBrain extends EventEmitter implements Brain {
   private fingerprint(resume: boolean): string {
     const rec = readRecord(this.profile.cwd);
     // The sandbox flag only when set, so records from before it existed keep their fingerprint.
-    const compiled = rec ? JSON.stringify([rec.deny, rec.additionalDirectories, rec.mcpServers, rec.mcpStrict, ...(rec.sandbox ? ['sandbox'] : [])]) : 'none';
+    // The MCP keys of the settings file too (connectors, tuiSettings), only when there are any, as the sandbox flag.
+    const mcp = (this.opts.mcp ?? mcpLaunch(this.profile.cwd)).settings;
+    const compiled = rec ? JSON.stringify([rec.deny, rec.additionalDirectories, rec.mcpServers, rec.mcpStrict, ...(rec.sandbox ? ['sandbox'] : []), ...(Object.keys(mcp).length ? [mcp] : [])]) : 'none';
     return launchFingerprint(this.argv(resume), HOOK, [`granted=${(this.opts.granted ?? []).join(',')}`, `withheld=${(this.opts.withheld ?? []).join(',')}`, `compiled=${compiled}`, `env=${Object.entries(CLAUDE_ENV).map(([k, v]) => `${k}=${v}`).join(',')}`, `permission-hook=${PERMISSION_HOOK}`]);
   }
 
@@ -398,7 +400,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const refused = await tuiLaunchProblem(this.opts.bin ?? 'claude', this.profile.cwd, env);
     if (refused) return refused;
     mkdirSync(this.dir, { recursive: true });
-    writeFileSync(this.settingsPath, JSON.stringify(hookSettings(), null, 2));
+    writeFileSync(this.settingsPath, JSON.stringify(tuiSettings(this.profile, hookSettings(), this.opts.mcp), null, 2));
     this.relay.reset();
     const pinned: string[] = [];
     for (const k of ['PATH', 'HOME', 'LANG', 'SHELL', 'ANGELIA_SESSION_KEY']) {
@@ -497,7 +499,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   }
 
   private argv(resume: boolean): string[] {
-    return claudeTuiArgv(this.profile, { ...this.session, started: resume }, this.opts.bin ?? 'claude', this.settingsPath, this.name, this.opts.system);
+    return claudeTuiArgv(this.profile, { ...this.session, started: resume }, this.opts.bin ?? 'claude', this.settingsPath, this.name, this.opts.system, this.opts.mcp);
   }
 
   private launchedWith(): string | undefined {

@@ -1,3 +1,4 @@
+import type { McpLaunch } from '../capabilities/compile.js';
 import type { EventEmitter } from 'node:events';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
@@ -49,6 +50,10 @@ export interface BrainOptions {
   apiSocket?: string;
   /** The profile's name in the table, for text the agent is told (Codex's sandbox note). */
   profileName?: string;
+  /** Claude Code: the MCP launch from the profile's guard in the state folder (guardMcpLaunch), which
+   *  the agent cannot change. Unset: read from the record in its folder (tests, the canary, a compile
+   *  from before connectors). */
+  mcp?: McpLaunch;
   /** Deny rules for this session only, on top of the compiled ones, in the backend's own form (agy;
    *  tests). Unset: the compiled ones alone. */
   deny?: string[];
@@ -247,11 +252,18 @@ export function trackGroup(child: { pid?: number; once(e: 'exit', f: () => void)
 process.on('exit', () => { for (const g of groups) try { process.kill(-g, 'SIGKILL'); } catch { /* gone */ } });
 
 /**
+ * stderr lines a healthy CLI prints, never a reason it died. Claude Code 2.1.332 prints the first at
+ * every start of a profile given a connector (the allow list leaves the account's other connectors
+ * out): "Warning: claude.ai MCP servers blocked by enterprise policy: claude.ai Google Drive, ...".
+ */
+export const BENIGN_STDERR = [/^Warning: claude\.ai MCP servers blocked by enterprise policy:/];
+
+/**
  * Why the child died, for the log and for the retry decision. Always starts with `exit`, because
  * that prefix is what tells the orchestrator a brand-new session died before it ever answered.
  */
 export function exitReason(failure: string): string {
-  const line = failure.split('\n').map((l) => l.trim()).filter(Boolean).pop();
+  const line = failure.split('\n').map((l) => l.trim()).filter((l) => l && !BENIGN_STDERR.some((re) => re.test(l))).pop();
   return line ? `exit: ${line.slice(0, 200)}` : 'exit';
 }
 
@@ -305,7 +317,12 @@ export function wireChild(child: import('node:child_process').ChildProcessWithou
   child.on('exit', w.exit);
   child.on('error', (err) => { failure = err.message; w.failure(failure, 'error'); w.exit(null, null); });
   child.stdin.on('error', () => {});
-  child.stderr.on('data', (b: Buffer) => { failure = (failure + b.toString('utf8')).slice(-400); w.failure(failure, 'stderr'); });
+  child.stderr.on('data', (b: Buffer) => {
+    // A line a healthy CLI prints (BENIGN_STDERR) is no failure text: kept, it could be the reason given.
+    const text = b.toString('utf8').split('\n').filter((l) => !BENIGN_STDERR.some((re) => re.test(l.trim()))).join('\n');
+    if (!text) return;
+    failure = (failure + text).slice(-400); w.failure(failure, 'stderr');
+  });
   onJsonLines(child.stdout, w.line);
 }
 

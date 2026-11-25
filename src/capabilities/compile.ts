@@ -2,7 +2,7 @@ import { closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync,
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Capability, Config, Profile } from '../instance/config/schema.js';
-import { resolveProfile } from './resolve.js';
+import { capabilityEnv, resolveProfile } from './resolve.js';
 import { SELF_END, SELF_START, openAgentFile, rewriteAgentFile, upsertSelfBlock } from '../daemon/self.js';
 import { API_SOCKET, HOME_PRIVATE, INSTANCE_DIR, STATE_LOGS, STATE_PRIVATE, commonDir, workspaceDir } from '../instance/instance.js';
 import { expandHome, isInside, openNoFollow, readPlainText } from '../core/paths.js';
@@ -48,19 +48,115 @@ export interface CompiledRecord {
   /** What the profile reached in the state folder at this compile (stateReach): a deny change there
    *  that touches it is a table change, never only the state folder's own (ProfilePlan.stateOnly). */
   stateReach?: string[];
+  /** Claude: the Claude app connectors granted, as the url patterns Claude Code matches them by. Every
+   *  Claude compile writes it, empty when none is granted; a record without it is from before the kind,
+   *  and launches as it did then (mcpLaunch). */
+  connectors?: string[];
+  /** Claude, with a connector: the MCP servers let in by name beside the connectors (allowedMcpServers):
+   *  this folder's .mcp.json servers, and when MCP is not strict the user-level ones of this compile. */
+  mcpAllow?: string[];
+  /** Claude, with a connector: the servers of this folder's .mcp.json, loaded through --mcp-config. */
+  mcpOwn?: string[];
+  /** Claude, with a connector: the address patterns of the remote (http, sse) servers among mcpAllow
+   *  (urlPattern: no query, no fragment). Measured on claude 2.1.332: once the allow list has a
+   *  serverUrl entry, a remote server passes only by its address, never by its name, so each one is
+   *  let in by its address as well. */
+  mcpUrls?: string[];
 }
 
 export function readRecord(cwd: string): CompiledRecord | undefined {
   try { return JSON.parse(readPlainText(join(cwd, RECORD))) as CompiledRecord; } catch { return undefined; }
 }
 
-/** A compiled Claude profile loads only its own .mcp.json. The one thing the daemon takes from a
- *  compile, read at launch like any other file the CLI itself would read. */
-export function strictMcpArgs(cwd: string): string[] {
-  const rec = readRecord(cwd);
+/** What a Claude launch passes for MCP: flags, and keys for the settings it passes with --settings. */
+export interface McpLaunch { args: string[]; settings: Record<string, unknown> }
+
+const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v is string => typeof v === 'string') : []);
+
+/**
+ * Which MCP servers a compiled Claude profile loads. The one thing the daemon takes from a compile,
+ * read at launch like any other file the CLI itself would read. Measured on claude 2.1.332 (print and
+ * tmux mode, 2026-11-25):
+ * - `--strict-mcp-config` loads only the --mcp-config file: no user-level server and no Claude app
+ *   connector (claude.ai Gmail, Drive...), and no setting brings a connector back.
+ * - `allowedMcpServers` in --settings loads only what it names: a server by `serverName`, a connector
+ *   by `serverUrl` (a connector's name, "claude.ai Gmail", is refused as a serverName). Of two
+ *   --settings flags only the last one counts, so the keys go into the one settings Angelia passes.
+ * - `disableClaudeAiConnectors: true` drops every connector and keeps the user-level servers; true
+ *   in any settings source wins.
+ * - With a serverUrl entry in the list, a remote (http, sse) server passes by its url only: its name
+ *   alone leaves it out. A stdio server passes by its name.
+ * - `disabledMcpjsonServers` keeps the folder's own .mcp.json from loading a second time as the
+ *   project's, whose approval dialog would hold a tmux pane; the --mcp-config copy still loads.
+ * So: a profile granted a connector loads its .mcp.json and an allow list; a strict profile with
+ * none is as before; a profile that is not strict loses the connectors only. A record from before
+ * connectors (no `connectors` field) launches as it did then, until it is compiled again; only a
+ * guard from before connectors lets such a record start (launchCheck, mcpLaunchProblems): the record
+ * is in the agent's folder, so the guard in the state folder says what it must hold.
+ */
+export function mcpLaunch(cwd: string, from?: LaunchGuard['mcp']): McpLaunch {
   const file = join(cwd, '.mcp.json');
-  return rec?.mcpStrict && existsSync(file) ? ['--strict-mcp-config', '--mcp-config', file] : [];
+  if (from) return mcpLaunchFrom(file, from);
+  const rec = readRecord(cwd);
+  if (!rec || typeof rec !== 'object') return { args: [], settings: {} };
+  const connectors = strings(rec.connectors);
+  if (connectors.length) {
+    const own = strings(rec.mcpOwn);
+    return {
+      args: existsSync(file) ? ['--mcp-config', file] : [],
+      settings: {
+        allowedMcpServers: [...strings(rec.mcpAllow).map((serverName) => ({ serverName })), ...[...strings(rec.mcpUrls), ...connectors].map((serverUrl) => ({ serverUrl }))],
+        ...(own.length ? { disabledMcpjsonServers: own } : {}),
+      },
+    };
+  }
+  if (rec.mcpStrict && existsSync(file)) return { args: ['--strict-mcp-config', '--mcp-config', file], settings: {} };
+  return { args: [], settings: Array.isArray(rec.connectors) ? { disableClaudeAiConnectors: true } : {} };
 }
+
+/**
+ * The launch as the last compile wrote it in the state folder (the guard), where the agent cannot
+ * change it: the record in its own folder no longer decides (fix2 N1, L-a). A strict launch whose
+ * .mcp.json is gone loads nothing rather than every user-level server (launchCheck refuses it too).
+ */
+function mcpLaunchFrom(file: string, g: NonNullable<LaunchGuard['mcp']>): McpLaunch {
+  const connectors = strings(g.connectors), own = strings(g.own);
+  if (connectors.length) {
+    return {
+      args: existsSync(file) ? ['--mcp-config', file] : [],
+      settings: {
+        allowedMcpServers: [...strings(g.allow).map((serverName) => ({ serverName })), ...[...strings(g.urls), ...connectors].map((serverUrl) => ({ serverUrl }))],
+        ...(own.length ? { disabledMcpjsonServers: own } : {}),
+      },
+    };
+  }
+  if (g.strict) return { args: ['--strict-mcp-config', '--mcp-config', existsSync(file) ? file : '{"mcpServers":{}}'], settings: {} };
+  return { args: [], settings: { disableClaudeAiConnectors: true } };
+}
+
+/** A profile's MCP launch from its guard in `stateDir`, or undefined when the guard has none (a compile
+ *  from before connectors, or none at all): the caller then reads the record (mcpLaunch). */
+export function guardMcpLaunch(stateDir: string, name: string, cwd: string): McpLaunch | undefined {
+  const g = readGuard(stateDir, name);
+  return g?.mcp && resolve(g.cwd) === resolve(cwd) ? mcpLaunch(cwd, g.mcp) : undefined;
+}
+
+/**
+ * The allow-list pattern for a remote server's address: the scheme, host and path only, so a key in a
+ * query (`?tavilyApiKey=...`) or a fragment never reaches the record, the command line or a settings
+ * file; a `*` takes the cut part's place. Measured on claude 2.1.332 (a local http server at
+ * `/mcp?key=...`): `.../mcp*` lets it in, `.../mcp` does not.
+ */
+export function urlPattern(url: string): string {
+  const cut = url.search(/[?#]/);
+  if (cut < 0) return url;
+  const base = url.slice(0, cut);
+  return base.endsWith('*') ? base : `${base}*`;
+}
+
+/** The MCP flags of a compiled Claude profile (mcpLaunch): strict for one that denies a server and is
+ *  granted no connector, its own .mcp.json beside an allow list for one granted a connector. */
+export function strictMcpArgs(cwd: string): string[] { return mcpLaunch(cwd).args; }
 
 /**
  * What the last compile of a profile wrote, kept in the state folder, outside every profile: an agent
@@ -82,6 +178,9 @@ export interface LaunchGuard {
   agy?: AgyGuard;
   /** As the record's stateReach, kept where the agent cannot change it. */
   stateReach?: string[];
+  /** Claude: what the record said about MCP at the last compile (strict, the connectors granted, the
+   *  servers let in by name). A record that says otherwise at launch is a refusal (launchCheck). */
+  mcp?: { strict: boolean; connectors: string[]; allow: string[]; own?: string[]; urls?: string[] };
 }
 
 /** One MCP server for agy's session/new, in ACP's stdio shape but for `env`: the names of the
@@ -95,6 +194,11 @@ export function readGuard(stateDir: string, name: string): LaunchGuard | undefin
 }
 
 const guardFile = (stateDir: string, name: string) => join(stateDir, 'compiled', `${encodeURIComponent(name)}.json`);
+
+/** The MCP keys of a Claude profile's launch as a settings file, beside its guard: what the /status
+ *  terminal line passes with --settings, so the line names no address (fix2 N1). Written by compile,
+ *  only when there are keys. */
+export const mcpSettingsFile = (stateDir: string, name: string) => join(stateDir, 'compiled', `${encodeURIComponent(name)}.settings.json`);
 
 function writeGuard(stateDir: string, name: string, g: LaunchGuard): void {
   mkdirSync(join(stateDir, 'compiled'), { recursive: true, mode: 0o700 });
@@ -118,7 +222,7 @@ export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR, 
     try { return JSON.parse(readPlainText(join(p.cwd, '.claude', f))); }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {}; return undefined; }
   };
-  const settings = read('settings.json'), local = read('settings.local.json') ?? {};
+  const settings = read('settings.json'), localRead = read('settings.local.json'), local = localRead ?? {};
   if (!settings) return ['.claude/settings.json cannot be read, so the CLI would drop every deny rule in it'];
   const deny: string[] = settings.permissions?.deny ?? [];
   const out = g.deny.filter((r) => !deny.includes(r)).map((r) => `deny ${r}`);
@@ -130,9 +234,63 @@ export function launchCheck(cfg: Config, name: string, stateDir = INSTANCE_DIR, 
   // a compile. (A guard from another backend returned above.)
   if ((g.codexSandbox || g.piSandbox || g.agySandbox) && p.sandbox === false) out.push(`sandbox off: the table turned ${g.codexSandbox ? 'Codex\'s sandbox' : g.piSandbox ? 'the sandbox for pi\'s commands' : 'agy\'s sandbox'} off since the last compile; compile again to accept it`);
   if (p.backend === 'agy') out.push(...agyLaunchProblems(p.cwd, p.add_dirs, agyGeminiPath(stateDir, name), g.agy?.skills ?? []));
+  if (p.backend === 'claude-code') out.push(...mcpLaunchProblems(p.cwd, g.mcp, settings, local, localRead === undefined));
   const agy = agyFloorProblem(cfg, name, g, stateDir, home);
   if (agy) out.push(agy);
   return out;
+}
+
+/**
+ * The record in the profile's folder decides which MCP servers and connectors load (mcpLaunch); the
+ * agent may write that folder. So it must say what the last compile wrote, kept in the state folder.
+ * And a connector profile's own settings must carry no allowedMcpServers: measured on claude 2.1.332,
+ * a list in .claude/settings.local.json is added to the one Angelia passes (Calendar and github
+ * loaded beside the Gmail granted), so it would let in what the table did not give.
+ */
+function mcpLaunchProblems(cwd: string, want: LaunchGuard['mcp'], settings: Record<string, any>, local: Record<string, any>, localBroken: boolean): string[] {
+  const rec = readRecord(cwd);
+  const ok = !!rec && typeof rec === 'object' && !Array.isArray(rec);
+  // A guard from before connectors: the record must be from before them too. One that names them
+  // was written since by something other than a compile (review M1).
+  if (!want) {
+    if (ok && ['connectors', 'mcpAllow', 'mcpOwn', 'mcpUrls'].some((k) => k in rec!)) return ['the compiled record names Claude app connectors, but its last compile was before them; compile again'];
+    return [];
+  }
+  // Fail closed (review H1): no record, or one without its connectors list, would launch as before
+  // connectors, every one of them loaded; a strict launch needs its .mcp.json.
+  if (!ok || !Array.isArray(rec!.connectors)) return ['the compiled record is missing or lacks its connectors list, so the launch would load every Claude app connector; compile again'];
+  const out: string[] = [];
+  const now = { strict: !!rec!.mcpStrict, connectors: strings(rec!.connectors), allow: strings(rec!.mcpAllow), own: strings(rec!.mcpOwn), urls: strings(rec!.mcpUrls) };
+  if (now.strict !== !!want.strict || !same(now.connectors, want.connectors ?? []) || !same(now.allow, want.allow ?? []) || !same(now.own, want.own ?? []) || !same(now.urls, want.urls ?? [])) out.push(`the compiled record's MCP launch (strict MCP, connectors, servers let in) is not what the last compile wrote; compile again`);
+  if ((want.strict || (want.own ?? []).length) && !existsSync(join(cwd, '.mcp.json'))) out.push(`.mcp.json is gone, so the launch would not ${want.strict && !(want.connectors ?? []).length ? 'be strict: user-level MCP servers would load' : 'load this profile\'s own servers'}; compile again`);
+  if ((want.connectors ?? []).length) {
+    // Measured on claude 2.1.332 (tmux): a server in .mcp.json that disabledMcpjsonServers does not
+    // name opens the "New MCP server found" dialog, which holds the pane (fix2 L-d).
+    const mcpFile = join(cwd, '.mcp.json');
+    if (existsSync(mcpFile)) {
+      let names: string[] | undefined;
+      try { names = Object.keys((JSON.parse(readPlainText(mcpFile)) as { mcpServers?: object }).mcpServers ?? {}); } catch { names = undefined; }
+      const extra = names?.filter((n) => !(want.own ?? []).includes(n)) ?? [];
+      if (!names) out.push('.mcp.json cannot be read; compile again');
+      else if (extra.length) out.push(`.mcp.json names ${extra.map((n) => `"${n}"`).join(', ')}, which the last compile did not (a server added by hand would hold the session on an approval dialog); compile again`);
+    }
+    // An unreadable settings.local.json may still be read by Claude Code, list and all (review M3).
+    if (localBroken) out.push('.claude/settings.local.json cannot be read, so Angelia cannot see whether it adds to the connectors this profile was granted; fix or remove it');
+    for (const [f, s] of [['settings.json', settings], ['settings.local.json', local]] as const) {
+      if (s && typeof s === 'object' && 'allowedMcpServers' in s) out.push(`.claude/${f} lists allowedMcpServers, which Claude Code adds to the connectors this profile was granted; remove it`);
+    }
+  }
+  return out;
+}
+
+/** One warning per Claude profile whose last compile was before connectors: its guard does not hold
+ *  the MCP launch, so nothing checks what its record says about MCP (review M1). */
+export function mcpGuardWarnings(cfg: Config, stateDir = INSTANCE_DIR): string[] {
+  return Object.entries(cfg.profiles).flatMap(([name, p]) => {
+    if (p.backend !== 'claude-code') return [];
+    const g = readGuard(stateDir, name);
+    return g && !g.mcp ? [`profiles.${name}: compiled before Claude app connectors, so its MCP launch is not checked against the state folder; compile again: angelia compile --write ${name}`] : [];
+  });
 }
 
 /**
@@ -183,7 +341,10 @@ export function seedGuards(cfg: Config, stateDir = INSTANCE_DIR): string[] {
   for (const [name, p] of Object.entries(cfg.profiles)) {
     const rec = readRecord(p.cwd);
     if (!rec || existsSync(guardFile(stateDir, name))) continue;
-    writeGuard(stateDir, name, { cwd: p.cwd, deny: rec.deny, ...(rec.sandbox ? { sandbox: true } : {}) });
+    // A record written since connectors carries its MCP launch: seeded with it, as the deny rules are.
+    const mcp = p.backend === 'claude-code' && Array.isArray(rec.connectors)
+      ? { mcp: { strict: !!rec.mcpStrict, connectors: strings(rec.connectors), allow: strings(rec.mcpAllow), own: strings(rec.mcpOwn), urls: strings(rec.mcpUrls) } } : {};
+    writeGuard(stateDir, name, { cwd: p.cwd, deny: rec.deny, ...(rec.sandbox ? { sandbox: true } : {}), ...mcp });
     seeded.push(name);
   }
   writeFileSync(marker, `${new Date().toISOString()}\n`, { mode: 0o600 });
@@ -524,6 +685,10 @@ export const CODEX_LAUNCH_DIRS = [join('.codex', '**'), join('.agents', '**')];
 /** One warning per profile whose settings lack part of the floor: never compiled, or compiled before
  *  the floor grew (an update, a new profile). */
 export function floorWarnings(cfg: Config, stateDir = INSTANCE_DIR, home = homedir()): string[] {
+  return [...floorDenyWarnings(cfg, stateDir, home), ...mcpGuardWarnings(cfg, stateDir)];
+}
+
+function floorDenyWarnings(cfg: Config, stateDir: string, home: string): string[] {
   return Object.keys(cfg.profiles).flatMap((name) => {
     const deny = settingsDeny(cfg.profiles[name].cwd);
     const missing = profileFloor(cfg, name, stateDir, home).filter((r) => !deny.includes(r));
@@ -608,12 +773,31 @@ function denyEntries(name: string, c: Capability, backend: Profile['backend'], h
   return out;
 }
 
-function blockLines(allowed: Map<string, Capability>): string[] {
+/** The tool names of the Claude app connectors measured (claude 2.1.332): Claude Code names a
+ *  connector's tools after its name on claude.ai, which the url does not carry. */
+const CONNECTOR_TOOLS: Record<string, string> = {
+  'gmailmcp.googleapis.com': 'Gmail',
+  'calendarmcp.googleapis.com': 'Google_Calendar',
+  'drivemcp.googleapis.com': 'Google_Drive',
+};
+
+/** How the capability line names a connector: what it is, its tools, and what it needs. */
+function connectorLine(name: string, c: Extract<Capability, { kind: 'connector' }>): string {
+  const host = c.url.replace(/^https:\/\//, '').split('/')[0];
+  const label = CONNECTOR_TOOLS[host];
+  const tools = label ? `mcp__claude_ai_${label}__*` : 'mcp__claude_ai_<its name>__*';
+  const what = label ? label.replace(/_/g, ' ') : `the connector at ${host}`;
+  return `- ${name}: ${what} through the Claude app connector (tools ${tools}); needs a claude.ai login.${c.when ? ` When: ${c.when.replace(/\.$/, '')}.` : ''}`;
+}
+
+function blockLines(allowed: Map<string, Capability>, backend: Profile['backend']): string[] {
   const lines: string[] = [];
   for (const [name, c] of allowed) {
     if (c.kind === 'command') lines.push(`- ${name}: run \`${c.run}\` when ${c.when}.`);
     else if (c.kind === 'mcp' && c.when) lines.push(`- ${name} (MCP server): ${c.when}.`);
     else if (c.kind === 'directory' && c.when) lines.push(`- ${name} (folder ${c.path}): ${c.when}.`);
+    // Claude Code only: no other CLI loads a Claude app connector, so it gets no line.
+    else if (c.kind === 'connector' && backend === 'claude-code') lines.push(connectorLine(name, c));
   }
   if (!lines.length) return [];
   return ['Capabilities of this profile, compiled by Angelia from the routing table (change them there, then angelia compile):', ...lines];
@@ -639,7 +823,55 @@ function mcpEntry(c: Extract<Capability, { kind: 'mcp' }>): Record<string, unkno
   return e;
 }
 
-export interface PlanOptions { home?: string; self?: (profile: string) => string; /** The instance's state folder, for the floor. */ stateDir?: string }
+export interface PlanOptions {
+  home?: string; self?: (profile: string) => string; /** The instance's state folder, for the floor. */ stateDir?: string;
+  /** The environment the agent's own is made from (the daemon's, or the shell that compiles): for the
+   *  connector login note. Default process.env. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/** Where Claude Code keeps the user's config and settings: ~/.claude.json and ~/.claude/settings.json,
+ *  or both inside CLAUDE_CONFIG_DIR when it is set (as cliStores reads it). */
+export function claudeUserFiles(home = homedir(), env: NodeJS.ProcessEnv = process.env): { config: string; settings: string } {
+  const dir = env.CLAUDE_CONFIG_DIR ? resolve(expandHome(env.CLAUDE_CONFIG_DIR, home)) : undefined;
+  return dir ? { config: join(dir, '.claude.json'), settings: join(dir, 'settings.json') } : { config: join(home, '.claude.json'), settings: join(home, '.claude', 'settings.json') };
+}
+
+/** The remote address of an MCP server entry (`type: http` or `sse`, or a bare `url`), if it has one. */
+function serverUrl(e: unknown): string | undefined {
+  const u = e && typeof e === 'object' ? (e as { url?: unknown }).url : undefined;
+  return typeof u === 'string' && u ? u : undefined;
+}
+
+/**
+ * The MCP servers Claude Code loads for a folder from the user's own config (claudeUserFiles): its
+ * user-level ones and the folder's local ones, by name, with the address of a remote one. A missing
+ * file is none; a broken one throws, as userMcpServers does: read as none, it would leave them all
+ * out of a connector profile's list.
+ */
+export function claudeUserMcpServers(cwd: string, home = homedir(), env: NodeJS.ProcessEnv = process.env): Record<string, { url?: string }> {
+  const file = claudeUserFiles(home, env).config;
+  let text = '';
+  try { text = readPlainText(file); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+  if (!text) return {};
+  let j: { mcpServers?: Record<string, unknown>; projects?: Record<string, { mcpServers?: Record<string, unknown> }> };
+  try { j = JSON.parse(text); } catch { throw new Error(`${file} is not valid JSON, so its MCP servers cannot be listed; fix the file, then compile again`); }
+  const all = { ...j.mcpServers, ...j.projects?.[resolve(cwd)]?.mcpServers };
+  return Object.fromEntries(Object.keys(all).sort().map((n) => [n, serverUrl(all[n]) ? { url: serverUrl(all[n]) } : {}]));
+}
+
+/** The names Claude Code takes in an allowedMcpServers serverName entry (measured: any other is dropped). */
+const SERVER_NAME = /^[A-Za-z0-9_-]+$/;
+
+/** Who sets CLAUDE_CODE_OAUTH_TOKEN for this profile's agent, if anyone: a long-lived token in place of
+ *  the claude.ai login, with which Claude Code loads no connector. The API key and cloud provider
+ *  variables never reach an agent (STRIP_ENV), so they need no word here. */
+function oauthTokenSource(cfg: Config, name: string, env: NodeJS.ProcessEnv): string | undefined {
+  const k = 'CLAUDE_CODE_OAUTH_TOKEN';
+  if (capabilityEnv(cfg, name).includes(k)) return `an MCP capability of this profile declares ${k}`;
+  if (env[k]) return `${k} is set in the environment the agent starts from`;
+  return undefined;
+}
 
 /**
  * MCP servers configured for the whole user, which grok loads in every folder (it reads Claude's
@@ -763,6 +995,10 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   for (const [n, c] of allowed) if (c.kind === 'mcp') wantMcp[n] = mcpEntry(c);
   let mcpOp: (() => void) | undefined;
   const agyMcp: AgyMcpServer[] = [];
+  const connectors = [...allowed].flatMap(([n, c]) => (c.kind === 'connector' ? [[n, c] as const] : []));
+  const connectorUrls = connectors.map(([, c]) => c.url);
+  let mcpAllow: string[] = [], mcpOwn: string[] = [], mcpUrls: string[] = [];
+  if (p.backend !== 'claude-code' && connectors.length) notes.push(`Claude app connectors work only with Claude Code, so ${connectors.map(([n]) => n).join(', ')} ${connectors.length === 1 ? 'is' : 'are'} not given to this ${p.backend} profile`);
   if (p.backend === 'claude-code') {
     const cur = readJson(mcpPath);
     const servers: Record<string, unknown> = { ...cur.mcpServers };
@@ -780,6 +1016,50 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     if (!strict && rec?.mcpStrict) changes.push('- strict MCP: user-level servers (such as github, tavily) load again');
     if (!strict) notes.push('no MCP server is denied here, so MCP is not strict: user-level servers (such as github, tavily) load as well');
     if (touched) mcpOp = () => writePlain(p.cwd, mcpPath, JSON.stringify({ ...cur, mcpServers: servers }, null, 2) + '\n');
+
+    // Connectors (mcpLaunch): deny by default. One granted: no strict flag, this folder's .mcp.json and
+    // an allow list of its servers, the user-level ones when MCP is not strict, and the connectors.
+    // undefined: a Claude record from before connectors, whose launch loaded every one when not strict.
+    const was = rec && (rec.backend ?? 'claude-code') === 'claude-code' ? (Array.isArray(rec.connectors) ? strings(rec.connectors) : undefined) : [];
+    for (const [n, c] of connectors) if (!was?.includes(c.url)) changes.push(`+ connector ${n}: the Claude app connector at ${c.url} loads for this profile`);
+    for (const u of was ?? []) if (!connectorUrls.includes(u)) changes.push(`- connector ${u}: no longer loads for this profile`);
+    if (connectors.length) {
+      mcpOwn = Object.keys(servers).sort();
+      const userAll = strict ? {} : claudeUserMcpServers(p.cwd, home, opts.env ?? process.env);
+      // A user-level server whose name Claude Code would drop from the list is left off it, with a
+      // note (the owner's own config, not this profile's); a name in this folder's .mcp.json stops
+      // the compile, since its server would silently not load (fix2 L-b).
+      const user = Object.fromEntries(Object.entries(userAll).filter(([n]) => SERVER_NAME.test(n)));
+      for (const n of Object.keys(userAll)) if (!(n in user) && !mcpOwn.includes(n)) notes.push(`the user-level MCP server "${n}" has a character other than letters, digits, - and _, which Claude Code drops from its allow list, so it does not load beside the connectors; rename it in your Claude config to have it`);
+      mcpAllow = [...new Set([...mcpOwn, ...Object.keys(user)])].sort();
+      // A remote server passes the list by its address only, once a connector's url is on it (mcpUrls).
+      const remote = new Map<string, string>();
+      for (const n of Object.keys(user)) if (user[n].url) remote.set(n, user[n].url!);
+      for (const n of mcpOwn) { const u = serverUrl(servers[n]); if (u) remote.set(n, u); }
+      mcpUrls = [...new Set([...remote.values()].map(urlPattern))].sort();
+      for (const [n, u] of remote) if (u.includes('${')) notes.push(`the address of the MCP server ${n} holds \${...}, and Claude Code matches the allow list against the address after it fills that in, so this server may not load beside the connectors`);
+      for (const n of mcpOwn) if (!SERVER_NAME.test(n)) conflicts.push(`the MCP server name "${n}" (in ${mcpPath}) has a character other than letters, digits, - and _; Claude Code drops such a name from its allow list, so the server would not load beside the connectors; rename it`);
+      if (!was?.length) changes.push(`~ MCP by allow list: only ${mcpAllow.length ? `the servers ${mcpAllow.join(', ')} and ` : ''}the granted connectors load${strict ? '' : '; a user-level server added later loads after the next compile'}`);
+      // The names only: an address may hold a host the owner keeps private (fix2 N1).
+      else if (!same(rec?.mcpAllow ?? [], mcpAllow) || !same(rec?.mcpUrls ?? [], mcpUrls)) changes.push(`~ MCP allow list: ${mcpAllow.length ? mcpAllow.join(', ') : 'no server'}${mcpUrls.length ? ` (${mcpUrls.length} remote by address too)` : ''}, beside the connectors`);
+      if (!strict) notes.push('MCP servers that come from a plugin are not in the allow list, so they may not load for this profile');
+      for (const [f, s] of [['settings.json', readJson(join(p.cwd, '.claude', 'settings.json'))], ['settings.local.json', readJson(join(p.cwd, '.claude', 'settings.local.json'))]] as const) {
+        if ('allowedMcpServers' in s) conflicts.push(`${join(p.cwd, '.claude', f)} lists allowedMcpServers, which Claude Code adds to the list Angelia passes, so it would let in servers or connectors this profile was not granted; remove it by hand`);
+        if (s.disableClaudeAiConnectors === true) notes.push(`.claude/${f} sets disableClaudeAiConnectors, so no connector loads, the granted ones included`);
+      }
+      const userFile = claudeUserFiles(home, opts.env ?? process.env).settings;
+      let userSettings: Record<string, any> = {};
+      try { userSettings = readJson(userFile); } catch { /* not ours to fix; nothing to say about it */ }
+      if ('allowedMcpServers' in userSettings) notes.push(`${userFile} lists allowedMcpServers; Claude Code merges such lists across settings files, so what it names may load here too`);
+      const token = oauthTokenSource(cfg, name, opts.env ?? process.env);
+      if (token) notes.push(`connectors load only with a claude.ai login, and ${token}: with that token Claude Code loads no connector`);
+    } else if (!strict && rec && was === undefined) {
+      changes.push('- claude.ai connectors: this profile no longer loads the Claude app connectors (claude.ai Gmail, Drive...); it is granted none. Before, a profile with no MCP server denied loaded every one');
+    }
+    // Compiled before connectors: its guard does not hold the MCP launch yet (review M1), so nothing
+    // checks the record's; a strict profile would otherwise read as up to date.
+    const g = readGuard(stateDir, name);
+    if (g && (g.backend ?? 'claude-code') === 'claude-code' && !g.mcp) changes.push('+ MCP launch kept in the state folder: before each start the daemon checks what the record says about MCP and connectors against it');
   } else if (p.backend === 'agy') {
     // Given in session/new, never written to a file agy reads by itself (ADR 0017, D).
     for (const [n, c] of allowed) {
@@ -876,7 +1156,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   if (capDirs.length) notes.push('the directory kind is not measured yet on either backend; check the folder is reachable before relying on it');
 
   // The managed block in the instruction file.
-  const lines = blockLines(allowed);
+  const lines = blockLines(allowed, p.backend);
   const claudeMd = join(p.cwd, 'CLAUDE.md');
   const selfText = p.backend === 'grok' || p.backend === 'agy' ? opts.self?.(name) : undefined;
   const text = blockText(selfText, lines);
@@ -928,8 +1208,12 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     deny: wantDeny, additionalDirectories: wantDirs, blockLines: lines, compiledAt: new Date().toISOString(),
     ...(wantSandbox ? { sandbox: true } : {}), ...(wantSockets.length ? { sockets: wantSockets } : {}),
     stateReach: reachInState(cfg, name, stateDir, home),
+    ...(p.backend === 'claude-code' ? { connectors: connectorUrls, ...(connectorUrls.length ? { mcpAllow, mcpOwn, mcpUrls } : {}) } : {}),
   };
 
+  const guardMcp: LaunchGuard['mcp'] = p.backend === 'claude-code'
+    ? { strict, connectors: connectorUrls, allow: connectorUrls.length ? mcpAllow : [], own: connectorUrls.length ? mcpOwn : [], urls: connectorUrls.length ? mcpUrls : [] }
+    : undefined;
   return {
     profile: name, changes, conflicts, duplicates, notes, stateOnly,
     apply(o = {}) { withCompileLock(stateDir, () => {
@@ -955,7 +1239,11 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
       if (wantDirs.includes(common)) mkdirSync(common, { recursive: true });
       mkdirSync(join(p.cwd, '.claude'), { recursive: true });
       writePlain(p.cwd, join(p.cwd, RECORD), JSON.stringify(record, null, 2) + '\n');
-      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}), ...(p.backend === 'pi' && p.sandbox !== false ? { piSandbox: true } : {}), ...(p.backend === 'agy' && p.sandbox !== false ? { agySandbox: true } : {}), ...(gdir ? { agy: { mcpServers: agyMcp, skills: Object.keys(wantLinks) } } : {}), stateReach: record.stateReach });
+      writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}), ...(p.backend === 'pi' && p.sandbox !== false ? { piSandbox: true } : {}), ...(p.backend === 'agy' && p.sandbox !== false ? { agySandbox: true } : {}), ...(gdir ? { agy: { mcpServers: agyMcp, skills: Object.keys(wantLinks) } } : {}), stateReach: record.stateReach, ...(guardMcp ? { mcp: guardMcp } : {}) });
+      const sfile = mcpSettingsFile(stateDir, name);
+      const keys = guardMcp ? mcpLaunch(p.cwd, guardMcp).settings : {};
+      if (Object.keys(keys).length) writeFileSync(sfile, JSON.stringify(keys, null, 2) + '\n', { mode: 0o600 });
+      else rmSync(sfile, { force: true });
     }, o.waitMs); },
   };
 }

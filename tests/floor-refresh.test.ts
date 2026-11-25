@@ -201,12 +201,13 @@ test('launch guard H1: a settings file the agent hard-linked is replaced, never 
   assert.equal(statSync(settingsOf(t, 'a')).nlink, 1);
 });
 
-test('launch guard M1: the agent deleted its record: the new floor rule is still written and the agent starts denied it', () => {
+test('launch guard M1: the agent deleted its record: the new floor rule is still written, and the start is refused', () => {
   const t = instance({ a: 'claude-code' });
   rmSync(join(t.inst, 'workspace', 'profiles', 'a', '.claude', 'angelia-compiled.json'));
   const file = join(t.inst, 'new-backup.json');
   writeFileSync(file, 'x');
-  assert.deepEqual(guardOf(t).guard('a', true), []);
+  // Without its record the launch would load every Claude app connector (connectors review H1).
+  assert.deepEqual(guardOf(t).guard('a', true), ['the compiled record is missing or lacks its connectors list, so the launch would load every Claude app connector; compile again']);
   assert.ok(denyOf(t, 'a').includes(pathRule('Read', file, 'claude-code')));
   assert.ok(denyOf(t, 'a').includes(pathRule('Edit', file, 'claude-code')));
 });

@@ -138,6 +138,30 @@ function folderOrHidden(path: string): boolean {
   catch (e) { const code = (e as NodeJS.ErrnoException).code; return !!(process.env.CODEX_SANDBOX || process.env.ANGELIA_SANDBOX) && (code === 'EPERM' || code === 'EACCES'); }
 }
 
+/**
+ * Why a connector's url cannot be used, or undefined when it can. It is a pattern for Claude Code's
+ * allowedMcpServers `serverUrl` (`*` matches anything), and one grant is one host: https only, a host
+ * named in full (no `*` in it, no IP address), a path after it, and none of the characters that would
+ * make the pattern mean something else (a space, `?`, `#`, a quote, `\`, `@`). `*` stays for the path.
+ */
+export function connectorUrlProblem(url: string): string | undefined {
+  if (!url.startsWith('https://')) return `must start with https:// (got ${JSON.stringify(url)})`;
+  if (/\s/.test(url)) return 'must not hold a space';
+  const bad = /[?#"'`\\@<>]/.exec(url);
+  if (bad) return `must not hold ${JSON.stringify(bad[0])}: one grant is one address pattern, with * only in its path`;
+  const rest = url.slice('https://'.length);
+  const host = rest.split('/')[0];
+  if (!rest.includes('/')) return `needs a path after the host, such as ${url}/* (Claude Code matches the whole address)`;
+  if (!host) return 'needs a host';
+  if (host.includes('*')) return `the host must be named in full, with no * (got ${host}): one grant is one host`;
+  const name = host.replace(/:\d+$/, '');
+  if (name.startsWith('[') || /^[\d.]+$/.test(name)) return `the host must be a name, not an IP address (got ${host})`;
+  const labels = name.split('.');
+  if (labels.length < 2 || labels.some((l) => !/^[A-Za-z0-9-]+$/.test(l))) return `the host must be a full name, such as gmailmcp.googleapis.com (got ${host})`;
+  try { new URL(url.replace(/\*/g, 'x')); } catch { return `is not an address (${url})`; }
+  return undefined;
+}
+
 export function loadConfig(path: string): Config {
   let raw: unknown;
   try {
@@ -199,6 +223,11 @@ export function loadConfig(path: string): Config {
   // A relative capability path is read from the table's own folder, the workspace, and never from
   // wherever the command happened to run: `_capabilities/<name>` then works on any machine.
   const base = dirname(resolve(path));
+  for (const [name, c] of Object.entries(cfg.capabilities)) {
+    if (c.kind !== 'connector') continue;
+    const bad = connectorUrlProblem(c.url);
+    if (bad) throw new ConfigError(`capabilities.${name}.url: ${bad}`);
+  }
   for (const c of Object.values(cfg.capabilities)) {
     if (c.kind === 'skill' || c.kind === 'directory') c.path = resolve(base, expandHome(c.path));
     if (c.kind === 'skill' || c.kind === 'mcp') c.secrets = c.secrets.map((s) => resolve(base, expandHome(s)));

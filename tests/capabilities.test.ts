@@ -383,8 +383,11 @@ test('launch guard: fails closed when never compiled, when a rule the compile wr
   writeFileSync(file, JSON.stringify({ ...s, permissions: { ...s.permissions, deny: s.permissions.deny.filter((d: string) => !gone.includes(d)) } }));
   assert.deepEqual(launchCheck(r.cfg(), 'home', state), gone.map((d: string) => `deny ${d}`));
   // The profile's own record deleted: the guard lives in the state folder, so it still holds.
+  // So does what it said about MCP: without the record the launch would not be strict (mcpLaunch).
   rmSync(join(r.cwd, RECORD));
-  assert.equal(launchCheck(r.cfg(), 'home', state).length, gone.length);
+  const left = launchCheck(r.cfg(), 'home', state);
+  assert.equal(left.length, gone.length + 1);
+  assert.match(left[left.length - 1], /record is missing or lacks its connectors list/);
   // A settings file the CLI would drop, with every deny rule in it.
   writeFileSync(file, '{ not json');
   assert.match(launchCheck(r.cfg(), 'home', state)[0], /settings\.json cannot be read/);

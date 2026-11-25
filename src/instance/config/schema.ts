@@ -12,7 +12,7 @@ const EnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an environment var
 // is the less safe one. A misspelt deny name is already fatal; a misspelt key should be too.
 
 /**
- * A tool, skill, MCP server or folder a profile may use, compiled into the profile's own files by
+ * A tool, skill, MCP server, folder or Claude app connector a profile may use, compiled into the profile's own files by
  * `angelia compile`. The daemon never reads these; see src/capabilities/.
  */
 export const Capability = z.discriminatedUnion('kind', [
@@ -28,6 +28,10 @@ export const Capability = z.discriminatedUnion('kind', [
     secrets: z.array(z.string()).default([]),
   }).strict().refine((c) => !!c.command !== !!c.url, 'an mcp capability has either command or url'),
   z.object({ kind: z.literal('directory'), path: z.string().min(1), when: z.string().optional() }).strict(),
+  /** A Claude app connector (claude.ai Gmail, Calendar, Drive...), matched by the address it serves
+   *  from, as Claude Code's allowedMcpServers matches it (`*` is a wildcard). Claude Code only; checked
+   *  in load.ts (connectorUrlProblem). */
+  z.object({ kind: z.literal('connector'), url: z.string().min(1), when: z.string().optional() }).strict(),
 ]);
 
 /** One permission rule, in Claude Code's own syntax (`Bash(git push *)`, `Read(~/.ssh/**)`, `mcp__gh`):

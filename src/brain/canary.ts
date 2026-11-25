@@ -359,7 +359,7 @@ export async function sweepOrphans(env: NodeJS.ProcessEnv, o: { socketDir?: stri
  * a second one passed as an extra folder (so the add-dir dialog is one of the start dialogs), the
  * cheapest model. The pane is held as a chat's pane is: permission mode `default`, and the compiled
  * record and empty .mcp.json of a profile that is given no MCP server, so Claude Code is started with
- * `--strict-mcp-config` and loads none, the owner's own included (argv.ts, strictMcpArgs). The owner's
+ * `--strict-mcp-config` and loads none, the owner's own included (argv.ts, mcpLaunch). The owner's
  * hooks, settings and CLAUDE.md still load: that is how a chat's pane starts too. The pane, the
  * server, the folders and the session's transcript are removed at the end, whatever happened.
  */

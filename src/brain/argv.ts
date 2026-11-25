@@ -1,7 +1,7 @@
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainSession } from './brain.js';
 import { homedir } from 'node:os';
-import { readRecord, strictMcpArgs } from '../capabilities/compile.js';
+import { mcpLaunch, readRecord, type McpLaunch } from '../capabilities/compile.js';
 
 /** Variables that switch a CLI from the user's subscription to per-token API billing, or send it
  *  to another endpoint. None of them reaches any agent, whatever its backend: a grok profile's shell
@@ -22,7 +22,16 @@ export const MIN_CLAUDE_VERSION = '2.1.270';
  *  eating the next argument. */
 export const NO_SCREEN_TOOLS = '--disallowed-tools=AskUserQuestion';
 
-export function claudeArgv(p: Profile, s: BrainSession, bin = 'claude', system?: string): string[] {
+/** tmux mode's settings file: the hooks the pane runs (tui.ts) and the profile's MCP keys (mcpLaunch),
+ *  in the one --settings the pane is started with. Of two --settings flags only the last counts
+ *  (measured on claude 2.1.332: an allow list in the first was dropped). */
+export function tuiSettings(p: Profile, hooks: unknown, mcp: McpLaunch = mcpLaunch(p.cwd)): Record<string, unknown> {
+  return { ...mcp.settings, ...(hooks as Record<string, unknown>) };
+}
+
+/** `mcp`: the MCP launch the daemon took from the profile's guard (guardMcpLaunch); unset, it is read
+ *  from the record in the profile's folder (mcpLaunch). */
+export function claudeArgv(p: Profile, s: BrainSession, bin = 'claude', system?: string, mcp: McpLaunch = mcpLaunch(p.cwd)): string[] {
   const a = [bin, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--permission-prompt-tool', 'stdio'];
   if (p.permission_mode === 'bypassPermissions') a.push('--dangerously-skip-permissions');
   else a.push('--permission-mode', p.permission_mode);
@@ -32,7 +41,10 @@ export function claudeArgv(p: Profile, s: BrainSession, bin = 'claude', system?:
   for (const d of p.add_dirs) a.push('--add-dir', d);
   if (p.chrome) a.push('--chrome');
   a.push(NO_SCREEN_TOOLS);
-  a.push(...strictMcpArgs(p.cwd));
+  // Print mode passes no other --settings: the MCP keys get one of their own, only when there are any,
+  // so a launch with none (a strict profile with no connector) is the exact argv it was.
+  a.push(...mcp.args);
+  if (Object.keys(mcp.settings).length) a.push('--settings', JSON.stringify(mcp.settings));
   if (system) a.push('--append-system-prompt', system);
   return a;
 }
@@ -49,7 +61,7 @@ export function remoteControlName(p: Profile, s: BrainSession): string {
  *  session is the only kind Remote Control registers, so this is what puts a chat in the Claude
  *  app; it also keeps MCP servers warm between turns and lets background tasks outlive a turn.
  *  The answer comes back through the Stop hook in `settings`, not through stdout. */
-export function claudeTuiArgv(p: Profile, s: BrainSession, bin: string, settings: string, name: string, system?: string): string[] {
+export function claudeTuiArgv(p: Profile, s: BrainSession, bin: string, settings: string, name: string, system?: string, mcp: McpLaunch = mcpLaunch(p.cwd)): string[] {
   const a = [bin];
   if (p.permission_mode === 'bypassPermissions') a.push('--dangerously-skip-permissions');
   else a.push('--permission-mode', p.permission_mode);
@@ -61,7 +73,8 @@ export function claudeTuiArgv(p: Profile, s: BrainSession, bin: string, settings
   if (p.chrome) a.push('--chrome');
   a.push(NO_SCREEN_TOOLS);
   a.push('--remote-control', name);
-  a.push(...strictMcpArgs(p.cwd));
+  // The MCP keys are in the settings file (tuiSettings); the flags here.
+  a.push(...mcp.args);
   if (system) a.push('--append-system-prompt', system);
   return a;
 }
@@ -75,9 +88,11 @@ function shellWord(v: string, home: string): string {
 
 /** The chat's Claude Code session, for the owner at a terminal: `/status` prints it, so the work goes
  *  on at the desk. What the chat runs comes along (its folder, permissions, model, effort, extra
- *  folders, MCP servers, no auto memory); what only a chat needs stays out (print mode, the self
+ *  folders, MCP servers and connectors, no auto memory); what only a chat needs stays out (print mode, the self
  *  prompt, the Stop hook, Remote Control, the screen tools refused). */
-export function claudeTerminalLine(p: Profile, id: string, home = homedir()): string {
+/** `o.mcp`: the launch from the guard; `o.settingsFile`: the compile's copy of its MCP keys
+ *  (mcpSettingsFile), passed by path so the line names no address. Without a file the keys go inline. */
+export function claudeTerminalLine(p: Profile, id: string, home = homedir(), o: { mcp?: McpLaunch; settingsFile?: string } = {}): string {
   const w = (v: string) => shellWord(v, home);
   const a = [`cd ${w(p.cwd)}`, '&&', ...Object.entries(CLAUDE_ENV).map(([k, v]) => `${k}=${v}`), w(p.bin ?? 'claude')];
   if (p.permission_mode === 'bypassPermissions') a.push('--dangerously-skip-permissions');
@@ -87,7 +102,9 @@ export function claudeTerminalLine(p: Profile, id: string, home = homedir()): st
   if (p.effort) a.push('--effort', p.effort);
   for (const d of p.add_dirs) a.push('--add-dir', w(d));
   if (p.chrome) a.push('--chrome');
-  a.push(...strictMcpArgs(p.cwd).map(w));
+  const mcp = o.mcp ?? mcpLaunch(p.cwd);
+  a.push(...mcp.args.map(w));
+  if (Object.keys(mcp.settings).length) a.push('--settings', w(o.settingsFile ?? JSON.stringify(mcp.settings)));
   return a.join(' ');
 }
 

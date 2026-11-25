@@ -33,7 +33,7 @@ import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
 import { agentDenyRules, placedPermissions } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
-import { stateOpenPaths } from '../capabilities/compile.js';
+import { guardMcpLaunch, mcpSettingsFile, stateOpenPaths, type McpLaunch } from '../capabilities/compile.js';
 import { MAX_INBOUND, SenderQuota, saveInbound } from '../adapters/inbox.js';
 import type { ChatEventBody, ChatListener } from './events.js';
 import { writeCutTurns } from './cut-turns.js';
@@ -439,7 +439,7 @@ export class Orchestrator {
     const row = this.map.getActive(key);
     const p = this.cfg.profiles[profileName];
     const terminal = owner && row?.started && p && (row.backend ?? p.backend) === 'claude-code'
-      ? claudeTerminalLine(withOverrides(p, row), row.id)
+      ? claudeTerminalLine(withOverrides(p, row), row.id, undefined, this.terminalMcp(profileName, p.cwd))
       : undefined;
     return statusText(this.map, key, profileName, this.brains.get(key)?.alive ?? false, this.queue.queued(key), terminal);
   }
@@ -847,6 +847,14 @@ export class Orchestrator {
     return next;
   }
 
+  /** The MCP launch from a Claude profile's guard and the compile's settings file of it, for the
+   *  terminal line (so it names no address); nothing when the guard has none. */
+  private terminalMcp(name: string, cwd: string): { mcp?: McpLaunch; settingsFile?: string } {
+    const state = this.opts.stateDir ?? join(homedir(), '.angelia');
+    const mcp = guardMcpLaunch(state, name, cwd);
+    return mcp ? { mcp, settingsFile: mcpSettingsFile(state, name) } : {};
+  }
+
   /** A brain for one session of a chat, with its listeners, not started. */
   private makeBrain(key: string, name: string, row: SessionRow): Brain {
     const profile = this.cfg.profiles[name];
@@ -864,6 +872,8 @@ export class Orchestrator {
       apiSocket: join(this.opts.stateDir ?? join(homedir(), '.angelia'), API_SOCKET),
       profileName: name,
       stateOpen: stateOpenPaths(this.cfg, name, this.opts.stateDir ?? join(homedir(), '.angelia')),
+      // The MCP launch from the guard, never from the record in the agent's own folder (connectors fix2 N1).
+      ...(profile.backend === 'claude-code' ? { mcp: guardMcpLaunch(this.opts.stateDir ?? join(homedir(), '.angelia'), name, effective.cwd) } : {}),
     });
     b.on('log', (line: string) => this.log(`${line} key=${key}`));
     // A prompt nobody answered is denied; the chat hears it, or the turn just seems to go wrong.

@@ -57,7 +57,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
         session = { ...session, started: false };
       }
     }
-    const [bin, ...args] = claudeArgv(this.profile, session, this.opts.bin ?? 'claude', this.opts.system);
+    const [bin, ...args] = claudeArgv(this.profile, session, this.opts.bin ?? 'claude', this.opts.system, this.opts.mcp);
     const child = spawn(bin, args, { cwd: this.profile.cwd, env: { ...childEnv(this.opts.env), ...CLAUDE_ENV }, stdio: ['pipe', 'pipe', 'pipe'], ...CHILD_GROUP });
     this.child = child;
     trackGroup(child);

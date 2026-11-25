@@ -232,7 +232,8 @@ picks it up at the next restart, and an arm does not route that chat a second ti
   },
   capabilities: {
     title: 'skills, scripts and tools: where each one lives',
-    body: `A capability is something a profile may use: a skill, a command, an MCP server, or a folder.
+    body: `A capability is something a profile may use: a skill, a command, an MCP server, a folder, or a
+Claude app connector.
 It is defined once under capabilities: in routing.yaml, given to profiles by name, and written
 into each profile's folder by \`angelia compile <profile> --write\`. The daemon never reads it.
 
@@ -255,6 +256,16 @@ Where the files go:
 
 A folder capability (kind: directory) is usually data, such as documents a profile may read; it
 may point anywhere and is added to the profile's reachable folders.
+
+A connector (kind: connector) is one of your claude.ai account's connectors, named by its address:
+  gmail: { kind: connector, url: "https://gmailmcp.googleapis.com/*" }
+One grant is one host: no * in the host, * only in the path.
+Claude Code only: other CLIs get nothing. A Claude profile loads only the connectors it was given;
+one that denies no MCP server loaded all of them before its next compile. They load in the
+profile's chats; angelia ask loads none. Connectors need a claude.ai login: with
+CLAUDE_CODE_OAUTH_TOKEN they do not load. Keep
+allowedMcpServers out of the profile's own .claude/ settings: Claude Code adds it to Angelia's
+list, so compile and the launch refuse it.
 
 defaults.capabilities goes to every profile, defaults.deny to none; a profile adds with
 capabilities:, drops a default with except:, and denies with deny:, which wins over everything.

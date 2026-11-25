@@ -238,6 +238,8 @@ export function capabilitiesView(cfg: Config, profile: string, home = homedir())
       case 'command': return c.run.trim().split(/\s+/).find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) ?? '';
       case 'skill': case 'directory': return shortPath(c.path.startsWith('~/') ? join(home, c.path.slice(2)) : c.path, home);
       case 'mcp': if (c.url) { try { return new URL(c.url).host; } catch { return 'remote'; } } return (c.command ?? '').split('/').pop() ?? '';
+      // The host, as the url is a pattern (`*`): what it names stays readable.
+      case 'connector': return c.url.replace(/^https:\/\//, '').split('/')[0];
     }
   };
   const allowed: CapabilityEntry[] = [];

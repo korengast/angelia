@@ -51,7 +51,7 @@ Angelia carries things between a chat and an agent: messages, files, voice notes
 
 So a good personal assistant is mostly a well set-up CLI, and Angelia helps with that rather than doing it itself:
 
-- **Per-profile capabilities.** Declare a skill, an MCP server, a command or a folder once in the table, give it to the profiles that should have it, and `angelia compile` writes it into each profile's own CLI settings, denies included. On Grok Build an allowed MCP server still has to be added once with `grok mcp add`. See [Skills, scripts and tools](#skills-scripts-and-tools).
+- **Per-profile capabilities.** Declare a skill, an MCP server, a command, a folder or a Claude app connector once in the table, give it to the profiles that should have it, and `angelia compile` writes it into each profile's own CLI settings, denies included. On Grok Build an allowed MCP server still has to be added once with `grok mcp add`. See [Skills, scripts and tools](#skills-scripts-and-tools) and [Claude app connectors](#claude-app-connectors).
 - **Starter skills.** `angelia init` copies two into your workspace, as gentle suggestions you can edit or ignore: `checkout` (build the cart, hand you a checkout link to pay on your phone) and `mfa` (where one-time codes usually are, and asking before using one). Nothing is granted until you give a skill to a profile.
 - **Voice, built in.** `angelia transcribe` and `angelia speak` are the one thing that ships as code, because every chat gets voice notes. They are still run by the agent, never by the daemon; `src/voice/README.md` has the details.
 - **A manual for the agent.** `angelia guide` tells an agent how the instance is laid out before it changes anything.
@@ -187,6 +187,77 @@ profile's folder by `angelia compile <profile> --write`. Where the files go:
   `secrets:`, and a profile denied the capability is denied those files as well.
 
 `angelia guide capabilities` has the details and examples.
+
+### Claude app connectors
+
+The connectors of your claude.ai account (claude.ai Gmail, Google Calendar, Google Drive, and the
+others you connect there) are a capability kind of their own, `connector`. Each one is named by the
+address it serves from. `*` matches any text:
+
+```yaml
+capabilities:
+  gmail:    { kind: connector, url: "https://gmailmcp.googleapis.com/*" }
+  calendar: { kind: connector, url: "https://calendarmcp.googleapis.com/*" }
+  drive:    { kind: connector, url: "https://drivemcp.googleapis.com/*" }
+```
+
+Give one to a profile as you give any capability (`capabilities:`, `defaults.capabilities`, `deny:`).
+One grant is one host. The url must start with `https://`, name its host in full (no `*` there, no IP
+address) and have a path; `*` is allowed in the path only. `?`, `#`, quotes and spaces are refused.
+
+- **Deny by default.** A Claude Code profile loads only the connectors it was given. A profile that
+  denies an MCP server loads none today (`--strict-mcp-config`), and keeps that exact launch when it
+  is given no connector. A profile that denies no MCP server used to load every connector of the
+  account. After its next compile it loads none it was not given, and its user-level MCP servers
+  still load. The compile says so in its change list.
+- **How it loads.** A profile given a connector starts without `--strict-mcp-config`. It loads its
+  own `.mcp.json` with `--mcp-config`, and an allow list (`allowedMcpServers`) in its settings: its
+  own servers by name, and each connector by its url. A remote (http or sse) server is on the list
+  by its address as well: measured with Claude Code 2.1.332, once a url is on the list, a remote
+  server passes by its address only. The list keeps the scheme, host and path of that address, with
+  a `*` where a query or fragment was, so a key in the address (`?apiKey=...`) is not copied
+  anywhere. When MCP is not strict for the profile, its user-level servers (from `~/.claude.json`,
+  or `CLAUDE_CONFIG_DIR`) of the compile are on the list too. Compile again after you add one. MCP
+  servers from a plugin are not on the list. A server name with a character other than letters,
+  digits, `-` and `_` cannot be on the list (Claude Code drops it): in the profile's own `.mcp.json`
+  it stops the compile; a user-level one is left off, and the compile says so.
+- **Claude Code only.** grok, agy, Codex and pi get nothing; the compile says so in one line.
+- **Where they load.** In the profile's own chats. `angelia ask` loads none.
+- **The login.** Connectors load only when Claude Code is signed in with a claude.ai account. With
+  `CLAUDE_CODE_OAUTH_TOKEN` they do not load; the compile names it when the agent's environment or a
+  capability sets it. An API key or a cloud provider never reaches an agent (Angelia removes those
+  variables).
+- **What the agent cannot change.** The last compile keeps the launch in the state folder, out of
+  the agent's reach, and the daemon builds the list from that copy, not from the record in the
+  profile's folder. Before each start the daemon also refuses the start when the record is missing,
+  lacks its connectors list, or differs from the copy, and when a strict profile's `.mcp.json` is
+  gone. A checkout or a backup that brings back an older record therefore refuses the start until
+  you compile again. On a profile given a connector, the launch refuses a `.mcp.json` that names a
+  server the last compile did not: Claude Code would hold the session on an approval dialog for it.
+  Such a profile must not hold `allowedMcpServers` in its own `.claude/settings.json` or
+  `settings.local.json`: Claude Code adds such a list to Angelia's. The compile and the launch
+  refuse it, and the launch also refuses a `settings.local.json` that cannot be read. A profile
+  compiled before this version has no such copy: `check-config` names it, and `angelia compile
+  --write <profile>` adds it. Until then a record of it that names connectors is refused. The
+  `/status` terminal line passes the list as a file in the state folder, so it names no address.
+- **What it does not hold.** The list binds the agent's own Claude Code session. An agent with a
+  shell outside a sandbox can run plain `claude`, which loads every connector of your account. Keep
+  the shell asking, or set `sandbox: true`, on a profile that should not reach them.
+- **The warning.** At each start of a profile given a connector, Claude Code prints "Warning:
+  claude.ai MCP servers blocked by enterprise policy: ..." with the connectors left out. That is the
+  allow list at work. Angelia never posts it to the chat or reads it as a failure.
+- **The first turn of a new session.** Claude Code gets the account's connector list when it starts,
+  and does not wait for it before the first turn. In print mode the first message goes in at once,
+  so that turn often has no connector tools. The next turn of the same session has them. Measured
+  with Claude Code 2.1.332: turn 1 had no Gmail tools in 27 of 50 new sessions; turn 2 had them in
+  21 of 26. When that request fails (two tries of 5 seconds each), the session has no connector
+  until it ends; `/new` starts a new one. `CLAUDE_CODE_MCP_CONNECTOR_PREWAIT_MS` and
+  `CLAUDE_CODE_MCP_STARTUP_WAIT_MS` do not change this (the first one works only in a cloud
+  session). In tmux mode Angelia pastes the first message only when the pane is ready, so the list
+  has more time to arrive; this is not measured.
+
+Each granted connector gets a line in the profile's CLAUDE.md, for example
+`- gmail: Gmail through the Claude app connector (tools mcp__claude_ai_Gmail__*); needs a claude.ai login.`
 
 ### What every agent knows about Angelia
 
