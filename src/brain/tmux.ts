@@ -16,7 +16,11 @@ export function tmuxSocketPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(base, `tmux-${process.getuid?.() ?? 0}`, TMUX_SOCKET);
 }
 
-export interface TmuxResult { code: number; out: string; err: string }
+/** `timedOut`: the client was killed at its time limit: the server may well be fine (a loaded machine). */
+export interface TmuxResult { code: number; out: string; err: string; timedOut?: boolean }
+
+/** The longest one tmux client call may take (tmux(), `timeoutMs`). */
+export const TMUX_TIMEOUT_MS = 30_000;
 
 /** The call run in a transient scope of its own: under systemd the service's KillMode kills every
  *  process in its cgroup, and the tmux server must outlive the daemon. */
@@ -27,12 +31,15 @@ export function scopedArgv(bin: string, args: string[]): [string, string[]] {
 /** `scope`: the call may start the server, so in angelia.service it goes through `systemd-run --scope`.
  *  When systemd-run is missing or fails (no user bus, a daemon in some other unit), the plain call
  *  runs once instead: tmux's own errors never start with "Failed to". `inService` overrides the cgroup check (tests). */
-export function tmux(args: string[], opts: { bin?: string; socket?: string; env?: NodeJS.ProcessEnv; scope?: boolean; inService?: boolean } = {}): Promise<TmuxResult> {
+export function tmux(args: string[], opts: { bin?: string; socket?: string; env?: NodeJS.ProcessEnv; scope?: boolean; inService?: boolean; timeoutMs?: number } = {}): Promise<TmuxResult> {
   const full = ['-L', opts.socket ?? TMUX_SOCKET, ...args];
   const run = (bin: string, argv: string[]): Promise<TmuxResult & { missing?: boolean }> => new Promise((resolve) => {
-    execFile(bin, argv, { env: opts.env, maxBuffer: 8 << 20 }, (err, stdout, stderr) => {
+    // A tmux server that does not answer must not hold a caller for ever (a restart's adoption runs before
+    // the daemon listens): every call is a short one, so past TMUX_TIMEOUT_MS the client is killed and the
+    // call fails.
+    execFile(bin, argv, { env: opts.env, maxBuffer: 8 << 20, timeout: opts.timeoutMs ?? TMUX_TIMEOUT_MS, killSignal: 'SIGKILL' }, (err, stdout, stderr) => {
       const e = err as (NodeJS.ErrnoException & { code?: number | string }) | null;
-      resolve({ code: e ? Number(e.code ?? 1) : 0, out: stdout ?? '', err: stderr ?? '', missing: e?.code === 'ENOENT' });
+      resolve({ code: e ? Number(e.code ?? 1) : 0, out: stdout ?? '', err: stderr ?? '', missing: e?.code === 'ENOENT', ...((e as { killed?: boolean } | null)?.killed ? { timedOut: true } : {}) });
     });
   });
   const plain = (): Promise<TmuxResult> => run(opts.bin ?? 'tmux', full);
@@ -123,6 +130,42 @@ export function paneIdle(pane: string): boolean {
   if (!pane || paneBusy(pane)) return false;
   const box = inputBoxStrict(pane);
   return box !== null && PROMPT_MARKERS.some((m) => `\n${box}`.includes(m));
+}
+
+/** Safe to paste into a running turn: a turn runs, its input box is on screen with the prompt and
+ *  holds nothing, and no dialog is open. Claude Code then queues what is submitted and gives it to the
+ *  model at the next tool boundary of the same turn, or as the next turn when none comes (measured on
+ *  claude 2.1.332, 2026-11-25: fixtures pane-busy-box-332 and pane-busy-queued-332). Never over text
+ *  someone half typed in the box (pane-busy-halftyped-332): Enter would send theirs with ours. The
+ *  hint "Press up to edit queued messages" is no text. A permission dialog replaces the box
+ *  (pane-permission-332), so a capture with one is never safe; the caller still checks the
+ *  transcript and the relay, since a dialog opened a moment ago may not be drawn yet. */
+/** What sits in the input box: its lines without the prompt marker, or '' for an empty box or a
+ *  screen with none. Claude Code's own hint in an empty box (`Try "write a test for <filepath>"`,
+ *  `Press up to edit queued messages`) is not text that Enter would send, so it reads as empty. */
+export function boxText(pane: string): string {
+  const box = inputBoxStrict(pane);
+  if (box === null) return '';
+  const t = box.split('\n').map((l) => l.replace(/^\s*(❯|>)\s?/, '').trim()).join('\n').trim();
+  if (t.startsWith('Try "') || t.startsWith('Press up to edit queued messages')) return '';
+  return t;
+}
+
+export function paneMidTurn(pane: string, text?: string): boolean {
+  if (!pane || !paneBusy(pane) || permissionDialog(pane)) return false;
+  const box = inputBoxStrict(pane);
+  if (box === null || !PROMPT_MARKERS.some((m) => `\n${box}`.includes(m))) return false;
+  // With `text`: the same screen, with that text in the box and nothing else (right before its Enter).
+  return text === undefined ? boxText(pane) === '' : boxHoldsOnly(pane, text);
+}
+
+/** The box holds `text` and nothing else: its collapsed chip (one paste), or the text itself, as the
+ *  box wraps it. Not text someone typed before or after it. */
+export function boxHoldsOnly(pane: string, text: string): boolean {
+  const shown = boxText(pane);
+  if (/^\[Pasted text #\d+(?: \+\d+ lines?)?\]$/.test(shown)) return true;
+  const flat = (s: string) => s.replace(/\s+/g, '');
+  return !!flat(text) && flat(shown) === flat(text);
 }
 
 const clean = (l: string): string => l.replace(/[│╭╮╰╯┃]/g, ' ').replace(/\s+/g, ' ').trim();

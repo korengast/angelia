@@ -1502,6 +1502,77 @@
         }
       }
     },
+    "/restart-after-turn": {
+      "post": {
+        "summary": "Restart once this chat's running turn is over (`angelia restart` from an agent)",
+        "description": "Only a chat's own token, with its own chat as key: the chat is the token's, never the caller's word. `deferred: false` when that chat has no turn running, and nothing is held; the command then goes the old way. Otherwise the daemon restarts after that turn ends, waiting up to 10 minutes for other chats' turns, and says so in the chat.\n\nToken: The owner's token, or an agent's own (`ANGELIA_API_TOKEN`) for its own chat. Where the route says so, an agent's token also works for another profile's chat, with `from`.",
+        "operationId": "postRestartAfterTurn",
+        "tags": [
+          "internal"
+        ],
+        "x-stability": "internal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "A routed chat as `platform:chat`, such as `telegram:123456` or `whatsapp:1203630000…@g.us`; `angelia profiles --json` lists them."
+                  },
+                  "token": {
+                    "deprecated": true,
+                    "description": "The token, for clients that predate the Authorization header. Prefer the header.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deferred": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "deferred"
+                  ]
+                },
+                "example": {
+                  "deferred": true
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/status": {
       "get": {
         "summary": "The daemon's own state",

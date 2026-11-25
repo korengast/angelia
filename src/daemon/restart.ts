@@ -10,6 +10,8 @@ import { configPath } from '../instance/instance.js';
 import { loadConfig } from '../instance/config/load.js';
 import { effectiveTable } from '../instance/accepted.js';
 import { inServiceCgroup } from './systemd.js';
+import { DEFERRED_LINE } from './deferred-restart.js';
+import { apiSocket, post } from './api/client.js';
 
 /**
  * Stop the running daemon and start a new one in its OWN session.
@@ -40,6 +42,29 @@ async function restart(argv: string[]): Promise<void> {
   const old = readPid(pidFile);
   // The daemon the pid file names, if it really is one: a file left by a crash can name a stranger.
   const running = isDaemonPid(old) ? old : 0;
+
+  // The agent of a chat, with a daemon running: the restart waits for this turn to end (and, a while,
+  // for other chats' turns), so the answer of the turn that asked reaches its chat (deferred-restart.ts).
+  // The daemon is asked with the agent's own token, which names its chat; it holds the restart only
+  // while that chat has a turn running. --force too: an agent once told to pass it would still cut its
+  // own turn. No running turn there, or a daemon that does not know the call: the old way below.
+  const agentKey = fromDaemon ? undefined : process.env.ANGELIA_SESSION_KEY;
+  const agentToken = process.env.ANGELIA_API_TOKEN;
+  if (agentKey && agentToken && running) {
+    const progNow = serviceInstalled() ? readService() : undefined;
+    const mismatch = progNow !== undefined ? tableMismatch(rest[0], progNow, false) : undefined;
+    if (mismatch) throw new Error(mismatch);
+    // The same check as below, by the code the new daemon will run, before anything is promised.
+    try { loadConfig(startTable(rest[0], progNow, lastConfig())); } catch (e) {
+      throw new Error(`the routing table does not load with this version, so no restart was asked for:\n${(e as Error).message}\nFix what angelia check-config names, then restart again.`);
+    }
+    let held = false;
+    try { held = (await post('/restart-after-turn', { key: agentKey, token: agentToken }, apiSocket())).deferred === true; } catch { /* an older daemon, or a token that is not this chat's */ }
+    if (held) {
+      console.log(`${DEFERRED_LINE} (the daemon waits for this chat's turn to end, then restarts and says so here)`);
+      return;
+    }
+  }
 
   // Two ways the caller can be the daemon's own agent, and both must be refused.
   // In print mode the agent is a child process, so the pid chain shows it. In tui mode the chain

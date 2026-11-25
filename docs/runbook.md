@@ -282,6 +282,32 @@ not help either. Under the LaunchAgent the daemon then exits and launchd starts 
 by hand, restart it (`angelia restart`). A chat whose message was being answered at that moment hears
 "Angelia restarted while working on your message. Send it again." from the new daemon.
 
+**A restart while a tmux turn runs.** The shutdown writes the turn to `adopt-turns.json` in the state
+folder instead of the cut list, and leaves the pane's last heartbeat (`tui/<pane>/permissions/relay.json`)
+to grow old. The new daemon logs `restart: turn adopted key=...`, reads the turn again, offers the
+requests that were waiting, and delivers the answer; a pane that is gone logs `restart: turn not
+adopted` and its chat gets the "send it again" line. Chat messages that waited behind the turn go with it
+and run after it as turns of their own (nothing more is typed into an adopted turn), a message that comes
+in while the daemon stops too; one from the desk app does not. Other turns waiting behind it (`angelia
+turn`, a job's or another profile's turn, a /resume) are dropped, with one log line (`shutdown: ... not
+chat messages ... dropped`, or `an injected turn waiting behind the chat's messages dropped`). The stop
+waits up to 10 s for a message being typed into a turn, so it goes as typed into it, never twice. An
+adoption gives up after 5 s (`tmux did not answer`), and every tmux call after 30 s. A permission hook asked in the gap waits up to 60 s for a fresh heartbeat; every
+other pane's old heartbeat is removed at the start, so its hook steps aside at once. `angelia restart`
+from a chat's agent asks the daemon with the agent's own token: the daemon logs `restart: deferred
+until the turn of ...` and goes once that turn is over. The request is kept only in the daemon's memory.
+This guards against a mistake, not against the agent: the command knows it runs as an agent only by the
+`ANGELIA_SESSION_KEY` and `ANGELIA_API_TOKEN` in its environment. With the key removed (`env -u
+ANGELIA_SESSION_KEY angelia restart`, outside print mode's process chain), with `--from-daemon`, or with
+`--force` and no token, it restarts at once, as the old refusal allowed too; with the token removed and no
+`--force` it is refused as before; `--force` with both set is still deferred while that chat's turn runs. An agent can stop its own
+daemon in other ways as well (it runs as your user). What makes that harmless for a tmux turn is the adoption above, not this check.
+
+**`permission dialog with no relay key=...`.** A dialog in a chat's pane that no hook request accounts
+for stood 20 s while no turn of that chat was read (the hook stepped aside, or gave up after 11
+minutes): the chat got one line that it waits and where to answer it (the Claude app, or the pane's
+`tmux attach` command). The chat cannot answer it; nothing presses a key in the pane.
+
 **Telegram: nothing arrives from a group.** Make the bot a group admin: Telegram's privacy mode hides
 plain @mentions from bots otherwise.
 

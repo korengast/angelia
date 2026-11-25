@@ -16,8 +16,8 @@ import { permissionPreview } from './brain.js';
  */
 
 /** A heartbeat older than this means nobody reads the chat. The hook has the same number. Only a
- *  daemon that died leaves one to go stale (every other end of a turn removes it at once), so this is
- *  how long a hook waits after a crash, and how long a stalled daemon may stall. */
+ *  daemon that died or stopped for a restart leaves one to go stale (every other end of a turn removes
+ *  it at once); the hook then waits a minute more for the next daemon's (its RESTART_WAIT_MS). */
 export const RELAY_STALE_MS = 30_000;
 /** How often the heartbeat is written while a turn is read from the chat: on a timer of its own, so a
  *  reader waiting on a slow chat send does not look like a daemon that stopped. */
@@ -27,7 +27,12 @@ export const SCREEN_ONLY_MS = 1500;
 
 const REQUEST = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.request\.json$/;
 
-export interface RelayedRequest { id: string; tool: string; input: unknown }
+/** `at`: when the hook wrote it, by the hook's clock (it gives up HOOK_GIVE_UP_MS after). */
+export interface RelayedRequest { id: string; tool: string; input: unknown; at?: number }
+
+/** How long the hook waits for an answer once it wrote its request (scripts/tui-permission-hook.mjs,
+ *  GIVE_UP_MS). A request offered again after a restart has only what is left of it. */
+export const HOOK_GIVE_UP_MS = 11 * 60_000;
 
 export class PermissionRelay {
   /** Given to the chat and not answered from it. */
@@ -66,7 +71,13 @@ export class PermissionRelay {
       this.open.add(id);
       out.push({ id, tool: typeof row.tool_name === 'string' && row.tool_name ? row.tool_name : '?', input: row.tool_input, at: Number(row.at) || 0 });
     }
-    return out.sort((a, b) => a.at - b.at).map(({ id, tool, input }) => ({ id, tool, input }));
+    return out.sort((a, b) => a.at - b.at).map(({ id, tool, input, at }) => ({ id, tool, input, ...(at ? { at } : {}) }));
+  }
+
+  /** A hook waits on a request now, taken or not: Claude Code draws its own dialog while the hook
+   *  runs (measured on claude 2.1.332), so Enter must not be pressed for a message into the turn. */
+  waiting(): boolean {
+    try { return readdirSync(this.dir).some((n) => REQUEST.test(n)); } catch { return false; }
   }
 
   /** Requests given to the chat whose hook no longer waits: answered in the pane or the app, or it stepped aside. */

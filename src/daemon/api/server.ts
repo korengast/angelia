@@ -45,6 +45,9 @@ export interface ApiDeps {
   events?(fn: ChatListener): () => void;
   answerPermission?(key: string, id: string, allow: boolean): boolean;
   status?(): unknown;
+  /** `angelia restart` from a chat's agent: hold the restart until that chat's turn ends
+   *  (daemon/deferred-restart.ts). False when the chat has no turn running. */
+  restartAfterTurn?(key: string): boolean;
   profiles?(): unknown;
   sessions?(key: string): unknown;
   history?(key: string, session?: string, limit?: number, before?: string): unknown;
@@ -156,6 +159,14 @@ export class ApiServer {
         if (e instanceof HandoffError) return json(res, { error: e.message }, 400);
         throw e;
       }
+    }
+    if (route === '/restart-after-turn') {
+      // A chat's own token only, for its own key: the token proves which chat asks. Not the owner's
+      // (a terminal restarts at once) nor a peer's.
+      const rk = typeof body.key === 'string' ? body.key : '';
+      if (!rk || !same(sessionToken(this.token, rk), given)) return json(res, { error: 'bad token: only a chat\'s own agent defers a restart, with its own chat as key' }, 403);
+      if (!this.d.restartAfterTurn) return json(res, { error: 'not found' }, 404);
+      return json(res, { deferred: this.d.restartAfterTurn(rk) });
     }
     const key = String(body.key ?? '');
     const from = String(body.from ?? '');

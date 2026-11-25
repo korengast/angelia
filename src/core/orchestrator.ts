@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { permissionPolicy, type Config, type Profile, type Route } from '../instance/config/schema.js';
@@ -36,7 +36,8 @@ import { API_SOCKET } from '../instance/instance.js';
 import { guardMcpLaunch, mcpSettingsFile, stateOpenPaths, type McpLaunch } from '../capabilities/compile.js';
 import { MAX_INBOUND, SenderQuota, saveInbound } from '../adapters/inbox.js';
 import type { ChatEventBody, ChatListener } from './events.js';
-import { writeCutTurns } from './cut-turns.js';
+import { takeAdoptTurns, writeAdoptTurns, writeCutTurns, type AdoptTurn, type AdoptWaiting } from './cut-turns.js';
+import { ScreenAsks, screenAlarmLine, type ScreenAlarm } from './screen-asks.js';
 import type { Switched } from '../instance/switch-backend.js';
 
 /** `mentions`: the text is the agent's own (an answer, `angelia send`): WhatsApp turns `@<number>` of a
@@ -66,7 +67,16 @@ export interface Sender {
 export interface Onboarded { name: string; prompt: string; git?: Promise<string> }
 export type { Switched } from '../instance/switch-backend.js';
 
+/** How long restoreTurns waits for one adoption (a tmux call) before it gives the chat the cut line. */
+export const ADOPT_TIMEOUT_MS = 5000;
+/** How long a stop waits for a message between its Enter and Claude Code's word (beforeStop). */
+export const STOP_ABSORB_MS = 10_000;
+
 export interface OrchestratorOptions {
+  /** ADOPT_TIMEOUT_MS, shorter in tests. */
+  adoptTimeoutMs?: number;
+  /** STOP_ABSORB_MS, shorter in tests. */
+  stopAbsorbMs?: number;
   /** The clock of the inbound limit (max_in_per_hour); a test passes its own. */
   now?: () => number;
   /** Tests: how often a running turn is checked for a stall (default a minute). */
@@ -128,7 +138,9 @@ export interface OrchestratorOptions {
   catalog?: (backend: BackendName, bin: string | undefined, env: NodeJS.ProcessEnv) => Promise<Catalog>;
 }
 
-type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; follow?: AsyncGenerator<BrainEvent> };
+/** `midturnFollow`: the turn is the one Claude Code runs by itself for chat messages typed into the turn
+ *  before it, which that turn did not take (followAbsorbed): no no-answer line, nothing said when none ran. */
+type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; follow?: AsyncGenerator<BrainEvent>; midturnFollow?: boolean };
 
 /** The backends /backend offers. */
 const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex', 'pi', 'agy'];
@@ -225,6 +237,10 @@ export class Orchestrator {
   /** Sessions a handoff moved a chat away from while their turn ran, by session id. Their panes go on
    *  with nobody reading them until the turn is over, or `/resume` takes one back (handoff). */
   private background = new Map<string, { key: string; brain: Brain }>();
+  /** Permission dialogs in a chat's pane that no relayed request accounts for (screen-asks.ts): told, never answered. */
+  private readonly screen: ScreenAsks;
+  /** Set by cutTurns: the daemon stops. No turn starts from here on. */
+  private stopping = false;
   /** When each chat last messaged each other chat (reach). */
   private peerSends = new Map<string, number[]>();
   /** Chats told their queue is full, until one message gets in again. */
@@ -260,6 +276,36 @@ export class Orchestrator {
   private asking = new Map<string, number>();
   /** Every question being answered, to stop at shutdown. */
   private questions = new Set<AbortController>();
+  /** tmux mode: per chat, the messages being typed into its running turn (intoTurn), as one chain, so
+   *  they go in, or into the queue, in the order they came; and how many wait in it. */
+  private intoTurnChain = new Map<string, Promise<void>>();
+  /** Per chat, the messages typed into its running turn, in order, with the id of the `turn` event
+   *  each got: answered by that turn (or the next one Claude Code runs for those it did not take). */
+  private intoTurnTaken = new Map<string, { i: Inbound; turn: string }[]>();
+  /** The messages that came through handle() as a chat's own turn: only such a running turn takes
+   *  more messages (not a job's, a watch's, `angelia turn`'s, a peer's or the app's). */
+  private chatTurns = new WeakSet<Inbound>();
+  /** Each chat's running turn id, for the `turn` event of a message typed into it. */
+  private turnIds = new Map<string, string>();
+  /** Set at shutdown: a message waiting for a safe moment in the running turn is dropped, never typed. */
+  private closingDown = false;
+  /** Settles when cutTurns has run (a message held for a running turn waits for it at a stop). */
+  private cutMade!: () => void;
+  private cut = new Promise<void>((r) => { this.cutMade = r; });
+  /** cutTurns has run once: never set back (shutdown() sets `stopping` back, for reuse). */
+  private cutDone = false;
+  /** Turns restoreTurns took back whose reader has not started yet (the chat's platform is not up):
+   *  a second stop before then writes them back as they are (cutTurns). */
+  private pendingAdopt = new Map<string, AdoptTurn>();
+  /** Of those, the ones whose waiting messages are in the queue already. */
+  private pendingQueued = new Set<string>();
+  /** What the last cutTurns wrote for the next daemon: a message that comes in before the adapters stop
+   *  joins its chat's entry (atStop). */
+  private cutAdopt: AdoptTurn[] = [];
+  /** Messages waiting for a moment in a running turn that a restart took along to the next daemon (cutTurns). */
+  private carried = new WeakSet<Inbound>();
+  /** Messages queued again because the turn they were typed into failed: never a second time. */
+  private retyped = new WeakSet<Inbound>();
   /** Chats whose running turn had a permission request denied (from the chat, the app, the pane, or by
    *  the timeout): a turn that then ends with nothing to say is told so, not left silent. */
   private denied = new Set<string>();
@@ -294,6 +340,7 @@ export class Orchestrator {
     const dir = opts.stateDir ?? join(homedir(), '.angelia');
     this.log = opts.log ?? (() => {});
     this.map = new SessionMap(join(dir, 'sessions.json'), (line) => this.log(line));
+    this.screen = new ScreenAsks({ panes: () => this.dialogPanes(), tell: (a) => this.tellScreen(a), log: (l) => this.log(l), env: () => this.childEnv().env });
   }
 
   async handle(raw: Inbound): Promise<void> {
@@ -370,7 +417,12 @@ export class Orchestrator {
       return;
     }
     this.busyTold.delete(key);
-    await this.queue.enqueue(key, () => this.turn(i, key, route.profile, { bare }));
+    // The daemon stops: the message is not run here (atStop).
+    if (this.stopping) return this.atStop(i, key, bare);
+    const into = this.intoTurn(i, key, route.profile, profile, bare);
+    if (into) { await into; return; }
+    this.chatTurns.add(i);
+    await this.queue.enqueue(key, () => this.turn(i, key, route.profile, { bare }), { inbound: i, bare } satisfies AdoptWaiting);
   }
 
   private async command(i: Inbound, key: string, profileName: string, cmd: NonNullable<ReturnType<typeof parseCommand>>, owner: boolean): Promise<void> {
@@ -441,7 +493,8 @@ export class Orchestrator {
     const terminal = owner && row?.started && p && (row.backend ?? p.backend) === 'claude-code'
       ? claudeTerminalLine(withOverrides(p, row), row.id, undefined, this.terminalMcp(profileName, p.cwd))
       : undefined;
-    return statusText(this.map, key, profileName, this.brains.get(key)?.alive ?? false, this.queue.queued(key), terminal);
+    const off = this.brains.get(key)?.midturnOff;
+    return statusText(this.map, key, profileName, this.brains.get(key)?.alive ?? false, this.queue.queued(key), terminal) + (off ? `\nMid-turn messages: ${off}.` : '');
   }
 
   private async newSession(key: string): Promise<string> {
@@ -454,6 +507,74 @@ export class Orchestrator {
     if (!this.brains.get(key)?.alive) return false;
     await this.dropBrain(key);
     return true;
+  }
+
+  /** tmux mode: the chat's message may go into the turn that runs now (TuiBrain.absorb). Only a message
+   *  for the model (no command), to a plain chat turn of the same chat, with nothing waiting before it. */
+  private intoTurnAllowed(i: Inbound, key: string, profile: Profile, bare: boolean): boolean {
+    if (!profile.tui || profile.midturn === false || bare || i.surface === 'app') return false;
+    const r = this.running.get(key);
+    // Only a turn of the chat's own: one typed in the desk app, a job's, a watch's, `angelia turn`'s or
+    // another profile's is not this chat's conversation (and may answer [SILENT] to all of it).
+    if (!r || !this.chatTurns.has(r) || r.surface === 'app' || r.sender === 'profile' || r.sender === 'local') return false;
+    const b = this.brains.get(key);
+    // The running turn only: nothing queued behind it, held messages aside (they are this chain).
+    return this.queue.queued(key) - this.queue.holding(key) === 1 && !!b?.alive && !b.midturnOff && typeof b.absorb === 'function';
+  }
+
+  /**
+   * Type the message into the running turn, where Claude Code queues it into that turn, or queue it as
+   * a turn of its own when that cannot be done (no safe moment before the turn ends, the switch off).
+   * Null when the message goes the usual way at once. Messages behind one that waits for its moment
+   * wait behind it, and a /stop meanwhile drops them as it drops the queue. Resolves when the message
+   * is in the turn, or when its own turn is over.
+   */
+  private intoTurn(i: Inbound, key: string, name: string, profile: Profile, bare: boolean): Promise<unknown> | null {
+    const prev = this.intoTurnChain.get(key);
+    if (!prev && !this.intoTurnAllowed(i, key, profile, bare)) return null;
+    // Held in the queue's count while it waits: /stop and /new take it back as they take back a queued
+    // turn, and their reply counts it; at shutdown it is dropped (closingDown).
+    const held = this.queue.hold(key, { inbound: i, bare } satisfies AdoptWaiting);
+    const step = (prev ?? Promise.resolve()).then(async (): Promise<{ run?: Promise<unknown> }> => {
+      try {
+        // At a stop, before the cut is made, it waits held, so cutTurns carries it (untilCut).
+        const gone = async (): Promise<boolean> => {
+          // Checked again after each wait: one that began before the stop must still wait for the cut.
+          do await this.untilCut(); while (this.closingDown && !this.cutDone);
+          if (held.dropped && this.carried.has(i)) { this.log(`restart: a message waiting for the running turn goes to the next daemon key=${key}`); return true; }
+          if (this.closingDown || this.stopping) { this.log(`shutdown: a message waiting for the running turn dropped key=${key}`); return true; }
+          if (held.dropped) { this.dropped(key, 'reason=stopped-while-waiting-for-the-turn'); return true; }
+          return false;
+        };
+        if (await gone()) return {};
+        const b = this.brains.get(key);
+        const into = this.running.get(key) ? this.turnIds.get(key) : undefined;
+        if (this.intoTurnAllowed(i, key, profile, bare) && b?.absorb && await b.absorb(agentText(i, false))) {
+          this.log(`message went into the running turn key=${key} sender=${i.sender}`);
+          // The turn ended as Claude Code took it: no turn here answers it, and an entry kept now would be
+          // taken for the next turn's. Claude Code runs it as a turn of its own; the reader between turns
+          // sends that answer (an unasked one).
+          if (!this.running.get(key) || this.turnIds.get(key) !== into) { this.log(`midturn: the turn ended as the message was taken; its answer comes as an unasked one key=${key}`); return {}; }
+          const turn = i.turnId ?? randomUUID();
+          let taken = this.intoTurnTaken.get(key);
+          if (!taken) this.intoTurnTaken.set(key, taken = []);
+          taken.push({ i: { ...i, turnId: turn }, turn });
+          // The clients show it as a message of the turn it went into; its answer is that turn's.
+          this.emit(key, { type: 'turn', turn, text: i.text, sender: i.senderName ?? i.sender, surface: 'chat', queued: this.queue.queued(key), ...(into ? { into } : {}) });
+          return {};
+        }
+        if (await gone()) return {};
+        // Taken into the queue here, inside the chain: the next message is queued after this one.
+        this.chatTurns.add(i);
+        return { run: this.queue.enqueue(key, () => this.turn(i, key, name, { bare }), { inbound: i, bare } satisfies AdoptWaiting) };
+      } finally {
+        held.release();
+      }
+    });
+    const tail = step.then(() => {}, () => {});
+    this.intoTurnChain.set(key, tail);
+    void tail.then(() => { if (this.intoTurnChain.get(key) === tail) this.intoTurnChain.delete(key); });
+    return step.then((r) => r.run);
   }
 
   /**
@@ -874,6 +995,8 @@ export class Orchestrator {
       stateOpen: stateOpenPaths(this.cfg, name, this.opts.stateDir ?? join(homedir(), '.angelia')),
       // The MCP launch from the guard, never from the record in the agent's own folder (connectors fix2 N1).
       ...(profile.backend === 'claude-code' ? { mcp: guardMcpLaunch(this.opts.stateDir ?? join(homedir(), '.angelia'), name, effective.cwd) } : {}),
+      // Only a session that may take messages into a running turn gets the PreToolUse hook (intoTurnAllowed).
+      midturn: profile.tui && profile.midturn !== false,
     });
     b.on('log', (line: string) => this.log(`${line} key=${key}`));
     // A prompt nobody answered is denied; the chat hears it, or the turn just seems to go wrong.
@@ -893,10 +1016,61 @@ export class Orchestrator {
    *  the message, to the agent only (the onboarding prompt); the session label stays the message. */
   /** `follow`: no message goes in; the events are those of a turn already running (a /resume of a
    *  session sent to the background), delivered as any turn's are. */
+  /** In tmux mode, the messages
+   *  typed into it are settled here too, in the same place in the chat's queue: those it took are
+   *  answered by its answer (queued again as turns of their own when it failed); those it did not take
+   *  Claude Code runs as the next turn, which is read as a turn of the chat's (followAbsorbed). */
   private async turn(i: Inbound, key: string, name: string, o: TurnOptions = {}): Promise<void> {
+    let failed = await this.turnOnce(i, key, name, o);
+    // Bounded: each round is a turn that took new messages.
+    for (let round = 0; round < 50; round++) {
+      const joined = this.intoTurnTaken.get(key);
+      this.intoTurnTaken.delete(key);
+      const b = this.brains.get(key);
+      const out = b?.absorbOutcome?.();
+      // None typed into it that this chat knows of: a turn Claude Code may run next is left to the reader
+      // between turns (its answer goes out as an unasked one).
+      if (!joined?.length) { b?.releaseFollow?.(); return; }
+      const n = Math.min(out?.taken ?? joined.length, joined.length);
+      const taken = joined.slice(0, n), untaken = joined.slice(n);
+      const end = (list: typeof joined, why: string | undefined) => { for (const t of list) this.emit(key, { type: 'turn-end', turn: t.turn, ok: !why, ...(why ? { reason: why } : {}), queued: this.queue.queued(key) }); };
+      end(taken, failed);
+      // /stop, /new: what was typed into the turn goes with it, as what waited for it does.
+      if (failed === 'stopped') { b?.releaseFollow?.(); end(untaken, failed); if (joined.length) this.log(`midturn: ${joined.length} message(s) typed into a stopped turn dropped key=${key}`); return; }
+      if (failed) this.intoTurnAgain(key, name, taken, failed);
+      // None left for a next turn this chat knows of: one the brain still waits for goes to the reader between turns.
+      if (!untaken.length) { b?.releaseFollow?.(); return; }
+      if (!b?.alive || !b.followAbsorbed) { b?.releaseFollow?.(); end(untaken, 'exit'); this.intoTurnAgain(key, name, untaken, 'the session is gone'); return; }
+      // Claude Code runs them as one turn; its answer replies to the last of them.
+      const last = untaken[untaken.length - 1].i;
+      this.chatTurns.add(last);
+      const f = await this.turnOnce(last, key, name, { follow: b.followAbsorbed(), midturnFollow: true });
+      end(untaken.slice(0, -1), f);
+      if (f && f !== 'stopped') this.intoTurnAgain(key, name, untaken, f);
+      failed = f;
+    }
+    return;
+  }
+
+  /** Messages typed into a turn that failed (an error, the session gone): none was answered, so each
+   *  is queued again as a turn of its own, once. */
+  private intoTurnAgain(key: string, name: string, list: { i: Inbound }[], why: string): void {
+    for (const { i } of list) {
+      if (this.retyped.has(i)) { this.log(`midturn: a message typed into a failed turn is dropped, it failed once already key=${key} reason=${why}`); continue; }
+      this.retyped.add(i);
+      this.chatTurns.add(i);
+      this.log(`midturn: a message typed into a failed turn is queued as its own key=${key} reason=${why}`);
+      void this.queue.enqueue(key, () => this.turn(i, key, name, {}), { inbound: i, bare: false } satisfies AdoptWaiting).catch((e) => this.log(`midturn: queued again, failed key=${key}: ${(e as Error).message}`));
+    }
+  }
+
+  private async turnOnce(i: Inbound, key: string, name: string, o: TurnOptions = {}): Promise<string | undefined> {
+    // The daemon stops: a turn started now would run under adapters that are going, with its CLI ended.
+    if (this.stopping) { this.log(`shutdown: turn not started key=${key}`); return; }
     this.running.set(key, i);
     this.denied.delete(key);
     const turn = i.turnId ?? randomUUID();
+    this.turnIds.set(key, turn);
     this.emit(key, { type: 'turn', turn, text: i.text, sender: i.senderName ?? i.sender, surface: i.surface ?? 'chat', queued: this.queue.queued(key) });
     let failed: string | undefined = 'exception';
     try { failed = await this.runTurn(i, key, name, o); }
@@ -910,6 +1084,7 @@ export class Orchestrator {
       this.lastTurn.set(key, i);
       this.emit(key, { type: 'turn-end', turn, ok: !failed, ...(failed ? { reason: failed } : {}), queued: this.queue.queued(key) });
     }
+    return failed;
   }
 
   /** One turn; returns why it failed, or undefined when the agent answered. */
@@ -1044,7 +1219,9 @@ export class Orchestrator {
         }
         // Found as this turn was typed: it goes out here, so the chat reads it before this turn's answer.
         else if (e.kind === 'unasked') await this.unasked(key, e);
-        else result = e;
+        // The turn Claude Code runs next for messages this one did not take is read by this queue entry:
+        // claimed now, before the answer's delivery, however long that takes.
+        else { result = e; b.claimFollow?.(); }
       }
     } catch (err) {
       this.log(`turn error key=${key} ${(err as Error).message}`);
@@ -1066,6 +1243,8 @@ export class Orchestrator {
       await this.reply(i, autoDenyCapLine(AUTO_DENY_MAX)).catch(() => {});
       return 'denied';
     }
+    // No turn ran for messages typed into the last one (Claude Code took them after all, unseen): nothing to say.
+    if (o.midturnFollow && result?.isError && result.reason === 'nothing to follow') return undefined;
     if (!result || result.isError) {
       // Released while the message waited for the prompt: it was never typed. Every release moves the
       // era on first (clearForHandoff, dropBrain), so this comes before the check for a stop below, or
@@ -1140,7 +1319,7 @@ export class Orchestrator {
       // no denial, only when nothing at all reached the chat this turn (a progress line is an answer of
       // sorts).
       else if (!result.text && !bare && this.denied.has(key)) await status(DENIED_LINE);
-      else if (!result.text && !bare && !progress.lastSent) {
+      else if (!result.text && !bare && !progress.lastSent && !o.midturnFollow) {
         // Counted in the log: the line means a turn ended with nothing for the chat, which is either an
         // agent that said nothing or a turn whose end was read wrong (tmux mode logs how it ended).
         this.log(`no answer key=${key}`);
@@ -1168,7 +1347,7 @@ export class Orchestrator {
    * SELF_PER_HOUR an hour. Both are the agent's words, sent as an answer is. Never throws.
    */
   private async unasked(key: string, a: UnaskedAnswer): Promise<void> {
-    const what = a.answer === 'late' ? 'late answer' : 'self-started answer';
+    const what = a.answer === 'late' ? 'late answer' : a.answer === 'midturn' ? 'mid-turn answer' : 'self-started answer';
     const text = a.text.trim();
     const no = (why: string): void => this.log(`${what} not delivered key=${key} reason=${why} chars=${text.length}`);
     try {
@@ -1179,8 +1358,9 @@ export class Orchestrator {
       const k = parseSessionKey(key);
       const chat: Inbound = { ...k, sender: '', text: '', isGroup: isGroupChat(k.platform, k.chat), mentioned: false, media: [] };
       let to = chat;
-      if (a.answer === 'late') {
-        // Where the turn's own answer went: the chat, or the app for a turn typed there.
+      if (a.answer === 'late' || a.answer === 'midturn') {
+        // Where the turn's own answer went: the chat, or the app for a turn typed there. A message
+        // typed into a turn came from the chat that turn was for.
         const prev = this.lastTurn.get(key);
         if (prev) to = prev;
       } else {
@@ -1458,6 +1638,15 @@ export class Orchestrator {
     // The same cap a chat's own messages have: an agent or a job looping `angelia turn` must not
     // line up model turns without end. The API checks queueFull first and answers 429.
     if (this.queueFull(key)) { this.dropped(key, `reason=queue-full from=${fromKey ? 'peer' : fromAgent ? 'agent' : label}`); return; }
+    // Behind the chat's messages that wait to go into its running turn: those came first. Held in the
+    // queue's count while it waits, so the cap, /stop and /new see it as a queued turn; shutdown drops it.
+    const waiting = this.intoTurnChain.get(key);
+    if (waiting) {
+      const held = this.queue.hold(key);
+      try { await waiting; } finally { held.release(); }
+      if (held.dropped) { this.dropped(key, `reason=stopped-while-waiting from=${fromKey ? 'peer' : fromAgent ? 'agent' : label}`); return; }
+      if (this.closingDown) { this.log(`shutdown: an injected turn waiting behind the chat's messages dropped key=${key}`); return; }
+    }
     // Nobody awaits this for an API caller (it was told "queued" already): a failure ends here, logged.
     await this.queue.enqueue(key, () => this.turn(i, key, route.profile, { bare: !fromAgent && isAgentCommand(i) }))
       .catch((e) => this.log(`injected turn failed key=${key}: ${(e as Error).message}`));
@@ -1872,21 +2061,21 @@ export class Orchestrator {
 
   /** `end: false` is "we are done with it for now": a backend that can survive on its own keeps
    *  the session running (and visible in the Claude app) and is reattached on the next message. */
-  private async dropBrain(key: string, end = true): Promise<void> {
+  private async dropBrain(key: string, end = true, restart = false): Promise<void> {
     this.era.set(key, (this.era.get(key) ?? 0) + 1);
-    await this.forget(key, end);
+    await this.forget(key, end, restart);
   }
 
   /** Let go of a brain and always end its process first. Deleting the map entry alone leaves a
    *  child running with no owner: it survives the turn, the reap and the daemon itself. */
-  private async forget(key: string, end = true): Promise<void> {
+  private async forget(key: string, end = true, restart = false): Promise<void> {
     const b = this.brains.get(key);
     this.brains.delete(key);
     const parked = this.parked.get(key);
     if (end && parked && parked !== b) { this.parked.delete(key); await this.end(key, parked); }
     if (!b?.alive) return;
     if (!end && b.release) {
-      try { await b.release(); this.parked.set(key, b); return; }
+      try { await b.release(restart ? { restart } : undefined); this.parked.set(key, b); return; }
       catch (err) { this.log(`release failed key=${key} ${(err as Error).message}`); }
     }
     await this.end(key, b);
@@ -1938,15 +2127,260 @@ export class Orchestrator {
    *  routed chat (the Desk writing as the owner) would otherwise put the line into a group where nobody
    *  wrote. A waiting turn sits behind a running one on the same key, so its chat is covered by that
    *  entry; the queue keeps no surface, so a waiting turn behind an app turn is not told. */
+  /** Look at every chat's pane for a permission dialog no relayed request accounts for (screen-asks.ts).
+   *  The daemon calls it every SCAN_MS. */
+  scanDialogs(): Promise<void> { return this.screen.scan(); }
+
+  /** Such a dialog: one line in the chat that it waits and where to answer it. Never answered here. */
+  private async tellScreen(a: ScreenAlarm): Promise<void> {
+    await this.notify(a.key, screenAlarmLine(a));
+  }
+
+  /** The chats with a turn running now (a deferred restart waits for them, daemon/deferred-restart.ts). */
+  runningKeys(): string[] { return [...this.running.keys()]; }
+
+  /** Turns running and waiting for a chat, held messages included (a deferred restart waits for them). */
+  queuedFor(key: string): number { return this.queue.queued(key); }
+
+  /** Each chat's tmux pane, for a permission dialog no relay accounts for: the active session of every
+   *  chat on a tui profile. Not one read in the background, nor one whose turn is read now (each reader
+   *  tells its own chat). */
+  private dialogPanes(): { key: string; name: string }[] {
+    const away = new Set([...this.background.values()].map((e) => (e.brain as { name?: unknown }).name));
+    const out: { key: string; name: string }[] = [];
+    for (const key of this.map.keys()) {
+      const p = this.profileFor(key);
+      const row = this.map.getActive(key);
+      if (this.running.has(key) || !p?.tui || p.backend !== 'claude-code' || !row) continue;
+      const name = remoteControlName(p, { id: row.id, started: row.started });
+      if (!away.has(name)) out.push({ key, name });
+    }
+    return out;
+  }
+
+  /** At startup: a turn the last shutdown cut off from its reader, in a pane that runs on (a tui
+   *  session). The brain holds the chat again, as after `/resume`, and `follow` reads the turn for it.
+   *  Undefined when the pane is gone or the chat's session is another one now. A brain a message made
+   *  alive first is the same pane, by name: it is taken, unless a turn of its own runs in it already. */
+  private async adoptTurn(key: string, session: string, since: number, inTime: () => boolean = () => true): Promise<Brain | undefined> {
+    const name = this.profileName(key), row = this.map.getActive(key);
+    if (!name || !row || row.id !== session) return undefined;
+    const held = this.brains.get(key);
+    if (held?.alive && this.running.has(key)) return undefined;
+    const b = held?.alive ? held : this.makeBrain(key, name, row);
+    if (!b.adopt || !b.follow || !(await b.adopt(since).catch(() => false))) return undefined; // never started: nothing to end
+    // Too late (restoreTurns gave the chat the cut line): never in place of a brain made since.
+    if (!inTime()) return undefined;
+    this.brains.set(key, b);
+    this.parked.delete(key);
+    return b;
+  }
+
+  /** A held message waits here at a stop until the cut is made (beforeStop, cutTurns). */
+  private untilCut(): Promise<void> { return this.closingDown && !this.cutDone ? this.cut : Promise.resolve(); }
+
+  /**
+   * The stop, before the adapters go: no message is typed into a running turn from here on, and one
+   * between its Enter and Claude Code's word that it took it is let finish (STOP_ABSORB_MS at most),
+   * so cutTurns sees it as typed into the turn, never as one still waiting (the next daemon would run
+   * it twice). Then cutTurns.
+   */
+  async beforeStop(): Promise<void> {
+    this.closingDown = true;
+    if (!this.stopping) {
+      const settling = [...this.brains.values()].map((b) => b.stopAbsorbing?.()).filter((p): p is Promise<void> => !!p);
+      let timer: NodeJS.Timeout | undefined;
+      if (settling.length) await Promise.race([Promise.all(settling), new Promise<void>((r) => { timer = setTimeout(r, this.opts.stopAbsorbMs ?? STOP_ABSORB_MS); })]);
+      clearTimeout(timer);
+    }
+    this.cutTurns();
+  }
+
   cutTurns(): void {
-    const cut = [...this.running].filter(([, i]) => i.surface !== 'app').map(([k]) => k);
-    try { writeCutTurns(this.opts.stateDir ?? join(homedir(), '.angelia'), cut); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
+    // Once: the daemon calls it before the adapters stop, shutdown() again; by then the readers it let
+    // go of are no longer alive, and a second pass would drop the turns it kept for the next daemon.
+    if (this.stopping) return;
+    this.stopping = true;
+    this.cutDone = true;
+    this.cutMade();
+    this.closingDown = true;
+    const state = this.opts.stateDir ?? join(homedir(), '.angelia');
+    const told = [...this.running].filter(([, i]) => i.surface !== 'app');
+    const isWaiting = (t: unknown): t is AdoptWaiting => !!t && typeof t === 'object' && 'inbound' in t;
+    /** The chat messages waiting for `key`, held ones first (they came before what queued behind them);
+     *  one typed in the desk app is not carried: the app shows its own turns, and its owner sends again. */
+    const waitingOf = (key: string): AdoptWaiting[] => {
+      const held = this.queue.heldTags(key).filter(isWaiting);
+      for (const h of held) this.carried.add(h.inbound);
+      const all = [...held, ...this.queue.waitingTags(key).filter(isWaiting)];
+      const app = all.filter((w) => w.inbound.surface === 'app').length;
+      if (app) this.log(`shutdown: ${app} message(s) from the desk app waiting behind the turn not carried key=${key}`);
+      return all.filter((w) => w.inbound.surface !== 'app');
+    };
+    /** Every job still waiting for `key` goes; those that are not chat messages (`angelia turn`, a job, a
+     *  peer's turn, a /resume) are not carried, and are counted in the log. */
+    const dropRest = (key: string, carried: number): void => {
+      const n = this.queue.drop(key);
+      if (n > carried) this.log(`shutdown: ${n - carried} waiting turn(s) that are not chat messages (angelia turn, a job, a peer, /resume) dropped key=${key}`);
+    };
+    // A turn in a tmux pane runs on through the restart: the next daemon reads it again (restoreTurns)
+    // instead of telling the chat to send its message again. Its reader stops here, before the adapters
+    // do: an answer it took now would go to an adapter that is stopping, and be lost. The Stop marker
+    // stays where it is, for the next daemon; so does the hook's last heartbeat (release, restart).
+    const adopt: AdoptTurn[] = [];
+    for (const [key, inbound] of told) {
+      const b = this.brains.get(key), row = this.map.getActive(key);
+      if (!(b?.alive && b.follow && b.adopt && b.release && b.turnSentAt !== undefined && row && this.cfg.profiles[this.profileName(key) ?? '']?.tui)) continue;
+      const all = this.queue.heldTags(key).length + this.queue.waitingTags(key).length;
+      const waiting = waitingOf(key);
+      // Mid-turn messages: those typed into this turn (its answer answers them, or the turn Claude Code
+      // runs next for those it did not take), as the brain and this chat keep them.
+      const joined = this.intoTurnTaken.get(key);
+      // From here on they are the next daemon's: this turn's end here settles none of them.
+      this.intoTurnTaken.delete(key);
+      const absorbed = b.midturnState?.();
+      adopt.push({ key, session: row.id, since: b.turnSentAt, inbound, waiting,
+        ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}) });
+      // The turn's end is quiet here: the chat moved to the next daemon, as after a handoff.
+      this.era.set(key, (this.era.get(key) ?? 0) + 1);
+      dropRest(key, all);
+      void b.release({ restart: true });
+    }
+    // Turns taken back at this start whose reader had not started yet (the platform was not up): as they
+    // came, with what queued behind them since.
+    for (const [key, t] of this.pendingAdopt) {
+      if (this.running.has(key) || adopt.some((a) => a.key === key)) continue;
+      const b = this.brains.get(key);
+      const all = this.queue.heldTags(key).length + this.queue.waitingTags(key).length;
+      // Not adopted yet when the stop came: its waiting messages are not in the queue.
+      const waiting = this.pendingQueued.has(key) ? waitingOf(key) : [...(t.waiting ?? []).filter((w) => w.inbound.surface !== 'app'), ...waitingOf(key)];
+      const joined = this.intoTurnTaken.get(key) ?? t.joined;
+      this.intoTurnTaken.delete(key);
+      const absorbed = b?.midturnState?.() ?? t.absorbed;
+      adopt.push({ ...t, waiting, ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}) });
+      this.era.set(key, (this.era.get(key) ?? 0) + 1);
+      dropRest(key, all);
+      if (b?.release) void b.release({ restart: true });
+      this.log(`shutdown: an adopted turn that had not started yet goes to the next daemon again key=${key}`);
+    }
+    this.pendingAdopt.clear();
+    this.pendingQueued.clear();
+    const cut = told.map(([k]) => k).filter((k) => !adopt.some((a) => a.key === k));
+    // A turn that is not adopted: the messages waiting for a moment in it do not run here any more, nor
+    // does the turn Claude Code would run next for those typed into it that it did not take (the stop
+    // came while its answer was delivered: its reader had let go, so it is not adopted). Its chat hears
+    // the cut line.
+    for (const k of cut) {
+      const n = this.queue.holding(k);
+      if (n) this.log(`shutdown: ${n} message(s) waiting for the running turn dropped key=${k}`);
+      const typed = this.intoTurnTaken.get(k)?.length ?? 0;
+      if (typed) this.log(`shutdown: ${typed} message(s) typed into a turn that was not adopted are not carried key=${k}`);
+    }
+    this.cutAdopt = adopt;
+    try { writeCutTurns(state, cut); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
+    try { writeAdoptTurns(state, adopt); } catch (e) { this.log(`shutdown: turns to adopt not written: ${(e as Error).message}`); }
+  }
+
+  /** A chat message that came in after cutTurns, before the adapters stopped: when its chat's turn goes
+   *  to the next daemon, it goes with it, last; otherwise it is not run, and the log says so (the chat
+   *  hears the cut line for its running turn, if it had one). */
+  private atStop(i: Inbound, key: string, bare: boolean): void {
+    // A "yes <id>" or a bare yes or no answered a request of this daemon: the next one asks again.
+    if (parsePermissionReply(i.text) || parseBareAnswer(i.text, i.botMentions) !== null) { this.log(`shutdown: a permission answer that came as the daemon stops is not carried key=${key}`); return; }
+    const a = this.cutAdopt.find((x) => x.key === key);
+    if (!a || i.surface === 'app') { this.log(`shutdown: a message that came as the daemon stops is not run key=${key}`); return; }
+    a.waiting = [...(a.waiting ?? []), { inbound: i, bare }];
+    try {
+      writeAdoptTurns(this.opts.stateDir ?? join(homedir(), '.angelia'), this.cutAdopt);
+      this.log(`shutdown: a message that came as the daemon stops goes to the next daemon key=${key}`);
+    } catch (e) { this.log(`shutdown: a message that came as the daemon stops is not run key=${key}: ${(e as Error).message}`); }
+  }
+
+  /**
+   * At startup, before any message or API call can reach a chat: read again each turn the last shutdown
+   * left running in a tmux pane (cut-turns.ts, ADOPT_TURNS). The pane's brain holds the chat again, the
+   * hook relays at once (its heartbeat starts here, before the chat's platform is open), the requests
+   * that were waiting are offered to the chat again, and the answer goes to the message the turn
+   * answers. The messages that waited behind it follow, in order, and anything that comes in after
+   * queues behind them. `whenUp`: runs once the chat's platform can deliver. Every other pane's old
+   * heartbeat goes, so its hook steps aside at once instead of waiting for a daemon that will not read
+   * it. Each adoption gets ADOPT_TIMEOUT_MS: a tmux that does not answer must not hold the start (the
+   * API and the platforms wait for this). Returns the chats whose turn could not be adopted: they get
+   * the cut line.
+   */
+  async restoreTurns(whenUp: (key: string, go: () => void) => void = (_k, go) => go()): Promise<string[]> {
+    const lost: string[] = [];
+    const kept = new Set<string>();
+    const taken = takeAdoptTurns(this.opts.stateDir ?? join(homedir(), '.angelia'));
+    // Pending from the take: the file is gone now, and a stop before each is adopted writes it back (cutTurns).
+    for (const t of taken) this.pendingAdopt.set(t.key, t);
+    for (const t of taken) {
+      const name = this.profileName(t.key);
+      if (this.stopping) break;
+      // The message must be the chat's own, and the chat still routed: the file is data, never trusted blind.
+      if (!name || sessionKey(t.inbound) !== t.key) { this.pendingAdopt.delete(t.key); this.log(`restart: turn not adopted key=${t.key} (not a routed chat, or not its message)`); lost.push(t.key); continue; }
+      const b = await this.adoptWithin(t.key, t.session, t.since);
+      if (b === 'timeout' || !b?.follow) this.pendingAdopt.delete(t.key);
+      if (b === 'timeout') { this.log(`restart: turn not adopted key=${t.key} (tmux did not answer within ${ADOPT_TIMEOUT_MS / 1000} s)`); lost.push(t.key); continue; }
+      if (!b?.follow) { this.log(`restart: turn not adopted key=${t.key} (pane or session gone)`); lost.push(t.key); continue; }
+      const n = (b as { name?: unknown }).name;
+      if (typeof n === 'string') kept.add(n);
+      // Before its reader starts: what was typed into the turn, and whether it may take more.
+      b.restoreMidturn?.(t.absorbed ?? []);
+      if (t.joined?.length) this.intoTurnTaken.set(t.key, t.joined);
+      const follow = b.follow();
+      this.log(`restart: turn adopted key=${t.key} session=${t.session.slice(0, 8)}${t.waiting?.length ? ` with ${t.waiting.length} waiting` : ''}`);
+      const up = new Promise<void>((r) => whenUp(t.key, r));
+      void this.queue.enqueue(t.key, async () => {
+        await up;
+        // Stopped again before the platform came up: cutTurns wrote this turn back for the next daemon.
+        if (!this.pendingAdopt.delete(t.key)) return;
+        return this.turn(t.inbound, t.key, name, { follow });
+      });
+      for (const w of t.waiting ?? []) {
+        if (sessionKey(w.inbound) !== t.key) continue;
+        void this.queue.enqueue(t.key, async () => { await up; return this.turn(w.inbound, t.key, name, { bare: w.bare }); }, w);
+      }
+      this.pendingQueued.add(t.key);
+    }
+    this.dropHeartbeats(kept);
+    return lost;
+  }
+
+  /** adoptTurn within ADOPT_TIMEOUT_MS. One that finishes after its time is let go of again: its chat
+   *  already got the cut line. */
+  private async adoptWithin(key: string, session: string, since: number): Promise<Brain | undefined | 'timeout'> {
+    let late = false;
+    // Past its time it sets no brain (adoptTurn, inTime): one a message made since stays as it is.
+    const adopting = this.adoptTurn(key, session, since, () => !late).catch(() => undefined).then((b) => {
+      if (late) this.log(`restart: an adoption that finished late is not used key=${key}`);
+      return late ? undefined : b;
+    });
+    let timer: NodeJS.Timeout | undefined;
+    const out = await Promise.race([adopting, new Promise<'timeout'>((r) => { timer = setTimeout(() => r('timeout'), this.opts.adoptTimeoutMs ?? ADOPT_TIMEOUT_MS); })]);
+    clearTimeout(timer);
+    if (out === 'timeout') late = true;
+    return out;
+  }
+
+  /** The hook's last heartbeat of every pane but `kept`: after a restart nobody reads those. Under the
+   *  state folder this daemon runs on, where its panes keep their files (TuiBrain, `dir`). */
+  private dropHeartbeats(kept: Set<string>): void {
+    const tui = join(this.opts.stateDir ?? join(homedir(), '.angelia'), 'tui');
+    let names: string[];
+    try { names = readdirSync(tui); } catch { return; }
+    for (const n of names) if (!kept.has(n)) rmSync(join(tui, n, 'permissions', 'relay.json'), { force: true });
   }
 
   async shutdown(): Promise<void> {
-    this.cutTurns();
+    // A message waiting for a safe moment in a running turn, or a turn injected behind one, is dropped
+    // from here on, never typed (intoTurn, injectTurn).
+    await this.beforeStop();
     for (const a of this.questions) a.abort();
-    await Promise.all([...this.brains.keys()].map((k) => this.dropBrain(k, false)));
+    // A tmux turn's last heartbeat is kept: its hooks wait for the next daemon (release, restart).
+    await Promise.all([...this.brains.keys()].map((k) => this.dropBrain(k, false, true)));
+    // Stopped: an orchestrator used after its shutdown (a test, an embedding) takes turns again.
+    this.stopping = false;
   }
 }
 

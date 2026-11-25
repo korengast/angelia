@@ -6,7 +6,10 @@
 export type ChatEvent = { key: string; at: string } & (
   /** A turn began: the message as the agent got it, before the envelope. `surface: 'app'` when the
    *  owner typed it in a client; its answer then goes back to the client only, never to the chat. */
-  | { type: 'turn'; turn: string; text: string; sender: string; surface: 'chat' | 'app'; queued: number }
+  /** `into`: tmux mode, the message was typed into the running turn of that id (`midturn`); it has no
+   *  answer of its own, and its `turn-end` comes with that turn's. One that turn did not take is then
+   *  answered by the turn Claude Code runs for it, which comes as a `turn` of the same id. */
+  | { type: 'turn'; turn: string; text: string; sender: string; surface: 'chat' | 'app'; queued: number; into?: string }
   /** A line the agent said along the way, at once, not held back by the chat's rate limit. Commentary:
    *  the lines a chat was sent come again as `out`, and an answer often repeats the last progress line,
    *  so a client shows progress as the turn's working state and `out` as the messages. */

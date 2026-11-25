@@ -18,7 +18,8 @@ function pane() {
   relay.reset();
   const marker = join(dir, 'turn.json');
   const ask = (tool_name: string, tool_input: unknown, o: { env?: NodeJS.ProcessEnv; event?: string } = {}) => {
-    const child = spawn(process.execPath, [HOOK], { env: o.env ?? { ANGELIA_TUI_MARKER: marker }, stdio: ['pipe', 'pipe', 'pipe'] });
+    // A short wait for a daemon that comes back (the hook's own is a minute): these tests are about the rest.
+    const child = spawn(process.execPath, [HOOK], { env: o.env ?? { ANGELIA_TUI_MARKER: marker, ANGELIA_RELAY_RESTART_WAIT_MS: '400' }, stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '';
     child.stdout.on('data', (b: Buffer) => { out += b; });
     const done = new Promise<{ code: number | null; out: string }>((resolve) => child.on('close', (code) => resolve({ code, out })));
@@ -130,6 +131,51 @@ test('an answer that lands after its hook stepped aside, before the daemon saw i
   const [w] = await requests(relay, 1);
   assert.equal(relay.answer(w.id, false), true, 'a hook that waits takes it');
   assert.equal(decision((await live.done).out).decision.behavior, 'deny');
+});
+
+test('a restart: a hook whose heartbeat grew old waits for the next daemon\'s, keeps its request for it, and steps aside only when none comes', async () => {
+  const { dir, relay, ask } = pane();
+  const stale = () => relay.beat(Date.now() - RELAY_STALE_MS - 1000);
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const env = { ANGELIA_TUI_MARKER: join(dir, 'turn.json'), ANGELIA_RELAY_RESTART_WAIT_MS: '3000' };
+
+  // Asked while the daemon is down: nothing is written yet, then the new daemon beats and gets the request.
+  stale();
+  const asked = ask('Bash', { command: 'sleep 5; angelia status' }, { env });
+  await wait(700);
+  assert.deepEqual(relay.take(), [], 'no request while nobody reads');
+  relay.beat();
+  const [r] = await requests(relay, 1);
+  assert.deepEqual(r?.input, { command: 'sleep 5; angelia status' });
+  assert.equal(relay.answer(r.id, true), true);
+  assert.deepEqual(decision((await asked.done).out).decision, { behavior: 'allow' });
+
+  // Waiting when the daemon stops (the old one leaves its last beat): the request stays in the folder,
+  // and a new daemon's relay, which has seen nothing, offers it again.
+  relay.beat();
+  const waiting = ask('Write', { file_path: '/tmp/x', content: 'y' }, { env });
+  const [first] = await requests(relay, 1);
+  stale();
+  await wait(1500);
+  assert.ok(existsSync(join(relay.dir, `${first.id}.request.json`)), 'kept through the gap');
+  const next = new PermissionRelay(relay.dir);
+  next.beat();
+  const [again] = await requests(next, 1);
+  assert.equal(again.id, first.id, 'the same request, offered by the new daemon');
+  assert.equal(next.answer(again.id, false), true);
+  assert.equal(decision((await waiting.done).out).decision.behavior, 'deny');
+
+  // No daemon comes back: it steps aside after the wait, its request with it.
+  stale();
+  const t0 = Date.now();
+  assert.deepEqual(await ask('Bash', { command: 'make' }, { env }).done, { code: 0, out: '' });
+  assert.ok(Date.now() - t0 >= 2500, `waited for a daemon (${Date.now() - t0} ms)`);
+  // The turn ended (no file): at once, as before.
+  relay.quiet();
+  const t1 = Date.now();
+  assert.deepEqual(await ask('Bash', { command: 'make' }, { env }).done, { code: 0, out: '' });
+  assert.ok(Date.now() - t1 < 2000, 'no wait when nobody reads the chat');
+  assert.deepEqual(readdirSync(relay.dir), [], 'nothing left behind');
 });
 
 test('a dialog on the pane that no request accounts for is told once, after it stays up with the hook quiet', () => {

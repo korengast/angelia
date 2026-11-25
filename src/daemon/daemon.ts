@@ -23,6 +23,8 @@ import { blockText, floorWarnings, nestingWarnings, readRecord, seedGuards } fro
 import { makeLaunchGuard } from './launch-guard.js';
 import { launchChatRestart, takeRestartNote } from './restart.js';
 import { CUT_LINE, takeCutTurns } from '../core/cut-turns.js';
+import { DEFERRED_GO_LINE, DeferredRestart } from './deferred-restart.js';
+import { SCAN_MS } from '../core/screen-asks.js';
 import { onboardChat } from '../instance/onboard.js';
 import { connectWiring } from '../instance/connect.js';
 import { apiDeps } from './api/deps.js';
@@ -210,7 +212,35 @@ export async function runDaemon(configPath: string): Promise<void> {
   const tgState = () => telegram?.state ?? 'off';
   let waState = 'off';
   const statusNow = () => ({ pid: process.pid, at: new Date().toISOString(), config: resolve(configPath), node: process.versions.node, nodePath: process.execPath, nodeStart: started, tg: tgState(), wa: waState, sessions: orch.status() });
-  const api = new ApiServer(apiDeps(orch, cfg, statusNow, STATE_DIR), apiToken);
+  // `angelia restart` from a chat's own agent waits for that turn to end (deferred-restart.ts); asked
+  // over the API with the agent's own token.
+  const deferred: DeferredRestart = new DeferredRestart({
+    running: () => orch.runningKeys(), queued: (key) => orch.queuedFor(key), log: logLine,
+    launch: (key) => void orch.notify(key, DEFERRED_GO_LINE).catch((e) => logLine(`restart line: ${(e as Error).message}`)).finally(() => launchChatRestart(key, table, (why) => {
+      deferred.failed();
+      logLine(`restart failed key=${key}: ${why}`);
+      void orch.notify(key, `The restart failed. Angelia is still running as before (pid ${process.pid}).\n${why}`).catch((e) => logLine(`restart failure note: ${(e as Error).message}`));
+    })),
+  });
+  // Said once the chat's platform can deliver: WhatsApp may still be opening here.
+  let waAdapter: WhatsAppAdapter | undefined;
+  let platformsUp!: () => void;
+  const platformsStarted = new Promise<void>((r) => { platformsUp = r; });
+  const whenUp = (key: string, say: () => void) => void platformsStarted.then(() => {
+    if (key.startsWith('whatsapp:') && waAdapter && !waAdapter.connected) waAdapter.once('open', say);
+    else say();
+  });
+  // Turns the last shutdown left running in a tmux pane: taken back before any message or API call can
+  // reach their chats, so what comes next queues behind them. The hook's heartbeat starts at once; the
+  // chat's events once its platform can deliver. A pane that is gone is a cut turn (below).
+  // A stop while the turns are taken back (the full shutdown below is not in place yet): what was taken
+  // and not run is written back for the next daemon (cutTurns), then the process ends.
+  const earlyStop = (sig: string) => { logLine(`shutdown on ${sig} while starting`); try { orch.cutTurns(); } catch (e) { logLine(`shutdown: ${(e as Error).message}`); } process.exit(0); };
+  const earlyTerm = () => earlyStop('SIGTERM'), earlyInt = () => earlyStop('SIGINT');
+  process.on('SIGTERM', earlyTerm);
+  process.on('SIGINT', earlyInt);
+  const lost = await orch.restoreTurns(whenUp).catch((e) => { logLine(`turn restore failed: ${(e as Error).message}`); return [] as string[]; });
+  const api = new ApiServer({ ...apiDeps(orch, cfg, statusNow, STATE_DIR), restartAfterTurn: (key) => deferred.request(key) }, apiToken);
   const socket = join(STATE_DIR, API_SOCKET);
   await claimSocket(socket);
   await api.listen(socket);
@@ -225,7 +255,6 @@ export async function runDaemon(configPath: string): Promise<void> {
     adapters.push(tg);
     await startPlatform('telegram', () => tg.start());
   }
-  let waAdapter: WhatsAppAdapter | undefined;
   if (cfg.whatsapp) {
     const wa = new WhatsAppAdapter({ authDir: cfg.whatsapp.auth_dir, pairing: cfg.whatsapp.pairing, phone: cfg.whatsapp.phone, log: logLine, inboxFor, onInbound, onJoined: (chat, by, at) => orch.joined('whatsapp', chat, by, at) });
     senders.whatsapp = wa;
@@ -240,6 +269,7 @@ export async function runDaemon(configPath: string): Promise<void> {
     await startPlatform('whatsapp', () => wa.start());
     waState = wa.connected ? 'connected' : 'connecting (pairing code on the terminal if not paired yet)';
   }
+  platformsUp();
 
   // Written aside and renamed into place: a reader (angelia status, a restart looking for the table
   // it should use) must never catch half a file. A failure is logged once, not every ten seconds.
@@ -267,19 +297,18 @@ export async function runDaemon(configPath: string): Promise<void> {
   // Before the first sweep below, so their panes count as ours.
   await orch.restoreBackground().catch((e) => logLine(`background restore failed: ${(e as Error).message}`));
   const reapTimer = setInterval(() => void reap().catch((e) => logLine(`idle reap failed: ${(e as Error).message}`)), 60_000);
-  // Said once the chat's platform can deliver: WhatsApp may still be opening here.
-  const whenUp = (key: string, say: () => void) => {
-    if (key.startsWith('whatsapp:') && waAdapter && !waAdapter.connected) waAdapter.once('open', say);
-    else say();
-  };
   // A /restart asked for this: tell that chat we are back.
   const note = takeRestartNote(STATE_DIR);
   if (note) whenUp(note.key, () => void orch.notify(note.key, `Angelia is back up (pid ${process.pid}).`).catch((e) => logLine(`restart note: ${(e as Error).message}`)));
   // Chats whose turn the last shutdown cut (core/cut-turns.ts): one line each, so nobody waits on an answer that is not coming.
-  for (const key of takeCutTurns(STATE_DIR)) {
+  for (const key of [...takeCutTurns(STATE_DIR), ...lost]) {
     if (key === note?.key) continue; // that chat asked for the restart and is told it is done
     whenUp(key, () => void orch.notify(key, CUT_LINE).catch((e) => logLine(`cut turn note: ${(e as Error).message}`)));
   }
+  const deferTimer = setInterval(() => deferred.tick(), 2000);
+  // A permission dialog in a chat's pane that no relayed request accounts for: the chat hears of it within a minute (core/screen-asks.ts).
+  const dialogTimer = setInterval(() => void orch.scanDialogs().catch((e) => logLine(`dialog scan failed: ${(e as Error).message}`)), SCAN_MS);
+  orch.onEvent((e) => { if (e.type === 'turn-end') deferred.tick(e.key); });
   logLine(`daemon up pid=${process.pid} profiles=${Object.keys(cfg.profiles).length} routes=${cfg.routes.length} tg=${tgState()} wa=${waState} api=${API_SOCKET}${missing.length ? ` cli_missing=${missing.length}` : ''}`);
 
   const shutdown = async (sig: string, code = 0) => {
@@ -291,15 +320,17 @@ export async function runDaemon(configPath: string): Promise<void> {
     // A stop that hangs (a tmux that does not answer, a socket that never ends) must still end in an
     // exit, or nothing restarts us; 20 s is more than a stop ever took.
     setTimeout(() => process.exit(code), 20_000).unref();
-    clearInterval(statusTimer); clearInterval(reapTimer);
+    clearInterval(statusTimer); clearInterval(reapTimer); clearInterval(deferTimer); clearInterval(dialogTimer);
     try {
       // The chats with a turn running, for the next daemon to tell: before anything that can hang.
-      orch.cutTurns();
+      await orch.beforeStop();
       await Promise.allSettled(adapters.map((a) => a.stop()));
       await orch.shutdown();
       try { unlinkSync(pidFile); } catch {}
     } finally { process.exit(code); }
   };
+  process.off('SIGTERM', earlyTerm);
+  process.off('SIGINT', earlyInt);
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
   // WhatsApp paired and not connected for two windows, its own reopen included (adapter.ts, check()).

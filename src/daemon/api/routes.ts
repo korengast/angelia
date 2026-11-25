@@ -229,6 +229,13 @@ export const ROUTES: Route[] = [
       what: 'Write today\'s card.', chat: 'telegram:123456', enabled: true, installed: true, runs: [{ at: '2026-10-10T08:00:03.000Z', result: 'ok' }] }] },
   },
   {
+    method: 'POST', path: '/restart-after-turn', summary: 'Restart once this chat\'s running turn is over (`angelia restart` from an agent)', token: 'any', stability: 'internal',
+    description: 'Only a chat\'s own token, with its own chat as key: the chat is the token\'s, never the caller\'s word. `deferred: false` when that chat has no turn running, '
+      + 'and nothing is held; the command then goes the old way. Otherwise the daemon restarts after that turn ends, waiting up to 10 minutes for other chats\' turns, and says so in the chat.',
+    body: z.object({ key, token: legacyToken }), response: z.object({ deferred: z.boolean() }), errors: [403, 404],
+    answer: { deferred: true },
+  },
+  {
     method: 'GET', path: '/status', summary: 'The daemon\'s own state', token: 'owner', stability: 'internal',
     response: view, errors: [404], example: {},
   },

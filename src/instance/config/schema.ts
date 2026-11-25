@@ -104,6 +104,11 @@ export const Profile = z.object({
    *  stay warm and slash commands behave as they do in a terminal. Print mode stays the default:
    *  it is the one with a clean permission channel. */
   tui: z.boolean().default(false),
+  /** tmux mode only: a chat message that comes while a turn runs is typed into that turn, as a person
+   *  types into a busy Claude Code, and the agent reads it at its next tool call; the turn's one answer
+   *  answers both. Default on (unset is on). `false`: it waits for the turn to end and runs as a turn of
+   *  its own, as before. Not read in print mode. */
+  midturn: z.boolean().optional(),
   /** Written by `/backend`: the `model`, `effort`, `bin` (and `tui`) a CLI had before the profile moved
    *  off it, so a switch back puts them on again (instance/switch-backend.ts). Not read anywhere else. */
   backends: z.partialRecord(z.enum(BACKENDS), z.object({ model: Model.optional(), effort: Effort.optional(), bin: z.string().optional(), tui: z.boolean().optional() }).strict()).optional(),

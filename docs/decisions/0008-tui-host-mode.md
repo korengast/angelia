@@ -73,6 +73,57 @@ warm between turns, background tasks outlive a turn, and slash commands behave a
   or typed into, a prompt the session scheduled, a teammate's message, or a turn the hook cannot
   place, is not.
 
+- **A message that comes while a turn runs.** It waited in Angelia's queue until the turn ended,
+  and ran as a turn of its own; in a terminal, Claude Code queues what is typed meanwhile and gives
+  it to the model inside the same turn (2026-11-25). Measured on 2.1.332: a message submitted while a
+  tool call runs is written as `queue-operation` `enqueue`, then at the next tool boundary as a
+  `queued_command` attachment row (the prompt, `origin.kind: human`), and the model reads it with the
+  tool's result; one Stop. Submitted during the last model step, it runs as the next turn by itself
+  (a second Stop, its prompt a plain user row; several such are joined into one prompt). Several are
+  taken in order. The permission dialog is drawn while the PermissionRequest hook still runs, so an
+  Enter at that moment answers it with its first choice, "Yes". Timing alone does not rule that out:
+  the model may send several tool calls in one message, and the second call is checked only when the
+  first one ends, which can be any moment (the review measured a dialog 26 s into a batch whose first
+  call had run 25 s). So the Enter is made under a lock. Measured on 2.1.332: a tool call's
+  PermissionRequest always follows its PreToolUse, about 0.1 s after that hook ends, for the session's
+  own calls and a subagent's; and while a PreToolUse hook runs, no dialog is drawn (one held 20 s kept
+  the screen clear for 20 s). Angelia's PreToolUse hook (scripts/tui-pretool-hook.mjs, only where
+  `midturn` is on: it runs before every tool call) marks itself in flight, then waits while
+  `absorb.lock` is there, then writes when it ended. Before Enter the daemon writes the lock, then
+  requires: no hook in flight, none ended in the last 1.5 s, no request at the permission hook or in
+  the chat, the transcript read to its end, a tool call of the session's own running for 3 s with no
+  subagent at work and no call that asks the person by itself (AskUserQuestion, ExitPlanMode, any
+  `mcp__` tool, which may open a form), and the screen busy with our text alone in its box and no
+  dialog. Then Enter, if the lock is still under 3 s old (past 8 s the hook reads it as left over);
+  the lock goes once Claude Code took the message. Both sides write before they read, so one always
+  sees the other. Angelia's PermissionRequest hook marks itself first thing, and a live mark holds
+  the Enter back too. A pane started before the hook (no mark of it since the turn began) is never
+  typed into; the hook is not in the launch fingerprint, so an upgrade relaunches no idle pane (it
+  gets the hook at its next launch). The lock is only Angelia's own hook: another PreToolUse hook in
+  the settings Claude Code merges (the user's, the project's, its local one, managed settings, or a
+  plugin they enable whose hooks file names one) runs beside it and can still be at work after it
+  ended, so a pane with one takes no messages into its turns (logged once, said in /status). A plugin
+  that registers its hooks from code cannot be read and is not seen.
+  Mitigation (`midturn`, unset is on), the rest: the message is pasted with the same header line. It
+  waits in the queue's own count, so /stop and /new (in the chat or the desk app) drop it as they
+  drop a queued turn (and their reply counts it), shutdown drops it unsent, and a turn injected behind
+  it is held in the same count; only a turn that came through the chat as its own takes messages (never a job's, a watch's,
+  `angelia turn`'s, a peer's or the app's), and a turn injected meanwhile comes after them. The running turn's one answer goes to the chat, and
+  replies to its first message. A turn Claude Code runs for messages the turn did not take is read as
+  a turn of the chat's (permission relay, progress, typing, the answer), from its own prompt row on.
+  A turn that fails after it took messages queues each again as a turn of its own, once. A restart
+  that adopts the running turn (adopt-turns.json) takes along the messages typed into it (and the
+  brain's record of them, so the next daemon reads the turn Claude Code runs for those it did not take)
+  and those still waiting for their moment, which run after the turn as queued messages do; for a turn
+  not adopted those are dropped, with a count in the log. The clients
+  get a `turn` event per message typed into a turn, with `into` naming that turn. Left open: a dialog
+  that no tool call's check raises (the sandbox's network prompt during a running command, an MCP
+  server's own request), a PreToolUse hook a plugin registers from code, and a hook of the owner's
+  that answers "ask" from elsewhere; the screen check is the only guard for those. Print mode also
+  takes a stream-json message mid-turn (a `queued_command` row with no origin), but the model read it
+  as text inside a tool result and did not act on it (haiku, 2026-11-25), so print mode keeps its
+  queue.
+
 ## Open
 
 Turns typed by the user in the Claude app are not delivered to the chat (the gateway did deliver

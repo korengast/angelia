@@ -95,8 +95,10 @@ export type BrainEvent =
  * `late`: the answer of a turn Angelia typed and closed without it, come after all.
  * `self`: the answer of a turn the CLI started by itself: the end of a background task that a turn of
  * Angelia's started. Never a turn a person typed in the CLI's own app or pane.
+ * `midturn`: the answer of a turn the CLI ran by itself for a chat message Angelia typed into the turn
+ * before it, which that turn did not take (brain/tui.ts, absorb).
  */
-export interface UnaskedAnswer { answer: 'late' | 'self'; text: string }
+export interface UnaskedAnswer { answer: 'late' | 'self' | 'midturn'; text: string }
 
 export function sessionKey(i: Pick<Inbound, 'platform' | 'chat' | 'thread'>): string {
   return i.thread ? `${i.platform}:${i.chat}:${i.thread}` : `${i.platform}:${i.chat}`;

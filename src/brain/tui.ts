@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,8 +10,8 @@ import { cleanText, type BrainEvent, type UnaskedAnswer } from '../core/types.js
 import { isLimitText } from '../core/deliver/text.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
-import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
-import { paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
+import { addDirAccepted, addDirDialog, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { HOOK_GIVE_UP_MS, paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { mcpLaunch, readRecord } from '../capabilities/compile.js';
 import { readPlainText } from '../core/paths.js';
@@ -23,6 +23,9 @@ const PERMISSION_HOOK = fileURLToPath(new URL('../../scripts/tui-permission-hook
 /** Claude's limit for the permission hook, in seconds: past the hook's own give-up, which is past the
  *  daemon's ten-minute deny. */
 const PERMISSION_HOOK_TIMEOUT_S = 900;
+export const PRETOOL_HOOK = fileURLToPath(new URL('../../scripts/tui-pretool-hook.mjs', import.meta.url));
+/** Past the PreToolUse hook's own longest wait (15 s). */
+const PRETOOL_HOOK_TIMEOUT_S = 30;
 const POLL_MS = 700;
 /** How long claude's add-dir dialog must stand before keys reach it (it drops them for ~1 s, 2.1.326). */
 const ADD_DIR_SETTLE_MS = 1500;
@@ -84,6 +87,48 @@ const TRANSCRIPT_SLICE_MAX = 8 * 1024 * 1024;
 const IDLE_POLL_MS = 1000;
 /** What an agent answers when it has nothing for the chat (jobs.ts reads the same word). */
 const SILENT = '[SILENT]';
+/** A tool call must have run this long, with no permission request, before a message is typed into the
+ *  turn: the hook and Claude Code's own dialog come within a moment of the call (measured 2.1.332). */
+const CALL_SETTLE_MS = 3000;
+/** Tools whose work can ask for a permission at any moment while they run: a subagent's own calls. */
+const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
+/** Tools that ask the person by themselves while they run, with no PermissionRequest (a question, a
+ *  plan to approve); every `mcp__` tool too, which may open a form (elicitation). */
+const ASKS_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
+/** How long after a PreToolUse hook ended no Enter is pressed: its PermissionRequest comes about 0.1 s
+ *  after it (measured on 2.1.332), more on a loaded machine. */
+const PRETOOL_SETTLE_MS = 1500;
+/** How long the lock may stand before its Enter: past it the hook may read the lock as left over (8 s). */
+const LOCK_FRESH_MS = 3000;
+/** How long the reader of the turn Claude Code runs for untaken messages waits for its prompt row. */
+const FOLLOW_START_MS = 30_000;
+
+/** A process of this user with this pid runs (a hook's mark of one that died holds nothing). */
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+/** How long a turn Claude Code runs for untaken messages waits for its reader (followAbsorbed). */
+const FOLLOW_WAIT_MS = 5000;
+/** A chat message typed into a running turn (absorb): its key and text, when, the turn it went into
+ *  (that turn's turnSentAt), and whether the transcript shows the turn took it. */
+export interface Absorbed { key: string; text: string; at: number; turn: number; seen: boolean }
+/** How long an empty box after the Enter waits for the transcript's word that Claude Code queued the
+ *  message (queuedSince): the row is written at the key (measured on 2.1.332), the screen may say so first. */
+const CONFIRM_MS = 8000;
+/** The one log line of a box emptied after the Enter with no such row in CONFIRM_MS. */
+export const UNCONFIRMED_LINE = 'tmux: the box emptied after the Enter, but the transcript did not show the message queued; it waits for a turn of its own';
+
+/** The text of a typed prompt row's content: a string, or its text blocks joined (skipToPrompt, queuedSince). */
+function promptText(c: unknown): string {
+  return typeof c === 'string' ? c : Array.isArray(c) ? c.map((b: { type?: unknown; text?: unknown }) => (b?.type === 'text' ? String(b.text ?? '') : '')).join('\n') : '';
+}
+
+/** intoTurnBlocked: no turn of the chat's is read any more, so the message will not go into one. */
+const NOT_READ = 'no turn of the chat is read';
+/** How long a message waits for a safe moment in the running turn: the whole turn, polled. How long a
+ *  message typed into the box may take to go after Enter. */
+const TAKEN_POLLS = 10;
 
 /** The Stop hook's file (scripts/tui-stop-hook.mjs). `origin`, `origin_why`, `prompt_at`, `prompt_key`,
  *  `prompts`, `origin_ids`: what started the turn, as the hook read it from the transcript
@@ -169,6 +214,50 @@ export function otherStopHooks(cwd: string, home = homedir()): string[] {
   return files.filter((f) => {
     try { const h = JSON.parse(readPlainText(f))?.hooks?.Stop; return Array.isArray(h) && h.length > 0; } catch { return false; }
   });
+}
+
+/** The settings files Claude Code merges with ours, in a pane started in `cwd`. */
+function mergedSettingsFiles(cwd: string, home: string): string[] {
+  return [join(home, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.json'), join(cwd, '.claude', 'settings.local.json'),
+    '/Library/Application Support/ClaudeCode/managed-settings.json', '/etc/claude-code/managed-settings.json'];
+}
+
+const readJson = (f: string): Record<string, unknown> | null => {
+  try { const v: unknown = JSON.parse(readPlainText(f)); return v && typeof v === 'object' ? v as Record<string, unknown> : null; } catch { return null; }
+};
+const hasHook = (hooks: unknown, event: string): boolean => {
+  const h = hooks && typeof hooks === 'object' ? (hooks as Record<string, unknown>)[event] : undefined;
+  return Array.isArray(h) && h.length > 0;
+};
+
+/**
+ * Where a PreToolUse hook other than Angelia's would run in a pane started in `cwd`: the settings files
+ * Claude Code merges with ours, and the hooks files of the plugins they enable (as installed_plugins.json
+ * places them). Such a hook runs next to Angelia's and can still be at work after Angelia's has ended,
+ * so the lock that keeps a dialog from opening under a typed-in Enter no longer holds (tui.ts, absorb).
+ * A plugin that registers its hooks from code (`modules`) cannot be read here and is not named.
+ */
+export function otherPreToolUseHooks(cwd: string, home = homedir()): string[] {
+  const out: string[] = [];
+  const enabled = new Set<string>();
+  for (const f of mergedSettingsFiles(cwd, home)) {
+    const s = readJson(f);
+    if (!s) continue;
+    if (hasHook(s.hooks, 'PreToolUse')) out.push(f);
+    const plugins = s.enabledPlugins;
+    if (plugins && typeof plugins === 'object') for (const [name, on] of Object.entries(plugins)) { if (on === true) enabled.add(name); else enabled.delete(name); }
+  }
+  const installed = readJson(join(home, '.claude', 'plugins', 'installed_plugins.json'));
+  const table = (installed?.plugins ?? installed ?? {}) as Record<string, unknown>;
+  for (const name of enabled) {
+    const rows = Array.isArray(table[name]) ? table[name] as { installPath?: unknown }[] : [];
+    for (const r of rows) {
+      if (typeof r?.installPath !== 'string') continue;
+      const file = join(r.installPath, 'hooks', 'hooks.json');
+      if (hasHook(readJson(file)?.hooks, 'PreToolUse')) out.push(`plugin ${name} (${file})`);
+    }
+  }
+  return out;
 }
 
 /** One warning per tui profile whose Stop hook would run beside Angelia's. */
@@ -257,11 +346,15 @@ const shq = (v: string): string => `'${v.replace(/'/g, `'\\''`)}'`;
  *  PermissionRequest hook that carries each request to the chat (tui-permissions.ts). `--settings` is
  *  merged with the user's and the project's settings, not a replacement for them (claude-code#11392):
  *  a Stop hook of their own also runs on every Angelia turn. `otherStopHooks` names those files. */
-export function hookSettings(hook = HOOK, permission = PERMISSION_HOOK): unknown {
+export function hookSettings(hook = HOOK, permission = PERMISSION_HOOK, pretool: string | null = null): unknown {
   return {
     hooks: {
       Stop: [{ hooks: [{ type: 'command', command: `node ${JSON.stringify(hook)}`, timeout: 150 }] }],
       PermissionRequest: [{ hooks: [{ type: 'command', command: `node ${JSON.stringify(permission)}`, timeout: PERMISSION_HOOK_TIMEOUT_S }] }],
+      // The lock that keeps a permission dialog from opening under the Enter of a chat message typed into
+      // a running turn (scripts/tui-pretool-hook.mjs). Only where that is on (`midturn`): it runs before
+      // every tool call.
+      ...(pretool ? { PreToolUse: [{ hooks: [{ type: 'command', command: `node ${JSON.stringify(pretool)}`, timeout: PRETOOL_HOOK_TIMEOUT_S }] }] } : {}),
     },
   };
 }
@@ -322,7 +415,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   private recording = false;
   /** The last turn typed here that ended with no Stop marker (the quiet path), until its marker comes
    *  or another turn begins: when it was typed, when it was closed, and what the chat got as its answer. */
-  private quietEnd?: { sentAt: number; endedAt: number; said: string; key: string };
+  private quietEnd?: { sentAt: number; endedAt: number; said: string; key: string; taken: string[] };
   /** The key (promptKey) of what this turn typed, from its Enter until the turn ends. */
   private typedKey = '';
   /** The reader between turns (startIdle): it looks for a Stop marker no turn of Angelia's waits for. */
@@ -330,6 +423,48 @@ export class TuiBrain extends EventEmitter implements Brain {
   /** Since when this object reads the session: its first turn. A marker from before is of a time when
    *  nobody held the session, and is not delivered late. */
   private heldSince?: number;
+  /** Chat messages typed into a running turn (absorb): the key of each (promptKey), when it was typed,
+   *  the turn it went into (its turnSentAt), and whether the transcript shows that turn took it (a
+   *  `queued_command` row). One the turn did not take, Claude Code runs as the next turn by itself
+   *  (measured on 2.1.332): that turn is the chat's, and its answer is delivered (takeIdle). */
+  private absorbed: Absorbed[] = [];
+  /** The session's own tool calls still without a result, as the transcript shows them: the tool and
+   *  when its call was read. A message goes into the turn only while one runs (intoTurnBlocked). */
+  private openCalls = new Map<string, { name: string; at: number }>();
+  /** One message goes into a running turn at a time, in the order they came. */
+  private absorbing: Promise<unknown> = Promise.resolve();
+  /** The last capture's tmux call timed out (TmuxResult.timedOut): an empty screen that is no answer. */
+  private captureTimedOut = false;
+  /** The daemon stops (stopAbsorbing): no message is typed into the turn from now on. */
+  private closing = false;
+  /** A message typed into the turn is between its Enter and the end of its absorb (taken or not). */
+  private pressed = false;
+  /** How the messages typed into the last turn went (absorbOutcome), until read. */
+  private outcome?: { taken: number; untaken: number };
+  /** Messages the last turn did not take, which Claude Code runs as the next turn: since when, and
+   *  their keys, until followAbsorbed reads that turn (closeAbsorbed). */
+  private following?: { since: number; keys: string[]; claimed: boolean; scanFrom: number };
+  /** While followAbsorbed reads: the keys of the prompts that turn may hold. */
+  private followKeys: string[] = [];
+
+  /** Why chat messages are not typed into this session's turns although the profile's `midturn` is on:
+   *  another PreToolUse hook runs in it (otherPreToolUseHooks). For /status. Unset otherwise. */
+  midturnOff?: string;
+
+  /** Chat messages that come while a turn runs may go into it: the profile's `midturn` (unset is on),
+   *  unless the caller says this session cannot take them, and unless another PreToolUse hook runs in
+   *  the session. */
+  private get midturn(): boolean { return (this.opts.midturn ?? this.profile.midturn !== false) && !this.midturnOff; }
+
+  /** Read once per launch or reattach: another PreToolUse hook in the merged settings turns midturn off
+   *  for this pane, said once in the log. */
+  private checkOtherHooks(): void {
+    if (!(this.opts.midturn ?? this.profile.midturn !== false)) { this.midturnOff = undefined; return; }
+    const others = otherPreToolUseHooks(this.profile.cwd, this.opts.settingsHome);
+    const was = this.midturnOff;
+    this.midturnOff = others.length ? `messages wait for the turn to end: another PreToolUse hook runs in this session (${others.join(', ')}), so the lock that keeps a permission dialog from opening under a typed-in message does not hold` : undefined;
+    if (this.midturnOff && this.midturnOff !== was) this.emit('log', `tmux: midturn off for pane ${this.name}: ${others.length} other PreToolUse hook(s): ${others.join(', ')}`);
+  }
 
   constructor(
     readonly profile: Profile,
@@ -389,6 +524,7 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  keeps the conversation. A busy one is left alone: cutting a turn is worse than one more stale turn. */
   private async ensure(): Promise<string | null> {
     let resume = this.session.started;
+    this.checkOtherHooks();
     if (await this.sessionAlive()) {
       if (this.launchedWith() === this.fingerprint(true)) return null;
       if (!paneIdle(await this.capture(40))) return null;
@@ -400,8 +536,10 @@ export class TuiBrain extends EventEmitter implements Brain {
     const refused = await tuiLaunchProblem(this.opts.bin ?? 'claude', this.profile.cwd, env);
     if (refused) return refused;
     mkdirSync(this.dir, { recursive: true });
-    writeFileSync(this.settingsPath, JSON.stringify(tuiSettings(this.profile, hookSettings(), this.opts.mcp), null, 2));
+    writeFileSync(this.settingsPath, JSON.stringify(tuiSettings(this.profile, hookSettings(HOOK, PERMISSION_HOOK, this.midturn ? PRETOOL_HOOK : null), this.opts.mcp), null, 2));
     this.relay.reset();
+    // A new pane: no PreToolUse hook of an earlier one runs, and its marks and its last end are not this one's.
+    rmSync(join(this.dir, 'pretool'), { recursive: true, force: true });
     const pinned: string[] = [];
     for (const k of ['PATH', 'HOME', 'LANG', 'SHELL', 'ANGELIA_SESSION_KEY']) {
       if (env[k]) pinned.push('-e', `${k}=${env[k]}`);
@@ -533,6 +671,8 @@ export class TuiBrain extends EventEmitter implements Brain {
 
   private async capture(lines = 30): Promise<string> {
     const r = await this.tm(['capture-pane', '-p', '-t', this.name, '-S', `-${lines}`]);
+    // A call killed at its time limit says nothing of the pane: the next poll reads it again.
+    this.captureTimedOut = r.timedOut === true;
     return r.code === 0 ? r.out : '';
   }
 
@@ -559,6 +699,13 @@ export class TuiBrain extends EventEmitter implements Brain {
         const now = await this.capture(30);
         if (now !== pane) moved = true;
         pane = now;
+      }
+      // Text left in the box (a paste a restart cut before its Enter, a draft): the message would be typed
+      // after it, as one. Cleared first, as a failed paste is.
+      if (boxText(pane)) {
+        this.emit('log', `tmux: the input box held text before a paste; cleared pane=${this.name}`);
+        await this.tm(['send-keys', '-t', this.name, 'C-u']);
+        await sleep(200);
       }
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       if ((await loadBuffer(this.name, text, this.dir, (a) => this.tm(a))).code !== 0) {
@@ -642,9 +789,10 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (problem) { yield { kind: 'result', text: '', isError: true, reason: problem }; return; }
     if (this.notice) { yield { kind: 'notice', text: this.notice }; this.notice = null; }
     // The session may be busy with a turn typed in the Claude app: the message waits for it, and the
-    // chat is told why nothing happens yet.
+    // chat is told why nothing happens yet. Not when it is busy with a message of the chat's own that
+    // was typed into the last turn and runs as a turn of its own now.
     // An empty capture is a pane that is gone, which paste() reports; a dialog is not a turn.
-    if (paneBusy(await this.capture(30))) yield { kind: 'notice', text: BUSY_PANE_LINE };
+    if (!this.absorbed.some((a) => !a.seen) && paneBusy(await this.capture(30))) yield { kind: 'notice', text: BUSY_PANE_LINE };
     let sentAt = Date.now();
     const gen = this.gen;
     const left: { over?: UnaskedAnswer } = {};
@@ -654,6 +802,11 @@ export class TuiBrain extends EventEmitter implements Brain {
       left.over = this.takeIdle() ?? undefined;
       this.at = this.from = fileSize(this.transcript); // only rows written from here on are this turn's
       this.rows = 'none';
+      this.openCalls.clear();
+      // Messages typed into an earlier turn whose answer never came: none is waited for any more, so a
+      // later turn with the same words is never taken for theirs.
+      this.absorbed = [];
+      this.following = undefined;
       rmSync(this.markerPath, { force: true });
       sentAt = Date.now();
       // From here on a marker is this turn's (takeMarker): the reader between turns keeps off it.
@@ -679,6 +832,356 @@ export class TuiBrain extends EventEmitter implements Brain {
       return;
     }
     yield* this.watch(sentAt, false, gen, text.trimStart().startsWith('/'));
+  }
+
+  /**
+   * Type a chat message into the turn that runs now, as a person types into a busy Claude Code: it
+   * queues the message and gives it to the model at the next tool boundary of the same turn (a
+   * `queued_command` row), or runs it as the next turn when none comes (measured on claude 2.1.332).
+   * True once Claude Code took it: the running turn's one answer goes to the chat, and a turn Claude
+   * Code runs for it is read for the chat as well (absorbOutcome, followAbsorbed). False when no turn of
+   * the chat's is read now, or the turn ended before a safe moment came: nothing was submitted, and the
+   * caller queues the message as a turn of its own, as before.
+   *
+   * Enter into a dialog would answer it with its first choice, "Yes", and Claude Code draws the
+   * permission dialog while the PermissionRequest hook still runs. So the Enter is made under a lock:
+   * Angelia's PreToolUse hook (scripts/tui-pretool-hook.mjs) holds every tool call, the session's own
+   * and a subagent's, while `absorb.lock` is there, and a PermissionRequest only ever follows its
+   * call's PreToolUse (measured on 2.1.332). Under the lock: no PreToolUse in flight, none ended in the
+   * last PRETOOL_SETTLE_MS, no request at the hook or in the chat, the transcript read to its end, and
+   * the screen shows the busy turn with our text alone in the box and no dialog; then Enter, and the
+   * lock goes once Claude Code took the message. Before the paste, besides: a tool call of the
+   * session's own has run CALL_SETTLE_MS, and no call that asks the person by itself (a question, a
+   * plan to approve, an MCP tool's form) or a subagent runs. Messages go in one at a time, in order.
+   */
+  /** No message is typed into the running turn from now on; settles once none sits between its Enter
+   *  and its end (the orchestrator bounds the wait), so a restart never carries a message the turn
+   *  took as one still waiting (it would run twice). */
+  async stopAbsorbing(): Promise<void> {
+    this.closing = true;
+    while (this.pressed) await sleep(100);
+  }
+
+  absorb(raw: string): Promise<boolean> {
+    const run = this.absorbing.then(async () => { try { return await this.absorbNow(raw); } finally { this.pressed = false; } });
+    this.absorbing = run.catch(() => false);
+    return run;
+  }
+
+  /** How the messages typed into the turn that ended last went: how many it took (answered by its
+   *  answer) and how many it did not (Claude Code runs those as the next turn: followAbsorbed reads it).
+   *  Once per turn; undefined when none was typed into it. */
+  absorbOutcome(): { taken: number; untaken: number } | undefined {
+    const o = this.outcome;
+    this.outcome = undefined;
+    return o;
+  }
+
+  /** Why a message may not be typed into the running turn now, or null when it may. */
+  private intoTurnBlocked(gen: number, sentAt: number): string | null {
+    if (gen !== this.gen || this.turnSentAt !== sentAt || !this.recording || !this.up) return NOT_READ;
+    // Typed, and its reader not started yet (Enter is being checked): wait for it.
+    if (!this.beating) return 'the turn is starting';
+    if (this.permissions.size || this.relay.waiting() || Date.now() - this.relayedAt < REASK_MS) return 'a permission request is open';
+    // Rows written since the reader's last poll may hold a call it has not seen yet.
+    if (fileSize(this.transcript) !== this.at) return 'the transcript has rows not read yet';
+    let running = false;
+    for (const c of this.openCalls.values()) {
+      if (SUBAGENT_TOOLS.has(c.name)) return 'a subagent runs';
+      if (ASKS_TOOLS.has(c.name) || c.name.startsWith('mcp__')) return 'a call that may ask the person runs';
+      if (Date.now() - c.at < (this.opts.callSettleMs ?? CALL_SETTLE_MS)) return 'a tool call has just started';
+      running = true;
+    }
+    return running ? null : 'no tool call runs';
+  }
+
+  /** Why the PreToolUse lock says no now, or null: a PreToolUse hook still at work, a permission being
+   *  asked (Angelia's PermissionRequest hook marks itself first thing), a PreToolUse that ended a moment
+   *  ago (its PermissionRequest may come), or none since the turn began (a pane started before the hook).
+   *  A mark of a hook whose process is gone holds nothing (it was killed). */
+  private pretoolBusy(sentAt: number): string | null {
+    const dir = join(this.dir, 'pretool');
+    let names: string[];
+    try { names = readdirSync(dir); } catch { return 'the session has no PreToolUse lock'; }
+    for (const n of names) {
+      const m = /^(\d+)\.(in|perm)$/.exec(n);
+      if (!m) continue;
+      if (!processAlive(Number(m[1]))) { rmSync(join(dir, n), { force: true }); continue; }
+      return m[2] === 'in' ? 'a tool call is being checked' : 'a permission is being asked';
+    }
+    let last = 0;
+    try { last = Number(JSON.parse(readFileSync(join(dir, 'last.json'), 'utf8')).at) || 0; } catch { /* none yet */ }
+    // The running call's own PreToolUse ended after the turn began: a pane with the hook always has one.
+    if (last < sentAt) return 'the session has no PreToolUse lock';
+    if (Date.now() - last < (this.opts.pretoolSettleMs ?? PRETOOL_SETTLE_MS)) return 'a tool call was just checked';
+    return null;
+  }
+
+  private async absorbNow(raw: string): Promise<boolean> {
+    const text = cleanText(raw);
+    const sentAt = this.turnSentAt;
+    const gen = this.gen;
+    if (sentAt === undefined || !text || !this.midturn) return false;
+    // The turn's reader (watch) reads the transcript every poll and keeps openCalls; a read here would
+    // take its rows (progress lines, an error row) from it.
+    const blocked = () => this.intoTurnBlocked(gen, sentAt);
+    // Wait for a safe moment as long as the turn runs.
+    for (;;) {
+      if (this.closing) return false;
+      const why = blocked() ?? this.pretoolBusy(sentAt);
+      if (why === NOT_READ) return false;
+      if (!why && paneMidTurn(await this.capture(30))) break;
+      await sleep(POLL_MS);
+    }
+    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    if ((await loadBuffer(`${this.name}-turn`, text, this.dir, (a) => this.tm(a))).code !== 0) return false;
+    // Checked once more: the screen may have changed while the buffer was loaded.
+    if (blocked() || !paneMidTurn(await this.capture(30))) { this.emit('log', `tmux: a message for the running turn was not typed: the moment passed pane=${this.name}`); return false; }
+    await this.tm(['paste-buffer', '-p', '-d', '-b', `${this.name}-turn`, '-t', this.name]);
+    const landBy = Date.now() + (this.opts.landMs ?? LAND_MS);
+    const lock = join(this.dir, 'absorb.lock');
+    let presses = 0, landed = false, enterAt = 0;
+    // The box can also be empty for another reason (a pane relaunched, the owner cleared it): only the
+    // transcript says Claude Code queued it.
+    const queued = (): boolean => this.queuedSince(enterAt, promptKey(text));
+    // The box is empty after an Enter: wait for the transcript's word, up to CONFIRM_MS, once.
+    let confirmed: boolean | undefined;
+    const confirm = async (): Promise<boolean> => {
+      if (confirmed !== undefined) return confirmed;
+      const until = Date.now() + (this.opts.confirmMs ?? CONFIRM_MS);
+      while (!queued() && Date.now() < until) await sleep(300);
+      confirmed = queued();
+      if (!confirmed) this.emit('log', `${UNCONFIRMED_LINE} pane=${this.name}`);
+      return confirmed;
+    };
+    const took = (): true => {
+      this.absorbed.push({ key: promptKey(text), text, at: Date.now(), turn: sentAt, seen: false });
+      this.emit('log', `tmux: a chat message went into the running turn (${text.length} chars) pane=${this.name}`);
+      return true;
+    };
+    for (;;) {
+      await sleep(300);
+      const pane = await this.capture(30);
+      if (!pane && this.captureTimedOut) continue;
+      if (!pane) return false;
+      if (!pasteLanded(pane, text)) {
+        // An Enter was pressed, and now the box is on screen without the text: taken, late (a redraw a
+        // second or more after the key). Never pressed again: it would go twice.
+        if (presses > 0 && paneHasBox(pane) && !permissionDialog(pane)) { if (await confirm()) return took(); break; }
+        // Not drawn yet, or hidden behind a dialog that opened since.
+        if ((!landed && Date.now() > landBy) || blocked() === NOT_READ) break;
+        continue;
+      }
+      landed = true;
+      if (blocked() === NOT_READ || paneIdle(pane)) break;
+      if (blocked()) continue;
+      // The lock first, then every check: a tool call checked from here on waits in its PreToolUse hook,
+      // so no dialog can open under the key.
+      let lockedAt: number;
+      try { writeFileSync(lock, String(Date.now()), { mode: 0o600 }); lockedAt = Date.now(); } catch { break; }
+      let taken = false, emptied = false;
+      try {
+        if (blocked() || this.pretoolBusy(sentAt) || !paneMidTurn(await this.capture(30), text)) continue;
+        // The checks took long (a loaded machine): the hook may already read the lock as left over
+        // (LOCK_STALE_MS), so it holds nothing now. Start again.
+        if (Date.now() - lockedAt > (this.opts.lockFreshMs ?? LOCK_FRESH_MS)) continue;
+        // Let go of (release() removes the lock, a restart takes the pane), or the daemon stops before a
+        // first Enter: no key.
+        if (gen !== this.gen || (this.closing && !presses)) break;
+        if (!presses) enterAt = fileSize(this.transcript);
+        await this.tm(['send-keys', '-t', this.name, 'Enter']);
+        presses++;
+        this.pressed = true;
+        for (let p = 0; p < TAKEN_POLLS && !emptied; p++) {
+          await sleep(300);
+          const now = await this.capture(30);
+          if (!now && this.captureTimedOut) continue;
+          if (!now) return false;
+          // Gone from the box, and the box is there: Claude Code took it (it shows above, as queued), if
+          // the transcript says so too (confirm). The lock stands meanwhile.
+          emptied = paneHasBox(now) && !pasteLanded(now, text);
+        }
+        if (emptied) taken = await confirm();
+      } finally {
+        rmSync(lock, { force: true });
+      }
+      if (taken) return took();
+      // An empty box is not pressed again: an Enter there sends nothing, or a second copy.
+      if (emptied || presses >= 3) break;
+    }
+    // Not seen taken: the text goes from the box, and the message waits for a turn of its own. But an
+    // Enter was pressed and the box is now on screen without the text: Claude Code took it late.
+    if (await this.leaveBox(text) && presses > 0 && await confirm()) return took();
+    this.emit('log', `tmux: a message for the running turn was not taken; it waits for the turn to end pane=${this.name}`);
+    return false;
+  }
+
+  /** Empty the input box, one Ctrl-U per line, checking the screen after each: Ctrl-U clears the
+   *  cursor's line only, and a press that changes nothing (a hint, a redraw not yet come) is not
+   *  repeated for ever. Returns what the box held, or '' when it was empty. */
+  private async clearBox(): Promise<string> {
+    const first = boxText(await this.capture(20));
+    let last = first;
+    for (let i = 0; last && i < 12; i++) {
+      await this.tm(['send-keys', '-t', this.name, 'C-u']);
+      await sleep(400);
+      const now = boxText(await this.capture(20));
+      if (now === last) { await sleep(1200); const again = boxText(await this.capture(20)); if (again === last) break; last = again; continue; }
+      last = now;
+    }
+    return first;
+  }
+
+  /** The transcript from `offset` on shows Claude Code took a message keyed `key`: it queued one (its
+   *  queue-operation enqueue row, measured on 2.1.332), gave it to the turn (its queued_command row), or
+   *  runs it as a turn (its prompt row). Read without moving the turn's reader. */
+  private queuedSince(offset: number, key: string): boolean {
+    for (const line of readSlice(this.transcript, offset).split('\n')) {
+      if (!line.includes('queue-operation') && !line.includes('queued_command') && !line.includes('"user"')) continue;
+      let row: { type?: unknown; operation?: unknown; content?: unknown; attachment?: { type?: unknown; prompt?: unknown }; message?: { content?: unknown } } | null;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (!row || typeof row !== 'object') continue;
+      // The enqueue row holds the message itself (measured on 2.1.332): another one queued then is not ours.
+      if (row.type === 'queue-operation' && row.operation === 'enqueue' && typeof row.content === 'string' && promptKey(row.content) === key) return true;
+      if (row.type === 'attachment' && row.attachment?.type === 'queued_command' && typeof row.attachment.prompt === 'string' && promptKey(row.attachment.prompt) === key) return true;
+      if (row.type === 'user' && promptKey(promptText(row.message?.content)) === key) return true;
+    }
+    return false;
+  }
+
+  /** Clear our text from the input box once the box is on screen with it and no dialog is open, so a
+   *  key never reaches a dialog. Text someone else typed is left alone. True when the box is on screen
+   *  without our text (nothing to clear). */
+  private async leaveBox(text: string): Promise<boolean> {
+    for (let i = 0; i < 100; i++) {
+      const pane = await this.capture(30);
+      if (!pane) return false;
+      if (paneHasBox(pane) && !permissionDialog(pane)) {
+        if (!pasteLanded(pane, text)) return true;
+        await this.clearBox();
+        return false;
+      }
+      await sleep(POLL_MS);
+    }
+    this.emit('log', `tmux: a message for the running turn is left in the box behind a dialog pane=${this.name}`);
+    return false;
+  }
+
+  /** The turn that ended has messages it did not take: Claude Code runs them as the next turn by
+   *  itself. Until followAbsorbed reads that turn, the reader between turns keeps off it (turnSentAt).
+   *  If nobody claims it (claimFollow, at the turn's result) in FOLLOW_WAIT_MS, the reader between
+   *  turns takes its marker (takeIdle) and the answer goes out as an unasked one. */
+  private closeAbsorbed(sentAt: number, scanFrom = this.at): void {
+    const mine = this.absorbed.filter((a) => a.turn === sentAt);
+    const untaken = mine.filter((a) => !a.seen);
+    this.outcome = mine.length ? { taken: mine.length - untaken.length, untaken: untaken.length } : undefined;
+    // Only this turn's untaken ones are waited for: older ones are never answered now.
+    this.absorbed = untaken;
+    if (!untaken.length) return;
+    // Claude Code joins them into one prompt, one blank line between (measured by the review, 2.1.332).
+    const f = { since: Date.now(), keys: [...untaken.map((a) => a.key), ...(untaken.length > 1 ? [promptKey(untaken.map((a) => a.text).join('\n\n'))] : [])], claimed: false, scanFrom };
+    this.following = f;
+    this.turnSentAt = f.since;
+    setTimeout(() => { if (this.following === f && !f.claimed) this.releaseFollow(); }, this.opts.followWaitMs ?? FOLLOW_WAIT_MS).unref();
+  }
+
+  /** The turn's result is in, and its reader will read the turn Claude Code runs next (followAbsorbed),
+   *  however long the delivery of this answer takes. */
+  claimFollow(): void {
+    if (this.following) this.following.claimed = true;
+  }
+
+  /** That turn will not be read after all: the reader between turns may take its marker, and its answer
+   *  goes out as an unasked one (takeIdle). */
+  releaseFollow(): void {
+    const f = this.following;
+    if (!f) return;
+    this.following = undefined;
+    if (this.turnSentAt === f.since) this.turnSentAt = undefined;
+  }
+
+  /**
+   * Read the turn Claude Code runs by itself for the messages the last turn did not take, as a turn of
+   * the chat's: the permission relay, progress lines and the answer, as `follow` reads one. It starts
+   * at that turn's own prompt row: rows of the turn before it written after its marker (its last text,
+   * flushed late) are never read as this turn's. Its marker is this turn's when its typed prompts are
+   * those messages. A turn that does not start (the pane idle, or no such row in FOLLOW_START_MS) ends
+   * with no answer, said nowhere.
+   */
+  async *followAbsorbed(): AsyncGenerator<BrainEvent> {
+    const f = this.following;
+    this.following = undefined;
+    if (!f || !this.up) { yield { kind: 'result', text: '', isError: true, reason: this.up ? 'nothing to follow' : 'exit' }; return; }
+    const gen = this.gen;
+    this.absorbed = this.absorbed.filter((a) => !f.keys.includes(a.key));
+    this.turnSentAt = f.since;
+    this.recording = true;
+    this.followKeys = f.keys;
+    this.typedKey = f.keys[0];
+    this.quietEnd = undefined;
+    this.lastUsedAt = Date.now();
+    try {
+      // The hook relays from now on: the turn may ask for a permission the moment it starts.
+      this.startBeat(gen);
+      const until = Date.now() + (this.opts.followStartMs ?? FOLLOW_START_MS);
+      let idleSince = 0;
+      for (;;) {
+        if (gen !== this.gen) { this.recording = false; yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
+        if (this.skipToPrompt(f.keys, f.scanFrom)) break;
+        // Its marker is there already, keyed as one of these messages: the turn ran (its prompt row
+        // read past, or written in a form not known here); the reader takes the marker at once.
+        const m = this.readMarker();
+        if (m?.at && m.at >= f.since && typeof m.prompt_key === 'string' && f.keys.includes(m.prompt_key)) break;
+        const pane = await this.capture(30);
+        if (!pane && !(await this.sessionAlive())) { this.turnSentAt = undefined; this.recording = false; this.stopBeat(); yield { kind: 'result', text: '', isError: true, reason: 'exit' }; return; }
+        idleSince = paneIdle(pane) ? idleSince || Date.now() : 0;
+        if (Date.now() > until || (idleSince && Date.now() - idleSince > (this.opts.quietMs ?? QUIET_MS))) {
+          this.emit('log', `tmux: no turn ran for the messages the last turn did not take pane=${this.name}`);
+          this.turnSentAt = undefined; this.recording = false; this.stopBeat(); this.startIdle();
+          yield { kind: 'result', text: '', isError: true, reason: 'nothing to follow' };
+          return;
+        }
+        await sleep(POLL_MS);
+      }
+      this.openCalls.clear();
+      this.from = this.at;
+      this.rows = 'open';
+      yield* this.watch(f.since, false, gen, false);
+    } finally { this.followKeys = []; }
+  }
+
+  /** Read whole rows from `from` (where the last turn's reader began its last read: the prompt row
+   *  may have come before its marker was read) up to the prompt row of the turn Claude Code runs for
+   *  untaken messages (a typed prompt keyed as one of `keys`), and stand just after it. True once found.
+   *  Rows the reader had not read before are the turn before's, and only the background book reads them;
+   *  the ones it had read, it read already. */
+  private skipToPrompt(keys: string[], from = this.at): boolean {
+    let fd: number;
+    const seen = this.at;
+    const at = Math.min(from, this.at);
+    try { fd = openSync(this.transcript, 'r'); } catch { return false; }
+    try {
+      const size = fstatSync(fd).size;
+      if (size <= at) return false;
+      const buf = Buffer.allocUnsafe(size - at);
+      readSync(fd, buf, 0, buf.length, at);
+      let start = 0;
+      for (;;) {
+        const nl = buf.indexOf(10, start);
+        if (nl < 0) break;
+        const line = buf.subarray(start, nl).toString('utf8');
+        start = nl + 1;
+        if (at + start > seen && this.recording) for (const id of backgroundStarts(line, this.calls)) { this.ours.add(id); if (this.ours.size > OURS_MAX) this.ours.delete(this.ours.values().next().value!); }
+        if (!line.includes('"user"')) continue;
+        let row: { type?: unknown; isSidechain?: unknown; isMeta?: unknown; message?: { content?: unknown } } | null;
+        try { row = JSON.parse(line); } catch { continue; }
+        if (!row || row.type !== 'user' || row.isSidechain === true || row.isMeta === true) continue;
+        const text = promptText(row.message?.content);
+        if (text && keys.includes(promptKey(text))) { this.at = at + start; return true; }
+      }
+      this.at = Math.max(seen, at + start);
+      return false;
+    } catch { return false; } finally { closeSync(fd); }
   }
 
   /**
@@ -718,6 +1221,9 @@ export class TuiBrain extends EventEmitter implements Brain {
     // early from here either. Read as every poll reads, so the turn's rows start on a whole line.
     this.readTranscript();
     this.from = this.at;
+    // The hook relays from now on, before the reader's first poll: after a restart a hook that waits for
+    // a fresh heartbeat must not wait on the chat's platform opening.
+    this.startBeat(gen);
     return this.watch(this.turnSentAt ?? Date.now(), false, gen);
   }
 
@@ -727,7 +1233,24 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.turnSentAt = turnSentAt;
     if ((await this.tm(['has-session', '-t', this.name])).code !== 0) return false;
     this.ready = Promise.resolve(null);
+    // No launch here: the check a launch makes for another PreToolUse hook is made now.
+    this.checkOtherHooks();
     return true;
+  }
+
+  /** The chat messages typed into the turn that runs now, for the daemon after a restart (the
+   *  orchestrator's cutTurns), taken before release forgets them. */
+  midturnState(): Absorbed[] {
+    return this.absorbed.map((a) => ({ ...a }));
+  }
+
+  /** After adopt, before the turn's reader starts: the messages the last daemon typed into this turn.
+   *  The reader reads the turn's rows again and sees which it took (queued_command). Only well-formed
+   *  entries of this turn are kept. */
+  restoreMidturn(list: unknown[]): void {
+    const ok = (a: unknown): a is Absorbed => !!a && typeof a === 'object' && typeof (a as Absorbed).key === 'string' && typeof (a as Absorbed).text === 'string'
+      && typeof (a as Absorbed).at === 'number' && typeof (a as Absorbed).turn === 'number';
+    this.absorbed = list.filter(ok).filter((a) => a.turn === this.turnSentAt).map((a) => ({ key: a.key, text: a.text, at: a.at, turn: a.turn, seen: false }));
   }
 
   /** The polling half of a turn. `background`: no permission book and no relay (nobody in the chat
@@ -776,6 +1299,9 @@ export class TuiBrain extends EventEmitter implements Brain {
           if (ev.kind === 'text') { if (pending) yield { kind: 'progress', text: pending }; pending = ev.text; }
           else if (pending) { yield { kind: 'progress', text: pending }; pending = null; }
         }
+        // Let go of while a progress line was taken (a restart stops the reader before the adapters):
+        // the Stop marker stays where it is, for whoever reads the pane next.
+        if (gen !== this.gen) { this.recording = false; yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
         // A turn Claude Code started by itself ended while this one waited to be taken (a task's end
         // was queued first): that marker is no answer to this turn. Told as between turns, and this
         // turn waits on for its own.
@@ -793,7 +1319,16 @@ export class TuiBrain extends EventEmitter implements Brain {
           // A turn whose one typed prompt is not what this turn typed: someone pressed Enter in the
           // app in the gap before Angelia's Enter. Its answer is theirs; this turn waits for its own.
           // Not for a slash command, whose row is not the text typed.
-          if (m?.at && m.at >= sentAt && !command && m.origin === 'prompt' && m.prompts === 1 && typeof m.prompt_key === 'string' && this.typedKey && m.prompt_key !== this.typedKey) {
+          // But a message of the chat's typed into the last turn, which Claude Code ran as a turn of its
+          // own before this one: its answer is the chat's (takeIdle), and this turn waits on.
+          if (m?.at && m.at >= sentAt && this.followerOf(m)?.every((a) => a.turn !== sentAt)) {
+            pending = null;
+            const a = this.takeIdle(true, failed);
+            if (a) yield { kind: 'unasked', ...a };
+            failed = false;
+            continue;
+          }
+          if (m?.at && m.at >= sentAt && !command && m.origin === 'prompt' && m.prompts === 1 && typeof m.prompt_key === 'string' && this.typedKey && m.prompt_key !== this.typedKey && !this.followKeys.includes(m.prompt_key)) {
             rmSync(this.markerPath, { force: true });
             pending = null;
             const text = String(m.text ?? '').trim();
@@ -803,10 +1338,19 @@ export class TuiBrain extends EventEmitter implements Brain {
             continue;
           }
         }
+        // Requests answered in the pane are told before the marker is taken, and the reader may be let go
+        // of while they are (a restart): then the marker stays for whoever reads the pane next.
+        if (deciding.size) yield* this.decide(deciding, (this.readMarker()?.at ?? 0) >= sentAt);
+        if (gen !== this.gen) { this.recording = false; yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
         const done = this.takeMarker(sentAt);
-        if (deciding.size) yield* this.decide(deciding, done !== null);
         if (done !== null) {
           over();
+          // Those this turn took are answered by this answer; those it did not take run as the next turn.
+          // Rows written between the last read and the marker (a queued_command row of a message the turn
+          // did take) are read first; their events are this turn's, already over.
+          // The next turn's prompt row may be among the rows read in this poll or just now: its reader
+          // looks for it from where this poll began to read (readTo).
+          if (!background) { this.readTranscript(); this.closeAbsorbed(sentAt, readTo); }
           ended('the Stop marker', done);
           yield { kind: 'result', text: done, isError: false };
           return;
@@ -815,7 +1359,9 @@ export class TuiBrain extends EventEmitter implements Brain {
         if (!background) {
           for (const r of this.relay.take()) {
             this.relayedAt = Date.now();
-            this.permissions.add(r.id);
+            // Its timeout fits the hook's own time left: a request offered again after a restart is
+            // denied before its hook steps aside, never answered into nothing.
+            this.permissions.add(r.id, r.at ? Math.max(5000, HOOK_GIVE_UP_MS - (Date.now() - r.at) - 30_000) : undefined);
             asked.set(r.id, { tool: r.tool, input: r.input });
             yield relayedPermission(r);
           }
@@ -828,6 +1374,8 @@ export class TuiBrain extends EventEmitter implements Brain {
           }
         }
         const pane = await this.capture(30);
+        // Let go of during the capture: the quiet path or an exit below would end the next reader's turn.
+        if (gen !== this.gen) { this.recording = false; yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
         if (pane !== lastPane) {
           lastPane = pane; movedAt = Date.now();
           const above = paneAboveFoot(pane);
@@ -841,7 +1389,12 @@ export class TuiBrain extends EventEmitter implements Brain {
         } else if (screen.see(open ? `${open.tool}\n${open.preview}` : null, this.permissions.size > 0 || Date.now() - this.relayedAt < REASK_MS)) {
           yield { kind: 'notice', text: screenOnlyLine(this.name, this.socket) };
         }
-        if (!pane && (await this.tm(['has-session', '-t', this.name])).code !== 0) {
+        // A tmux that did not answer in time is not a pane that is gone: the next poll looks again.
+        if (!pane && this.captureTimedOut) { this.emit('log', `tmux: a capture timed out; the reader polls again pane=${this.name}`); continue; }
+        const gone = !pane ? await this.tm(['has-session', '-t', this.name]) : undefined;
+        if (gone?.timedOut) { this.emit('log', `tmux: has-session timed out; the reader polls again pane=${this.name}`); continue; }
+        if (gone && gone.code !== 0) {
+          if (gen !== this.gen) { this.recording = false; yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
           if (!background) this.up = false;
           over();
           yield { kind: 'result', text: '', isError: true, reason: 'exit' };
@@ -875,7 +1428,8 @@ export class TuiBrain extends EventEmitter implements Brain {
             ended(how, answer);
             // The Stop marker may still come (a failed read of the screen, a slow hook): then it is this
             // turn's answer, late (takeIdle).
-            if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: answer, key: this.typedKey };
+            if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: answer, key: this.typedKey, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key) };
+            if (!background) this.closeAbsorbed(sentAt, readTo);
             // No answer at all, and not to a slash command: the chat may be told the agent gave none, so
             // keep the screen that read as idle.
             if (!answer && (!command || this.rows === 'open')) this.keepScreen('quiet-empty.txt', `the turn ended by ${how} with no answer`);
@@ -927,12 +1481,54 @@ export class TuiBrain extends EventEmitter implements Brain {
         this.ours.add(id);
         if (this.ours.size > OURS_MAX) this.ours.delete(this.ours.values().next().value!);
       }
+      this.noteRows(rows);
       return transcriptEvents(rows);
     } catch {
       return [];
     } finally {
       closeSync(fd);
     }
+  }
+
+  /** What absorb needs from new rows: the session's tool calls still without a result, and each
+   *  message typed into the turn that the transcript shows taken (its `queued_command` row, measured on
+   *  claude 2.1.332: an attachment row with the prompt and `origin.kind: human`). */
+  private noteRows(chunk: string): void {
+    for (const line of chunk.split('\n')) {
+      if (!line.includes('tool_use') && !line.includes('tool_result') && !line.includes('queued_command')) continue;
+      let row: { type?: unknown; isSidechain?: unknown; attachment?: { type?: unknown; prompt?: unknown }; message?: { content?: unknown } } | null;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (!row || typeof row !== 'object' || row.isSidechain === true) continue;
+      if (row.type === 'attachment' && row.attachment?.type === 'queued_command') {
+        const p = row.attachment.prompt;
+        const key = promptKey(typeof p === 'string' ? p : Array.isArray(p) ? p.map((b: { text?: unknown }) => String(b?.text ?? '')).join('\n') : '');
+        const a = this.absorbed.find((x) => !x.seen && x.key === key);
+        if (a) a.seen = true;
+        continue;
+      }
+      const content = row.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const b of content as { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown }[]) {
+        if (row.type === 'assistant' && b?.type === 'tool_use' && typeof b.id === 'string') this.openCalls.set(b.id, { name: String(b.name ?? ''), at: Date.now() });
+        else if (row.type === 'user' && b?.type === 'tool_result') this.openCalls.delete(String(b.tool_use_id ?? ''));
+      }
+    }
+    // A turn of a thousand calls whose results were never read does not grow this without end.
+    while (this.openCalls.size > 200) this.openCalls.delete(this.openCalls.keys().next().value!);
+  }
+
+  /** The messages typed into an earlier turn that this marker's turn ran for, or null when it is not
+   *  such a turn: typed prompts only, as many as are still waited for at most, the last of them keyed
+   *  as one of them. Claude Code joins several into one turn (measured on 2.1.332). */
+  private followerOf(m: Marker): Absorbed[] | null {
+    if (m.origin !== 'prompt' || typeof m.prompt_key !== 'string' || typeof m.prompts !== 'number' || m.prompts < 1 || typeof m.at !== 'number') return null;
+    const open = this.absorbed.filter((a) => !a.seen && m.at! >= a.at);
+    // All of them as one prompt, one blank line between.
+    if (open.length > 1 && m.prompts === 1 && m.prompt_key === promptKey(open.map((a) => a.text).join('\n\n'))) return open;
+    let end = -1;
+    for (let i = open.length - 1; i >= 0 && end < 0; i--) if (open[i].key === m.prompt_key) end = i;
+    if (end < 0 || m.prompts > end + 1) return null;
+    return open.slice(end + 1 - m.prompts, end + 1);
   }
 
   /** The Stop hook's file as it stands, or null: none, or one not whole or not the hook's. */
@@ -994,11 +1590,37 @@ export class TuiBrain extends EventEmitter implements Brain {
     // its own reader reads them, for the chat, and says what it found (`turnFailed`).
     if (!inTurn) this.readTranscript();
     const failedRow = inTurn ? turnFailed : this.rows === 'error';
+    // A message of the chat's typed into a running turn that the turn did not take: Claude Code ran it
+    // as the next turn, by itself (measured on 2.1.332). Its one typed prompt is that message.
+    // Several such messages run as one turn (their prompts joined): the hook counts each, and keys the last.
+    const follower = this.followerOf(m);
+    if (follower) {
+      {
+        this.absorbed = this.absorbed.filter((a) => !follower.includes(a));
+        // It runs only after the turn it was typed into: a turn closed on the quiet path is over too.
+        if (!inTurn && this.quietEnd && m.at! >= this.quietEnd.sentAt) this.quietEnd = undefined;
+        this.lastUsedAt = Date.now();
+        if (failedRow) return no('a message typed into the last turn, and an API error of the CLI');
+        if (!text) return no('a message typed into the last turn, with no text');
+        if (text === SILENT) return no('a message typed into the last turn, and [SILENT]');
+        if (isLimitText(text)) return no('a message typed into the last turn, and a usage limit of the CLI');
+        return { answer: 'midturn', text };
+      }
+    }
     const late = inTurn ? undefined : this.quietEnd;
     if (late && m.at >= late.sentAt) {
       // Whatever this marker is, the turn closed on the quiet path is over: a Stop only comes after it.
       this.quietEnd = undefined;
       const typedAt = typeof m.prompt_at === 'number' ? m.prompt_at : undefined;
+      // And its one typed prompt is what Angelia typed (the hook's key of it): a turn someone typed in
+      // the app inside that window, or into that turn, is theirs.
+      // The chat's messages typed into that turn count as Angelia's: then the hook counts them too,
+      // and the last typed prompt it keys is one of them.
+      const own = (m.prompt_key === late.key && m.prompts === 1)
+        || (late.taken.length > 0 && m.prompts === 1 + late.taken.length && typeof m.prompt_key === 'string' && late.taken.includes(m.prompt_key));
+      if (m.origin !== 'notification' && typedAt !== undefined && typedAt >= late.sentAt - 1000 && typedAt <= late.endedAt && !own) {
+        return no('late, but the prompt the hook read is not the one Angelia typed');
+      }
       if (m.origin !== 'notification' && typedAt !== undefined && typedAt >= late.sentAt - 1000 && typedAt <= late.endedAt) {
         // And its one typed prompt is what Angelia typed (the hook's key of it): a turn someone typed in
         // the app inside that window, or into that turn, is theirs.
@@ -1074,11 +1696,13 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.beating = { timer, gen };
   }
 
-  /** Nobody reads the chat now: a waiting hook steps aside at once. */
-  private stopBeat(): void {
+  /** Nobody reads the chat now: a waiting hook steps aside at once. `keep`: while a turn is read, the
+   *  heartbeat is left as it is, for the daemon after a restart (release). */
+  private stopBeat(keep = false): void {
+    const beating = !!this.beating;
     if (this.beating) clearInterval(this.beating.timer);
     this.beating = undefined;
-    this.relay.quiet();
+    if (!(keep && beating)) this.relay.quiet();
   }
 
   /**
@@ -1090,14 +1714,19 @@ export class TuiBrain extends EventEmitter implements Brain {
    * so every reap and every restart ran `stop()` instead and killed the pane, silently, because
    * the next message respawned and resumed by id.
    */
-  async release(): Promise<void> {
+  async release(o: { restart?: boolean } = {}): Promise<void> {
+    // An Enter for a message typed into the turn may have been under way: its lock holds no tool call now.
+    rmSync(join(this.dir, 'absorb.lock'), { force: true });
     this.gen++; // a turn being read stops being read; the pane goes on with it
     this.recording = false;
     this.permissions.clear();
-    this.stopBeat();
+    // A shutdown for a restart leaves the last heartbeat to grow old: a hook waits for the next daemon,
+    // which adopts the turn, instead of stepping aside into a dialog nobody can answer from the chat.
+    this.stopBeat(o.restart);
     // Nobody reads it between turns either: what the session says by itself from here on stays in it.
     this.stopIdle();
     this.quietEnd = this.heldSince = undefined;
+    this.absorbed = [];
     this.up = false;
   }
 
@@ -1107,6 +1736,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.stopBeat();
     this.stopIdle();
     this.quietEnd = this.heldSince = undefined;
+    this.absorbed = [];
     await this.tm(['kill-session', '-t', this.name]);
     this.up = false;
     this.emit('exit', { code: 0, signal: null });

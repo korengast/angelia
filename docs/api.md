@@ -175,7 +175,7 @@ To stay compatible:
 `GET /events` is a server-sent event stream. Each `data:` line is one JSON event with `type`, `key`
 (the chat) and `at` (ISO time):
 
-- `turn`: a turn started (`turn` id, `text`, `sender`, `surface`: `chat` or `app`, `queued`).
+- `turn`: a turn started (`turn` id, `text`, `sender`, `surface`: `chat` or `app`, `queued`). In tmux mode a chat message typed into the running turn comes as a `turn` with `into`: the id of the turn it went into; its `turn-end` comes when that turn ends. One the turn did not take is answered by the next turn Claude Code runs for it, which comes as a `turn` of the same id.
 - `progress`: a line the agent said along the way.
 - `out`: a line the chat got.
 - `permission`: the agent waits for a yes or a no (`id`, `tool`, `preview`).

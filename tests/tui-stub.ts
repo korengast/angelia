@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cleanText } from '../src/core/types.js';
@@ -12,6 +12,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const idle = readFileSync(join(here, 'fixtures', 'pane-idle.txt'), 'utf8');
 const HOOK = fileURLToPath(new URL('../scripts/tui-stop-hook.mjs', import.meta.url));
 const landed = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ [Pasted text #1 +2 lines]');
+/** The prompt with text left in the box (a paste a restart cut before its Enter): C-u clears it. */
+const draft = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ half of an old message');
+// A turn at work with its empty input box, measured on claude 2.1.332; the same with a paste in the box;
+// a permission dialog of the same version (it replaces the box).
+const busyBox = readFileSync(join(here, 'fixtures', 'pane-busy-box-332.txt'), 'utf8');
+const busyLanded = busyBox.replace(/^❯\s*$/m, '❯ [Pasted text #1 +2 lines]');
+const dialog = readFileSync(join(here, 'fixtures', 'pane-permission-332.txt'), 'utf8');
+const halfTyped = readFileSync(join(here, 'fixtures', 'pane-busy-halftyped-332.txt'), 'utf8');
 
 /** Rows shaped as the readers in src/brain take them from a session's transcript. Content made up. */
 export const ROW = {
@@ -66,17 +74,36 @@ export interface PaneStub {
   prompt(at?: number): object;
   /** Whether the marker file is still there (nobody took it). */
   marked(): boolean;
+  /** What the screen shows from now on: `idle` (the default), `busy` (a turn at work, its box empty),
+   *  `dialog` (a permission dialog), `half` (a turn at work, someone's text in the box). A paste into
+   *  `busy` shows in the box; its Enter queues it (Claude Code's own queue) and the box is empty again. */
+  show(screen: 'idle' | 'busy' | 'dialog' | 'half' | 'draft'): void;
+  /** Messages Enter queued into a running turn, as typed. */
+  queued: string[];
+  /** Whether Angelia's absorb lock was there at each Enter that queued a message into a turn. */
+  lockedAtEnter: boolean[];
+  /** The pane dies: the screen is empty, and tmux has no such session. */
+  die(): void;
+  /** From now on Claude Code takes a message typed into a turn at its Enter, but the screen shows it only `ms` later. */
+  slowTake(ms: number): void;
+  /** From now on an Enter on a message typed into a turn empties the box but Claude Code does not queue it (a relaunch, the owner cleared the box). */
+  loseTake(): void;
+  /** From now on the transcript row that says Claude Code queued a message comes `ms` after its Enter. */
+  slowRow(ms: number): void;
+  /** Every paste-buffer, as loaded (a turn's message or one typed into a turn). */
+  buffers: string[];
 }
 
 /** Replace the pane of `brain` (a TuiBrain) with the stub; `cwd` holds its transcript. Ready at once. */
-export function stubPane(brain: unknown, cwd: string): PaneStub {
+export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
   const b = brain as any;
   let shown = idle;
   const hooks: ((n: number) => void)[] = [];
   const pastes: ((n: number) => void)[] = [];
   mkdirSync(b.dir, { recursive: true });
   b.transcript = join(cwd, `${b.session.id}.jsonl`);
-  writeFileSync(b.transcript, jsonl([ROW.prompt('an earlier message', Date.now() - 60_000), ROW.text('An earlier answer.')]));
+  // `keep`: the session's transcript as an earlier daemon left it (a restart adopts the pane).
+  if (!keep || !existsSync(b.transcript)) writeFileSync(b.transcript, jsonl([ROW.prompt('an earlier message', Date.now() - 60_000), ROW.text('An earlier answer.')]));
   const stub: PaneStub = {
     enters: 0,
     logs: [],
@@ -91,20 +118,50 @@ export function stubPane(brain: unknown, cwd: string): PaneStub {
         env: { ...process.env, ANGELIA_TUI_MARKER: join(b.dir, 'turn.json') },
       });
     },
-    rows: (...rows) => appendFileSync(b.transcript, jsonl(rows)),
+    rows: (...rows) => {
+      appendFileSync(b.transcript, jsonl(rows));
+      // A tool call passed Angelia's PreToolUse hook just before its row: the hook's mark of when it ended.
+      if (rows.some((r: any) => Array.isArray(r?.message?.content) && r.message.content.some((c: any) => c?.type === 'tool_use'))) {
+        mkdirSync(join(b.dir, 'pretool'), { recursive: true });
+        writeFileSync(join(b.dir, 'pretool', 'last.json'), JSON.stringify({ at: Date.now() }));
+      }
+    },
     mark: (m) => writeFileSync(join(b.dir, 'turn.json'), JSON.stringify({ at: Date.now(), transcript_path: b.transcript, ...m })),
     marked: () => { try { readFileSync(join(b.dir, 'turn.json')); return true; } catch { return false; } },
     typed: '',
     prompt: (at) => ROW.prompt(stub.typed, at),
+    show: (screen) => { shown = { idle, busy: busyBox, dialog, half: halfTyped, draft }[screen]; },
+    queued: [],
+    buffers: [],
+    lockedAtEnter: [],
+    die: () => { dead = true; shown = ''; },
+    slowTake: (ms) => { takeMs = ms; },
+    loseTake: () => { lost = true; },
+    slowRow: (ms) => { rowMs = ms; },
   };
+  let buffer = '', dead = false, takeMs = 0, taking = false, lost = false, rowMs = 0;
   const paste = b.paste.bind(b);
   b.paste = (text: string, ...rest: unknown[]) => { stub.typed = cleanText(text); return paste(text, ...rest); };
   b.on('log', (l: string) => stub.logs.push(l));
   b.start = () => { b.ready = Promise.resolve(null); b.up = true; };
   b.capture = async () => shown;
-  b.sessionAlive = async () => true;
+  b.sessionAlive = async () => !dead;
   b.tm = async (a: string[]) => {
-    if (a[0] === 'paste-buffer') { for (const fn of pastes) fn(stub.enters + 1); shown = landed; }
+    if (a[0] === 'load-buffer') { buffer = readFileSync(a[a.length - 1], 'utf8'); stub.buffers.push(buffer); }
+    else if (a[0] === 'paste-buffer' && shown === busyBox) shown = busyLanded;
+    else if (a[0] === 'send-keys' && a.includes('C-u') && shown === draft) shown = idle;
+    else if (a[0] === 'paste-buffer' && shown === draft) shown = landed.replace('❯ [Pasted', '❯ half of an old message[Pasted');
+    else if (a[0] === 'paste-buffer') { for (const fn of pastes) fn(stub.enters + 1); shown = landed; }
+    else if (a[0] === 'send-keys' && a.includes('Enter') && shown === busyLanded) {
+      stub.lockedAtEnter.push(existsSync(join(b.dir, 'absorb.lock')));
+      if (lost) { shown = busyBox; return { code: 0, out: '', err: '' }; }
+      // Claude Code writes that it queued the message at once (measured on 2.1.332), whatever the screen shows.
+      if (!taking) { const row = jsonl([{ type: 'queue-operation', operation: 'enqueue', timestamp: new Date().toISOString(), content: buffer }]); if (rowMs) setTimeout(() => appendFileSync(b.transcript, row), rowMs); else appendFileSync(b.transcript, row); }
+      // Claude Code took it; with slowTake the screen shows that only later (an Enter meanwhile does nothing).
+      if (takeMs) { if (!taking) { taking = true; const m = buffer; setTimeout(() => { taking = false; shown = busyBox; stub.queued.push(m); }, takeMs); } }
+      else { shown = busyBox; stub.queued.push(buffer); }
+    }
+    else if (a[0] === 'has-session' && dead) return { code: 1, out: '', err: 'no session' };
     else if (a[0] === 'send-keys' && a.includes('Enter') && shown === landed) { shown = idle; stub.enters++; stub.enteredAt.push(Date.now()); for (const fn of hooks) fn(stub.enters); }
     return { code: 0, out: '', err: '' };
   };
@@ -118,23 +175,24 @@ export const until = async (ok: () => boolean, ms = 8000): Promise<void> => {
 export const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** The waits of the quiet path and of the reader between turns, short: 12 s, 90 s, 3 min and 1 s in the daemon. */
-export const FAST = { quietMs: 300, quietTextMs: 700, quietOpenMs: 900, idlePollMs: 40 };
+export const FAST = { quietMs: 300, quietTextMs: 700, quietOpenMs: 900, idlePollMs: 40, callSettleMs: 100, pretoolSettleMs: 100, confirmMs: 1500 };
 
 /**
  * One Telegram DM routed to a tmux profile whose panes are stubs, through the real orchestrator. `sent`:
  * what the chat got, in order. Each brain the orchestrator makes gets a new stub pane on the same session folder.
  * `onEnter` / `onPaste` count across panes, from 1. `defaults`: the table's (a short idle time).
  */
-export async function stubChat(waits: Partial<typeof FAST> = {}, defaults: Record<string, unknown> = {}) {
+export async function stubChat(waits: Partial<typeof FAST> = {}, defaults: Record<string, unknown> = {}, profile: Record<string, unknown> = {}, place: { cwd?: string; stateDir?: string } = {}) {
   const { mkdtempSync, realpathSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { Orchestrator } = await import('../src/core/orchestrator.js');
   const { Config } = await import('../src/instance/config/schema.js');
-  const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'angelia-unasked-cwd-')));
-  const cfg = Config.parse({ profiles: { a: { cwd, tui: true } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000, ...defaults } });
+  const cwd = place.cwd ?? realpathSync(mkdtempSync(join(tmpdir(), 'angelia-unasked-cwd-')));
+  const cfg = Config.parse({ profiles: { a: { cwd, tui: true, ...profile } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000, ...defaults } });
   const sent: string[] = [], log: string[] = [];
+  const stateDir = place.stateDir ?? mkdtempSync(join(tmpdir(), 'angelia-unasked-orch-'));
   const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } },
-    { stateDir: mkdtempSync(join(tmpdir(), 'angelia-unasked-orch-')), bins: { 'claude-code': '/bin/false' }, log: (l) => log.push(l) });
+    { stateDir, bins: { 'claude-code': '/bin/false' }, log: (l) => log.push(l) });
   const panes: PaneStub[] = [], brains: any[] = [];
   const enters: ((n: number, p: PaneStub) => void)[] = [], pastes: ((n: number, p: PaneStub) => void)[] = [];
   let entered = 0;
@@ -143,7 +201,7 @@ export async function stubChat(waits: Partial<typeof FAST> = {}, defaults: Recor
   oo.makeBrain = (...a: unknown[]) => {
     const b = make(...a);
     Object.assign(b.opts, { ...FAST, ...waits });
-    const p = stubPane(b, cwd);
+    const p = stubPane(b, cwd, !!place.cwd);
     p.onPaste(() => { for (const fn of pastes) fn(entered + 1, p); });
     p.onEnter(() => { entered++; for (const fn of enters) fn(entered, p); });
     panes.push(p); brains.push(b);
@@ -151,7 +209,7 @@ export async function stubChat(waits: Partial<typeof FAST> = {}, defaults: Recor
   };
   const key = 'telegram:1';
   return {
-    o, sent, log, key, cwd,
+    o, sent, log, key, cwd, stateDir,
     pane: () => panes[panes.length - 1],
     brain: () => brains[brains.length - 1],
     onEnter: (fn: (n: number, p: PaneStub) => void) => { enters.push(fn); },

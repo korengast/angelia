@@ -22,6 +22,23 @@ export interface BrainOptions {
   promptTimeoutMs?: number;
   /** tmux mode: how long a paste may take to show in the input box (tui.ts: LAND_MS). Tests shorten it. */
   landMs?: number;
+  /** tmux mode: how long a tool call must have run before a chat message is typed into its turn (tui.ts: CALL_SETTLE_MS). Tests shorten it. */
+  callSettleMs?: number;
+  /** tmux mode: how long after a PreToolUse hook ended no chat message is typed into the turn (tui.ts: PRETOOL_SETTLE_MS). Tests shorten it. */
+  pretoolSettleMs?: number;
+  /** tmux mode: whether this session may take chat messages into a running turn, and so gets the
+   *  PreToolUse hook. Unset reads the profile's `midturn`. */
+  midturn?: boolean;
+  /** tmux mode: how long the absorb lock may stand before its Enter, and how long the reader of the
+   *  turn run for untaken messages waits for its prompt row (tui.ts: LOCK_FRESH_MS, FOLLOW_START_MS). Tests. */
+  lockFreshMs?: number;
+  followStartMs?: number;
+  /** tmux mode: how long an unclaimed follow waits before the reader between turns takes over (tui.ts: FOLLOW_WAIT_MS). Tests. */
+  followWaitMs?: number;
+  /** tmux mode: how long an empty box after the Enter waits for the transcript's word (tui.ts: CONFIRM_MS). Tests. */
+  confirmMs?: number;
+  /** tmux mode: the home folder whose ~/.claude settings and plugins are read for other PreToolUse hooks (tests). */
+  settingsHome?: string;
   /** tmux mode: how often the Stop marker is looked for between turns (tui.ts: IDLE_POLL_MS). Tests shorten it. */
   idlePollMs?: number;
   /** The agent's environment: no secret except the ones its profile was given (core/env.ts). */
@@ -101,16 +118,41 @@ export interface Brain extends EventEmitter {
   readonly pendingPermissionCount: number;
   hasPendingPermission(id: string): boolean;
   stop(graceMs?: number): Promise<void>;
+  /** The daemon stops: no message is typed into a running turn from now on, and the promise settles
+   *  once none is between its Enter and Claude Code's word that it took it (a tui pane). */
+  stopAbsorbing?(): Promise<void>;
   /** Let the session go without ending it. Backends whose session outlives the daemon (a tui pane)
-   *  implement this, so an idle reap or a restart costs nothing; the rest are stopped instead. */
-  release?(): Promise<void>;
+   *  implement this, so an idle reap or a restart costs nothing; the rest are stopped instead.
+   *  `restart`: the daemon stops for a restart, and the next one adopts the turn that runs (tui). */
+  release?(o?: { restart?: boolean }): Promise<void>;
   /** A handoff while a turn runs: after `release`, keep reading the turn with nobody answering, until it
    *  is over. Only a backend whose session outlives its reader has these (a tui pane). */
   backgroundTurn?(): AsyncGenerator<BrainEvent>;
   /** `/resume` of a session sent to the background: read its running turn in the foreground again.
    *  The brain is alive again from the call on, before the first event is read. */
   follow?(): AsyncGenerator<BrainEvent>;
-  /** A restarted daemon takes back a session it had sent to the background. False: it is gone. */
+  /** Type a chat message into the turn that runs now, where the CLI queues it into that turn (a tui
+   *  pane). True once the CLI took it; false when nothing was submitted, and the message is queued as a
+   *  turn of its own. */
+  absorb?(text: string): Promise<boolean>;
+  /** After a turn: how many messages typed into it it took, and how many it did not (those run as the
+   *  next turn, read with followAbsorbed). Once; undefined when none was typed into it. */
+  absorbOutcome?(): { taken: number; untaken: number } | undefined;
+  /** The turn the CLI runs by itself for the messages the last turn did not take, read as a chat turn. */
+  followAbsorbed?(): AsyncGenerator<BrainEvent>;
+  /** The turn's result is in: the turn Claude Code runs for untaken messages will be read
+   *  (followAbsorbed), however long the delivery of this answer takes. */
+  claimFollow?(): void;
+  /** That turn will not be read after all (/stop, the session gone): the reader between turns may take its marker. */
+  releaseFollow?(): void;
+  /** Why chat messages are not typed into this session's turns although the profile's switch is on. */
+  readonly midturnOff?: string;
+  /** The chat messages typed into the running turn, for the daemon after a restart; and, after adopt,
+   *  those the last daemon typed into it (a tui pane). */
+  midturnState?(): unknown[];
+  restoreMidturn?(list: unknown[]): void;
+  /** A restarted daemon takes back a session it had sent to the background, or whose turn the restart
+   *  cut off from its reader (then `follow` reads it for the chat). False: it is gone. */
   adopt?(turnSentAt: number): Promise<boolean>;
   /** When the running turn was typed in, for a background row that must survive a restart. */
   turnSentAt?: number;
@@ -128,8 +170,9 @@ export class PermissionBook {
 
   constructor(private readonly timeoutMs: number, private readonly onTimeout: (id: string) => void) {}
 
-  add(id: string): void {
-    this.pending.set(id, setTimeout(() => this.onTimeout(id), this.timeoutMs));
+  /** `ms`: a shorter wait for this one request (a tmux hook's own time left, tui.ts). */
+  add(id: string, ms = this.timeoutMs): void {
+    this.pending.set(id, setTimeout(() => this.onTimeout(id), Math.min(ms, this.timeoutMs)));
   }
 
   /** Clears and returns the full id for a prefix, or null when it matches none or several. */
