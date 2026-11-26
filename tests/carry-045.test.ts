@@ -30,7 +30,7 @@ const row = (o: object) => `${JSON.stringify(o)}\n`;
 test('a message taken late into the turn before is not typed a second time', async () => {
   const b = brain();
   b.ready = Promise.resolve(null);
-  b.unsure.set(promptKey('and this too'), 0);
+  b.unsure.set(promptKey('and this too'), { key: promptKey('and this too'), text: 'and this too', transcript: b.transcript, offset: 0, at: Date.now(), answered: false });
   writeFileSync(b.transcript, row({ type: 'queue-operation', operation: 'enqueue', content: 'and this too' }));
   b.paste = () => assert.fail('typed');
   const events = [];
