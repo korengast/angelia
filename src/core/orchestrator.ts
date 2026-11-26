@@ -13,7 +13,7 @@ import { KeyedQueue } from './session/queue.js';
 import { createBrain, locateBin, profileBin, type Brain, type BackendName } from '../brain/index.js';
 import { projectsDir } from '../brain/transcripts.js';
 import { isApiErrorReason, loginLost } from '../brain/api-error.js';
-import { START_EXIT } from '../brain/tui.js';
+import { type IdlePane, START_EXIT, TEAMMATE_MAX_MS } from '../brain/tui.js';
 import { claudeHistory, claudeTranscriptFor, piHistory, type HistoryItem, type HistoryPage } from '../brain/history.js';
 import { grokPage, grokReplay } from '../brain/grok-history.js';
 import { agyReplay } from '../brain/agy-history.js';
@@ -247,6 +247,9 @@ export class Orchestrator {
    *  message reattaches it by name. Kept here so that /new, /resume or a backend switch in between
    *  ends the pane too, instead of leaving it running with nobody to reach it. */
   private parked = new Map<string, Brain>();
+  /** Panes let go of while a teammate was open (name, and when): the pane reap keeps them, since a
+   *  parked brain reads no more of its teammates (TuiBrain.release). */
+  private teammatePanes = new Map<string, number>();
   /** Sessions a handoff moved a chat away from while their turn ran, by session id. Their panes go on
    *  with nobody reading them until the turn is over, or `/resume` takes one back (handoff). */
   private background = new Map<string, { key: string; brain: Brain }>();
@@ -2238,6 +2241,8 @@ export class Orchestrator {
     if (end && parked && parked !== b) { this.parked.delete(key); await this.end(key, parked); }
     if (!b?.alive) return;
     if (!end && b.release) {
+      const name = (b as { name?: unknown }).name;
+      if (typeof name === 'string') { if (b.openTeammateCount?.()) this.teammatePanes.set(name, Date.now()); else this.teammatePanes.delete(name); }
       try { await b.release(restart ? { restart } : undefined); this.parked.set(key, b); return; }
       catch (err) { this.log(`release failed key=${key} ${(err as Error).message}`); }
     }
@@ -2264,6 +2269,45 @@ export class Orchestrator {
     }
     const prefixes = Object.values(this.cfg.profiles).filter((p) => p.tui && p.backend === 'claude-code').map((p) => remoteControlName(p, { id: '', started: false }));
     return { keep, prefixes: [...new Set(prefixes)] };
+  }
+
+  /** The panes the pane reap may end (brain/tui-panes.ts, reapPanes): each parked one, and each chat's
+   *  active session on a tui profile that no brain holds, as a restart leaves them. Never one a brain
+   *  holds, for a turn or between turns, nor one read in the background (the idle reap parks those
+   *  first), nor one let go of with a teammate open, until the teammate is past TEAMMATE_MAX_MS. */
+  idlePanes(now = Date.now()): IdlePane[] {
+    const nameOf = (b: Brain): string | undefined => { const n = (b as { name?: unknown }).name; return typeof n === 'string' ? n : undefined; };
+    const held = new Set([...this.brains.values(), ...[...this.background.values()].map((e) => e.brain)].map(nameOf));
+    const out = new Map<string, IdlePane>();
+    const add = (key: string, name: string | undefined) => {
+      const p = this.profileFor(key);
+      if (!name || held.has(name) || out.has(name) || !p?.tui || p.backend !== 'claude-code') return;
+      if (now - (this.teammatePanes.get(name) ?? -Infinity) < TEAMMATE_MAX_MS) return;
+      const bin = this.binFor(p);
+      out.set(name, { name, key, ...(bin ? { bin } : {}) });
+    };
+    for (const [key, b] of this.parked) add(key, nameOf(b));
+    for (const key of this.map.keys()) {
+      const p = this.profileFor(key);
+      const row = this.map.getActive(key);
+      if (p && row) add(key, remoteControlName(p, { id: row.id, started: row.started }));
+    }
+    return [...out.values()];
+  }
+
+  /** Asked right before the pane reap ends a pane: no brain took its chat since the list was made, and
+   *  nothing runs or waits there. */
+  mayEndPane(p: IdlePane): boolean {
+    return !this.brains.has(p.key) && !this.running.has(p.key) && this.queue.queued(p.key) === 0
+      && ![...this.background.values()].some((e) => (e.brain as { name?: unknown }).name === p.name);
+  }
+
+  /** The pane reap ended this pane: its parked brain goes too, so the next message starts a new one,
+   *  which finds no pane and launches with --resume. */
+  paneEnded(p: IdlePane): void {
+    const b = this.parked.get(p.key);
+    if (b && (b as { name?: unknown }).name === p.name) this.parked.delete(p.key);
+    this.teammatePanes.delete(p.name);
   }
 
   /** Reap brains idle longer than the configured window. Call from a timer. */

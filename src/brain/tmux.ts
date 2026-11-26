@@ -116,6 +116,17 @@ export function paneBusy(pane: string): boolean {
   return busy;
 }
 
+/** A teammate's row in the list under the input box: `◯ <name>  <what it does>   21s · ↓ 87.0k tokens`
+ *  (claude 2.1.329, fixture pane-busy-teammates.txt). */
+const TEAMMATE_ROW = /^\s*◯\s+\S+\s{2,}.*\d+s\s+·\s+[↓↑]/;
+
+/** True when the foot of the pane, under the input box, lists a teammate. */
+export function listsTeammates(pane: string): boolean {
+  const lines = pane.replace(/\n+$/, '').split('\n');
+  const box = boxSpan(lines);
+  return box !== null && lines.slice(box.bottom + 1).some((l) => TEAMMATE_ROW.test(l));
+}
+
 /** Safe to paste: the input box is on screen with its prompt, and no turn is running. Pasting into a
  *  dialog would answer it (Enter takes the highlighted option) and pasting mid-turn is dropped
  *  or queued, so both have to be excluded, not just waited out.

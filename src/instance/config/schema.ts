@@ -224,6 +224,10 @@ export const Config = z.object({
       max_in_per_hour: z.number().int().nonnegative().default(50),
       idle_exit_minutes: z.number().positive().max(35_000).default(30),
       permission_timeout_minutes: z.number().positive().max(35_000).default(10),
+      /** tmux mode: a pane no chat is reading, idle on screen this many hours, is ended; the next
+       *  message resumes its session. A pane on an older Claude Code build than the one installed is
+       *  ended as soon as it is idle. */
+      pane_idle_hours: z.number().positive().max(8_760).default(12),
       /** A turn in print mode with no output from its CLI this long is stuck: the chat is told at half
        *  of it, and at the full time the CLI is stopped and the chat told so. 0: never. tmux turns
        *  have their own hourly line and are not stopped. */

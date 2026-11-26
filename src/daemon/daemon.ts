@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { loadConfig, configWarnings } from '../instance/config/load.js';
 import { effectiveTable, writeAccepted } from '../instance/accepted.js';
 import { cliWarnings, pathWithBins, type BackendName } from '../brain/index.js';
-import { scrubTmuxServer, sweepPanes, tmuxWarnings, tuiHookWarnings } from '../brain/tui.js';
+import { reapPanes, scrubTmuxServer, sweepPanes, tmuxWarnings, tuiHookWarnings } from '../brain/tui.js';
 import { STRIP_ENV } from '../brain/argv.js';
 import { trustFolder } from '../brain/grok.js';
 import { locateBin, profileBin } from '../brain/locate.js';
@@ -299,6 +299,9 @@ export async function runDaemon(configPath: string): Promise<void> {
     const { keep, prefixes } = orch.tuiPanes();
     const gone = await sweepPanes(keep, prefixes, tmuxEnv);
     if (gone.length) logLine(`tmux: ended ${gone.length} idle pane(s) no chat uses any more: ${gone.join(', ')}`);
+    // Parked and active panes too, once idle for hours or on an older build: the next message resumes them.
+    const ended = await reapPanes(orch.idlePanes(), tmuxEnv, { idleHours: cfg.defaults.pane_idle_hours, mayEnd: (p) => orch.mayEndPane(p) });
+    for (const p of ended) { orch.paneEnded(p); logLine(`tmux: ended pane ${p.name} key=${p.key} (${p.why}); the next message resumes it`); }
   };
   // Turns a handoff sent to the background before this restart: read them again, or drop their mark.
   // Before the first sweep below, so their panes count as ours.

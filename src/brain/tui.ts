@@ -20,6 +20,7 @@ import { askedBy } from '../core/screen-asks.js';
 import { tuiBlockedConnectors } from './connectors-check.js';
 
 export { transcriptPath } from './transcripts.js';
+export { buildIn, paneBuild, paneEndReason, reapPanes, sweepPanes, type IdlePane } from './tui-panes.js';
 
 const HOOK = fileURLToPath(new URL('../../scripts/tui-stop-hook.mjs', import.meta.url));
 const PERMISSION_HOOK = fileURLToPath(new URL('../../scripts/tui-permission-hook.mjs', import.meta.url));
@@ -197,7 +198,7 @@ function addOurs(set: Set<string>, v: string): void {
 const CALLS_MAX = 500;
 
 /** How long a named teammate counts as open with no end of it read: it may never send one. */
-const TEAMMATE_MAX_MS = 12 * 60 * 60_000;
+export const TEAMMATE_MAX_MS = 12 * 60 * 60_000;
 
 /** The name of a spawned teammate, from its call's result (claude 2.1.332, measured: `name`, and
  *  `teammate_id` as `<name>@<team>`), as its messages to the lead name it (`teammate_id="<name>"`).
@@ -2316,26 +2317,6 @@ export class TuiBrain extends EventEmitter implements Brain {
   }
 
   kill(): void { void this.stop(); }
-}
-
-/**
- * End the panes on Angelia's tmux server that no chat will reach again: a name with one of this
- * table's tui prefixes that is not in `keep`, sitting idle. A daemon restart forgets which panes it
- * released, and a /new after that would otherwise leave the old one running for good, with its MCP
- * servers, its permissions and its Remote Control registration. A busy pane is left alone.
- */
-export async function sweepPanes(keep: Set<string>, prefixes: string[], env: NodeJS.ProcessEnv): Promise<string[]> {
-  if (!prefixes.length) return [];
-  const list = await tmux(['list-sessions', '-F', '#{session_name}'], { env });
-  if (list.code !== 0) return [];
-  const gone: string[] = [];
-  for (const name of list.out.split('\n').filter(Boolean)) {
-    if (keep.has(name) || !prefixes.some((p) => name.startsWith(p))) continue;
-    const pane = await tmux(['capture-pane', '-p', '-t', name, '-S', '-30'], { env });
-    if (pane.code !== 0 || !paneIdle(pane.out)) continue;
-    if ((await tmux(['kill-session', '-t', name], { env })).code === 0) gone.push(name);
-  }
-  return gone;
 }
 
 /**
