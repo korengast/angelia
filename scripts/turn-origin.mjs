@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
  *   task, or a prompt the session scheduled for itself. Nobody typed it. `origin_ids`: the tool-use
  *   ids the tasks' ends name, only when every such row names one (a scheduled prompt names none);
  *   the daemon delivers only the end of tasks its own turns started.
- * - `prompt`: also `prompt_key` (promptKey of the last typed prompt) and `prompts` (how many): the
+ * - `prompt`: also `prompt_key` (promptKey of the last typed prompt), `prompt_len` (its promptForm's length) and `prompts` (how many): the
  *   daemon sends a late answer only of a turn whose one typed prompt is what it typed.
  * - `prompt`: a person typed it, in the Claude app, over Remote Control or in the pane. Angelia's own
  *   turns read the same: it types the chat's message into the pane.
@@ -136,7 +136,13 @@ const PASTED_TAG = /<\/?pasted_content id="[0-9a-f]{4}">/g;
  * then SHA-256, the first 32 hex digits. Never the words.
  */
 export function promptKey(text) {
-  return createHash('sha256').update(String(text ?? '').replace(PASTED_TAG, ' ').normalize('NFC').replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 32);
+  return createHash('sha256').update(promptForm(text)).digest('hex').slice(0, 32);
+}
+
+/** A prompt as promptKey hashes it (src/brain/tui.ts, promptForm). Its length is `prompt_len`: when
+ *  the keys differ, the daemon logs both lengths, never the words. */
+export function promptForm(text) {
+  return String(text ?? '').replace(PASTED_TAG, ' ').normalize('NFC').replace(/\s+/g, ' ').trim();
 }
 
 function userText(content) {
@@ -209,7 +215,7 @@ export function turnStarters(raw) {
       if (!said && stamped && isTeammateRow(text, a.rowSource ?? row.rowSource, a)) { const t = teammatesOf(text); push({ kind: 'notification', tag: 'teammate-message', teammates: t.names, idle: t.idle, ...when, queuedCommand: true }); }
       else if (said && NOTIFICATION_KINDS.has(said)) push({ kind: 'notification', tag: queued ? queued[1] : said, ids: idsOf(text), ...when, said, queuedCommand: true });
       else if (said && said !== HUMAN) push({ kind: 'other', ...when, said, queuedCommand: true });
-      else push({ kind: 'prompt', key: promptKey(text), ...when, ...(said ? { said } : {}), queuedCommand: true });
+      else push({ kind: 'prompt', key: promptKey(text), len: promptForm(text).length, ...when, ...(said ? { said } : {}), queuedCommand: true });
       continue;
     }
     const content = row.message?.content;
@@ -260,7 +266,7 @@ export function turnStarters(raw) {
         : queued || wrapped || said ? 'other' : 'prompt';
     push({
       kind,
-      ...(kind === 'prompt' ? { key: promptKey(text) } : queued ? { tag: queued[1] } : wrapped ? { tag: wrapped[1] } : {}),
+      ...(kind === 'prompt' ? { key: promptKey(text), len: promptForm(text).length } : queued ? { tag: queued[1] } : wrapped ? { tag: wrapped[1] } : {}),
       ...(teammate ? { teammates: teammate.names, idle: teammate.idle } : kind === 'notification' ? { ids: idsOf(text) } : {}),
       ...(Number.isNaN(at) ? {} : { at }),
       ...(said ? { said } : {}),
@@ -282,7 +288,7 @@ export function turnOrigin(raw) {
   if (typed.length) {
     const last = typed[typed.length - 1];
     // `prompt_key` and `prompts`: the daemon sends a late answer only of a turn whose one typed prompt is its own.
-    return { origin: 'prompt', origin_why: why, ...(last.at === undefined ? {} : { prompt_at: last.at }), prompt_key: last.key, prompts: typed.length };
+    return { origin: 'prompt', origin_why: why, ...(last.at === undefined ? {} : { prompt_at: last.at }), prompt_key: last.key, prompt_len: last.len, prompts: typed.length };
   }
   if (starters.some((s) => s.kind === 'other')) return { origin: 'unknown', origin_why: why };
   // `origin_ids`: the tool-use ids of the tasks whose end started the turn, and `origin_teammates`: the

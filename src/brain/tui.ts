@@ -11,7 +11,7 @@ import { isLimitText, TMUX_STALLED } from '../core/deliver/text.js';
 import { apiErrorReason, apiErrorText, isApiErrorRow } from './api-error.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { blockedShort, deniedConnectorCount, PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
-import { addDirAccepted, addDirDialog, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { addDirAccepted, addDirDialog, boxHoldsOnly, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { HOOK_GIVE_UP_MS, paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs, type RelayedRequest, type RequestOrigin } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { mcpLaunch, readRecord } from '../capabilities/compile.js';
@@ -147,19 +147,31 @@ const NOT_READ = 'no turn of the chat is read';
 /** How long a message waits for a safe moment in the running turn: the whole turn, polled. How long a
  *  message typed into the box may take to go after Enter. */
 const TAKEN_POLLS = 10;
+/** How many Ctrl-K, Ctrl-U pairs clearBox presses at most: each deletes a line's text or a line break,
+ *  so a box of up to about this many lines (a paste of more is one chip). */
+const CLEAR_ROUNDS = 40;
+/** How long after a turn's Enter its prompt row may be written for keptOnMiss to take the turn as its own. */
+const KEPT_WINDOW_MS = 30_000;
+/** The shortest typed message (promptForm) keptOnMiss takes: a shorter one is part of many prompts. */
+const KEPT_MIN_CHARS = 24;
 
 /** The Stop hook's file (scripts/tui-stop-hook.mjs). `origin`, `origin_why`, `prompt_at`, `prompt_key`,
  *  `prompts`, `origin_ids`, `origin_teammates`, `origin_idle`: what started the turn, as the hook read it from the transcript
  *  (scripts/turn-origin.mjs). */
 interface Marker {
   text?: unknown; at?: number; transcript_path?: string; origin?: unknown; origin_why?: unknown; prompt_at?: unknown;
-  prompt_key?: unknown; prompts?: unknown; origin_ids?: unknown; origin_teammates?: unknown; origin_idle?: unknown;
+  prompt_key?: unknown; prompt_len?: unknown; prompts?: unknown; origin_ids?: unknown; origin_teammates?: unknown; origin_idle?: unknown;
 }
 
 /** The key of a typed prompt, as scripts/turn-origin.mjs (promptKey) computes it from the transcript:
  *  the paste tags left out, NFC, every run of white space one space, trimmed, SHA-256, 32 hex digits. */
 export function promptKey(text: string): string {
-  return createHash('sha256').update(text.replace(PASTED_TAG, ' ').normalize('NFC').replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 32);
+  return createHash('sha256').update(promptForm(text)).digest('hex').slice(0, 32);
+}
+/** A prompt as promptKey hashes it: the paste tags left out, NFC, every run of white space one space,
+ *  trimmed. Its length is the `prompt_len` the hook writes (turn-origin.mjs). */
+export function promptForm(text: string): string {
+  return text.replace(PASTED_TAG, ' ').normalize('NFC').replace(/\s+/g, ' ').trim();
 }
 /** The tags Claude Code wraps a pasted text of several lines in, in the transcript (turn-origin.mjs). */
 const PASTED_TAG = /<\/?pasted_content id="[0-9a-f]{4}">/g;
@@ -175,6 +187,10 @@ export function sameAnswer(a: string, b: string): boolean {
 /** The start of the line a turn writes when it drops a marker whose typed prompt is not the one it
  *  typed (daemon/health.ts counts it, brain/canary.ts fails on it). */
 export const KEY_MISS_LINE = 'tmux: marker dropped, prompt key miss:';
+/** The start of the line a turn writes when its marker's key is not the one it typed, but the prompt
+ *  Claude Code ran starts or ends with the typed message (keptOnMiss): the answer is delivered. Counted and
+ *  failed on as KEY_MISS_LINE is: the prompt was not what was typed. */
+export const KEY_KEPT_LINE = 'tmux: prompt key miss, answer kept:';
 
 /** Background tasks remembered as started in a turn of Angelia's: a task's end is delivered by these. */
 const OURS_MAX = 500;
@@ -579,6 +595,11 @@ export class TuiBrain extends EventEmitter implements Brain {
   private quietEnd?: { sentAt: number; endedAt: number; said: string; key: string; taken: string[]; peer: boolean };
   /** The key (promptKey) of what this turn typed, from its Enter until the turn ends. */
   private typedKey = '';
+  /** Which path set typedKey (`turn`: a message typed; `follow`: the untaken messages of the last turn,
+   *  which Claude Code runs as a turn of its own), and what was typed in promptForm ('' when it is not
+   *  one text here). For the key miss line and its net (keptOnMiss). */
+  private typedBy = '';
+  private typedForm = '';
   /** The same key, for holding a request to the turn it was typed for (ofThisTurn): unlike typedKey it
    *  is kept when that turn is read again (follow: /resume, or a restart, which carries it: turnKey). */
   private tieKey = '';
@@ -899,10 +920,11 @@ export class TuiBrain extends EventEmitter implements Brain {
         pane = now;
       }
       // Text already in the box would go with ours: a message half cleared by an earlier failure, a
-      // paste a restart cut before its Enter, something typed in the app and not sent. Cleared line by
-      // line (clearBox: one Ctrl-U clears one line of a box of several), and what it was is said.
-      const leftover = await this.clearBox();
-      if (leftover) this.emit('log', `tmux: the input box held text before a paste; cleared: ${JSON.stringify(leftover.slice(0, 120))} pane=${this.name}`);
+      // paste a restart cut before its Enter, something typed in the app and not sent, a prompt called
+      // back from the history. Cleared from any cursor (clearBox), and what it was is said; what the
+      // clear could not reach keeps the paste from its Enter (boxHoldsOnly, below).
+      const box = await this.clearBox();
+      if (box.held) this.emit('log', `tmux: the input box held text before a paste; ${box.left ? `${box.left === box.held ? 'it did not change' : 'not all of it went'}, the paste goes in only if the box then holds it alone` : 'cleared'}: ${JSON.stringify(box.held.slice(0, 120))} pane=${this.name}`);
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       if ((await loadBuffer(this.name, text, this.dir, (a) => this.tm(a))).code !== 0) {
         this.emit('log', `tmux: the message could not be loaded into a paste buffer pane=${this.name}`);
@@ -917,6 +939,10 @@ export class TuiBrain extends EventEmitter implements Brain {
         await sleep(300);
         const now = await this.capture(20);
         if (!pasteLanded(now, text)) continue;
+        // Enter sends all of the box: with anything else in it (text the clear did not reach, a second
+        // chip) the prompt is not the message, and its turn would be keyed as none Angelia typed. Looked
+        // at again until the landing time is up (a redraw half done), then cleared and pasted again.
+        if (!boxHoldsOnly(now, text)) { why = 'the input box held other text with the pasted message'; continue; }
         // A turn started in the app between the idle check and now: Claude would queue our text
         // after it, and its answer would look like ours. Clear the box and say no.
         if (gen !== this.gen || paneBusy(now)) { why = 'the pane became busy before Enter'; break; }
@@ -928,7 +954,7 @@ export class TuiBrain extends EventEmitter implements Brain {
         break;
       }
       this.emit('log', `tmux: ${why} (attempt ${attempt}) pane=${this.name}`);
-      await this.tm(['send-keys', '-t', this.name, 'C-u']); // clear whatever landed, submit nothing
+      await this.clearBox(); // clear whatever landed, submit nothing
       if (gen !== this.gen) return { ok: false, why: 'released', keep: true };
       if (!again || attempt >= PASTE_TRIES || Date.now() > deadline) {
         return { ok: false, why: again ? 'Claude Code did not show the pasted message' : 'Claude Code did not take the message', keep: true };
@@ -1032,6 +1058,8 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.heldSince ??= sentAt;
       this.quietEnd = undefined;
       this.typedKey = this.tieKey = promptKey(cleanText(text));
+      this.typedBy = 'turn';
+      this.typedForm = promptForm(cleanText(text));
     };
     const typed = await this.paste(text, submit, gen);
     if (left.over) yield { kind: 'unasked', ...left.over };
@@ -1244,20 +1272,26 @@ export class TuiBrain extends EventEmitter implements Brain {
     return false;
   }
 
-  /** Empty the input box, one Ctrl-U per line, checking the screen after each: Ctrl-U clears the
-   *  cursor's line only, and a press that changes nothing (a hint, a redraw not yet come) is not
-   *  repeated for ever. Returns what the box held, or '' when it was empty. */
-  private async clearBox(): Promise<string> {
+  /** Empty the input box, one Ctrl-K and one Ctrl-U at a time, checking the screen after each pair; a
+   *  pair that changes nothing (a hint, a redraw not yet come) is not repeated for ever. Ctrl-U alone
+   *  deletes only from the cursor back to its line's start: with the cursor at the start of what the box
+   *  held (a prompt called back from the history, a line someone moved back in) it deleted nothing, the
+   *  paste went in before that text, and Claude Code sent both as one prompt, keyed as no prompt Angelia
+   *  typed (measured on 2.1.332: the key misses of 0.4.4). Ctrl-K deletes from the cursor to the line's
+   *  end, and each of the two deletes the line break at its side when the cursor is right at it (read
+   *  from the 2.1.332 program text), so pairs empty a box of any lines from any cursor. Returns what the
+   *  box held and what is still in it ('' and '' for a box that was empty). */
+  private async clearBox(): Promise<{ held: string; left: string }> {
     const first = boxText(await this.capture(20));
     let last = first;
-    for (let i = 0; last && i < 12; i++) {
-      await this.tm(['send-keys', '-t', this.name, 'C-u']);
+    for (let i = 0; last && i < CLEAR_ROUNDS; i++) {
+      await this.tm(['send-keys', '-t', this.name, 'C-k', 'C-u']);
       await sleep(400);
       const now = boxText(await this.capture(20));
       if (now === last) { await sleep(1200); const again = boxText(await this.capture(20)); if (again === last) break; last = again; continue; }
       last = now;
     }
-    return first;
+    return { held: first, left: last };
   }
 
   /** The transcript from `offset` on shows Claude Code took a message keyed `key`: it queued one (its
@@ -1349,6 +1383,8 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.followKeys = f.keys;
     this.restoredKeys = [];
     this.typedKey = this.tieKey = f.keys[0];
+    this.typedBy = 'follow';
+    this.typedForm = '';
     this.quietEnd = undefined;
     this.lastUsedAt = Date.now();
     try {
@@ -1379,6 +1415,36 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.rows = 'open';
       yield* this.watch(f.since, false, gen, false);
     } finally { this.followKeys = []; }
+  }
+
+  /**
+   * The net under a key miss: the marker's turn is this one's after all, and its answer is delivered,
+   * when all of these hold. The message was typed by turn() (its words are known) and has at least
+   * KEPT_MIN_CHARS in promptForm, the turn is not a peer's (an answer to another prompt would go to
+   * the peer), the hook says the turn was started by one typed prompt, written (`prompt_at`) after this
+   * turn's Enter (within KEPT_WINDOW_MS), and the transcript, from this turn's Enter on, has that
+   * prompt (the row whose key is the marker's), and it starts or ends with the whole message typed, in
+   * promptForm: leftover text went before or after the paste. A prompt typed in the app before
+   * Angelia's Enter (the gap the miss check is for) is written before it and is not read here, and
+   * text typed into the box with ours does not get past the check before Enter (boxHoldsOnly). Never
+   * for a turn Claude Code ran for several untaken messages (follow): its keys are the check there.
+   */
+  private keptOnMiss(m: Marker, sentAt: number): boolean {
+    if (this.typedBy !== 'turn' || this.turnPeer || this.typedForm.length < KEPT_MIN_CHARS || typeof m.prompt_key !== 'string') return false;
+    // Written at the Enter (measured on 2.1.332); submitPasted may press it three times.
+    if (typeof m.prompt_at !== 'number' || m.prompt_at < sentAt || m.prompt_at > sentAt + KEPT_WINDOW_MS) return false;
+    for (const line of readSlice(this.transcript, this.from).split('\n')) {
+      if (!line.includes('"user"')) continue;
+      let row: { type?: unknown; isSidechain?: unknown; isMeta?: unknown; message?: { content?: unknown } } | null;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (!row || row.type !== 'user' || row.isSidechain === true || row.isMeta === true) continue;
+      const text = promptText(row.message?.content);
+      if (text && promptKey(text) === m.prompt_key) {
+        const form = promptForm(text);
+        return form.startsWith(this.typedForm) || form.endsWith(this.typedForm);
+      }
+    }
+    return false;
   }
 
   /** Read whole rows from `from` (where the last turn's reader began its last read: the prompt row
@@ -1568,13 +1634,21 @@ export class TuiBrain extends EventEmitter implements Brain {
             continue;
           }
           if (m?.at && m.at >= sentAt && !command && m.origin === 'prompt' && m.prompts === 1 && typeof m.prompt_key === 'string' && this.typedKey && m.prompt_key !== this.typedKey && !this.followKeys.includes(m.prompt_key)) {
-            rmSync(this.markerPath, { force: true });
-            pending = null;
             const text = String(m.text ?? '').trim();
-            // One fixed line: `angelia health` counts it, and the canary fails on it (a new Claude Code
-            // that stores a typed prompt another way would drop every answer here).
-            this.emit('log', `${KEY_MISS_LINE} prompts=1 chars=${text.length} pane=${this.name}`);
-            continue;
+            // Both keys' heads and lengths, and which path typed: what differs, never the words.
+            const keys = `typed=${this.typedKey.slice(0, 8)}/${this.typedForm ? this.typedForm.length : '?'} hook=${m.prompt_key.slice(0, 8)}/${typeof m.prompt_len === 'number' ? m.prompt_len : '?'} by=${this.typedBy || '?'}`;
+            if (this.keptOnMiss(m, sentAt)) {
+              // The prompt Claude Code ran starts or ends with the message typed, after this turn's Enter: the
+              // turn is this message's, with something more in its prompt. Its answer goes to the chat.
+              this.emit('log', `${KEY_KEPT_LINE} prompts=1 chars=${text.length} ${keys}: the turn's one typed prompt starts or ends with the typed message, so its answer is delivered pane=${this.name}`);
+            } else {
+              rmSync(this.markerPath, { force: true });
+              pending = null;
+              // One fixed line: `angelia health` counts it, and the canary fails on it (a new Claude Code
+              // that stores a typed prompt another way would drop every answer here).
+              this.emit('log', `${KEY_MISS_LINE} prompts=1 chars=${text.length} ${keys} pane=${this.name}`);
+              continue;
+            }
           }
         }
         // Requests answered in the pane are told before the marker is taken, and the reader may be let go

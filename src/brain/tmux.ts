@@ -171,12 +171,29 @@ export function paneMidTurn(pane: string, text?: string): boolean {
 }
 
 /** The box holds `text` and nothing else: its collapsed chip (one paste), or the text itself, as the
- *  box wraps it. Not text someone typed before or after it. */
+ *  box wraps it. Not text someone typed before or after it, and not a second chip: Claude Code sends
+ *  all of the box, so text left in it goes with the paste and the prompt it stores is not the one
+ *  typed (a key miss: measured on 2.1.332, a line or a chip left with the cursor at its start).
+ *  Only letters and digits are compared: the box draws a line's `>` as its prompt mark (boxText takes
+ *  it off), and a terminal may not give back an emoji's joiners, a variation selector or a combining
+ *  mark as they were typed; text left in the box that has none of those is not what a key miss is made of. */
 export function boxHoldsOnly(pane: string, text: string): boolean {
   const shown = boxText(pane);
   if (/^\[Pasted text #\d+(?: \+\d+ lines?)?\]$/.test(shown)) return true;
-  const flat = (s: string) => s.replace(/\s+/g, '');
-  return !!flat(text) && flat(shown) === flat(text);
+  const flat = (s: string) => s.normalize('NFC').replace(/[^\p{L}\p{N}]+/gu, '');
+  const want = flat(text);
+  if (!want) return false;
+  // A long text drawn with its middle cut (`[...Truncated text #2 +40 lines...]`): the parts shown are
+  // the text's, in order, from its start to its end.
+  const parts = shown.split(/\[\.\.\.Truncated text #\d+ \+\d+ lines\.\.\.\]/).map(flat);
+  if (parts.length === 1) return parts[0] === want;
+  let at = 0;
+  for (const [i, p] of parts.entries()) {
+    const found = i === 0 ? (want.startsWith(p) ? 0 : -1) : i === parts.length - 1 ? (want.endsWith(p) && want.length - p.length >= at ? want.length - p.length : -1) : want.indexOf(p, at);
+    if (found < 0) return false;
+    at = found + p.length;
+  }
+  return true;
 }
 
 const clean = (l: string): string => l.replace(/[│╭╮╰╯┃]/g, ' ').replace(/\s+/g, ' ').trim();

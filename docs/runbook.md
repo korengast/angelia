@@ -65,8 +65,8 @@ put them in jobs, and the chat of the job's profile gets a line only when there 
 day: turns that ended with no answer, failed, stalled or threw, answers that could not be delivered,
 tmux turns that ended by the quiet pane (all of them, and the ones with no answer for a message),
 panes that read idle with the turn open, API errors, retries with a fresh session, permissions
-auto-denied, markers a tmux turn dropped on a prompt key miss (`tmux: marker dropped, prompt key
-miss:`), and for the daemon as a whole its starts, WhatsApp drops and send retries (each `send
+auto-denied, prompt key misses of tmux turns (`tmux: marker dropped, prompt key miss:`, and
+`tmux: prompt key miss, answer kept:` when the net delivered the answer), and for the daemon as a whole its starts, WhatsApp drops and send retries (each `send
 failed, again in N s` line is one more try of a send, not a lost message). A failure that the daemon
 tried again (an API error, a first turn that died) is not counted as failed: only the end of the
 retry is. The window is the last 24 hours, or the last N days (at most 30), split by your local
@@ -78,9 +78,15 @@ a print-mode turn writes no line in the log, so there is no total of all turns.
 `--alert` prints nothing when every profile is within the limits, else one line for a chat. The
 limits, per profile in the window: 2 turns with no answer, 3 failed turns (a turn stopped with
 `/stop` is not one), 1 stalled turn, 2 tmux turns that the quiet pane ended with no answer, 1 prompt key miss. A key
-miss means the Stop hook read the typed prompt differently from what Angelia typed, so that turn
-dropped its own answer; when a new Claude Code stores a prompt another way, every turn of several
-lines does so. `angelia canary` checks for it (its multi-line paste check).
+miss means the prompt the Stop hook read is not what Angelia typed, so that turn dropped its own
+answer; when a new Claude Code stores a prompt another way, every turn of several lines does so.
+`angelia canary` checks for it (its multi-line paste check). The line gives the first 8 hex digits
+and the length of both keys (`typed=` and `hook=`) and which path typed (`by=turn`, or `by=follow`
+for messages Claude Code ran after the turn they were typed into), never the words. Text left in the
+input box before a paste is cleared from any cursor position, and the message is sent only when the
+box holds it alone. When the prompt stored after Angelia's Enter still starts or ends with the whole
+message typed, the answer is delivered with the `answer kept` line instead of being dropped. Not for
+a message shorter than 24 characters, and not for a peer's turn.
 
 **`angelia canary [--if-new-build] [--json]`** tries tmux mode for real on the Claude Code build
 installed now. tmux mode reads Claude Code's screen and transcript, and a new build can change
