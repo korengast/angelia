@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,13 +24,14 @@ test('a --resume launch answers the resume dialog with Resume, once it takes key
     const cwd = mkdtempSync(join(tmpdir(), 'angelia-tuirs-cwd-'));
     writeFileSync(join(cwd, 'resume-mode.txt'), mode);
     const profile = Config.parse({ profiles: { x: { cwd, tui: true } }, routes: [] }).profiles.x;
-    const b = new TuiBrain(profile, { id: `11111111-2222-3333-4444-55555555556${n}`, started }, { bin: FAKE, startTimeoutMs: 20_000 });
+    const id = `11111111-2222-3333-4444-55555555556${n}`;
+    const b = new TuiBrain(profile, { id, started }, { bin: FAKE, startTimeoutMs: 20_000 });
     const logs: string[] = [];
     b.on('log', (l: string) => logs.push(l));
     b.start();
     const problem = await ((b as any).ready as Promise<string | null>);
     const read = (f: string) => (existsSync(join(cwd, f)) ? readFileSync(join(cwd, f), 'utf8') : '');
-    return { problem, logs: logs.filter((l) => l.includes('resume dialog')).map((l) => l.replace(/^pane \S+ /, '')), choice: read('choice.txt'), keys: read('keys.log').trim().split('\n').filter(Boolean).map((k) => JSON.parse(k) as string) };
+    return { b, cwd, id, profile, read, problem, logs: logs.filter((l) => l.includes('resume dialog')).map((l) => l.replace(/^pane \S+ /, '')), choice: read('choice.txt'), keys: read('keys.log').trim().split('\n').filter(Boolean).map((k) => JSON.parse(k) as string) };
   };
 
   const esc = await start('esc', 1);
@@ -50,6 +51,37 @@ test('a --resume launch answers the resume dialog with Resume, once it takes key
   assert.equal(stuck.keys.length, 3, 'a bounded number of presses');
   assert.ok(stuck.keys.every((k) => !k.includes('\r')), 'never Enter off "Resume"');
   assert.deepEqual(stuck.logs, ['shows the resume dialog, and the cursor did not reach "Resume": no Enter pressed']);
+
+  // A running idle pane asks: the next message answers it, then goes in.
+  const until = async (ok: () => boolean) => { for (let i = 0; i < 100 && !ok(); i++) await new Promise((r) => setTimeout(r, 100)); assert.ok(ok()); };
+  const live = await start('idle', 5);
+  assert.equal(live.problem, null);
+  const shows = (b: typeof live.b) => execFileSync('tmux', ['-L', socket, 'capture-pane', '-p', '-t', b.name], { encoding: 'utf8' }).includes('Esc to dismiss');
+  const reopen = async () => {
+    for (const f of ['keys.log', 'choice.txt']) rmSync(join(live.cwd, f), { force: true });
+    writeFileSync(join(live.cwd, 'open-now'), '');
+    await until(() => shows(live.b));
+  };
+  await reopen();
+  const logs: string[] = [];
+  live.b.on('log', (l: string) => logs.push(l));
+  assert.deepEqual(await (live.b as any).paste('hello there'), { ok: true });
+  const keys = live.read('keys.log');
+  assert.ok(keys.startsWith('"\\u001b"\n'), 'Esc first');
+  assert.ok(keys.indexOf('hello there') > 0, 'then the message');
+  assert.equal(live.read('choice.txt'), 'resume');
+  assert.equal(logs.filter((l) => l.includes('answered the resume dialog with Esc')).length, 1);
+
+  // A restarted daemon reattaches the pane while it asks.
+  await reopen();
+  const again = new TuiBrain(live.profile, { id: live.id, started: true }, { bin: FAKE, startTimeoutMs: 20_000 });
+  const relogs: string[] = [];
+  again.on('log', (l: string) => relogs.push(l));
+  again.start();
+  assert.equal(await ((again as any).ready as Promise<string | null>), null);
+  await until(() => live.read('choice.txt') === 'resume');
+  assert.deepEqual(live.read('keys.log').trim().split('\n').map((k) => JSON.parse(k)), ['\x1b']);
+  assert.equal(relogs.filter((l) => l.includes('answered the resume dialog with Esc')).length, 1);
 
   // Not a --resume launch: the dialog is not one this start answers.
   const fresh = await start('esc', 4, false);

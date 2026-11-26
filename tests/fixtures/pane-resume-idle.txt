@@ -1,0 +1,9 @@
+ Resume this conversation?
+
+ This conversation has been inactive for 2h 5m and is 180.2k tokens long. Resuming it will use about 4% of your
+ 5-hour usage limit.
+
+   Resume
+ ❯ Start a new conversation
+
+ Enter to confirm · Esc to dismiss

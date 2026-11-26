@@ -276,7 +276,8 @@ export const ADD_DIR_MARKER = 'Adding a new directory:';
 /** A long session resumed after an idle hour may open "Resume this conversation?" before the prompt,
  *  with "Resume" and "Start a new conversation" (a customer's pane on claude 2.1.329; the words and keys
  *  read in the 2.1.332 program text). Which row starts highlighted differs: "Resume", the new
- *  conversation, or none. */
+ *  conversation, or none. A running idle session has a form of it too: no row numbers, and its foot says
+ *  "Esc to dismiss" (program text; not seen on a screen). */
 export const RESUME_MARKER = 'Resume this conversation?';
 
 /** Each start dialog is found by one line (anchorOf): the resume, add-dir and imports titles, and the trust
@@ -321,7 +322,7 @@ const NEW_ROW = /^(?:❯\s*)?(?:\d\.\s*)?Start a new conversation(?:\s{2,}.*)?$/
 
 /** The open resume dialog, or null. It is the last start dialog on screen, with no input box below it,
  *  both options drawn under its title, and no cursor on any other row below it. `esc`: its foot says
- *  Esc resumes. `onResume`: the cursor is on "Resume", so Enter resumes and nothing else. The numbers
+ *  Esc resumes or dismisses. `onResume`: the cursor is on "Resume", so Enter resumes and nothing else. The numbers
  *  and times in its sentence are not read. */
 export function resumeDialog(pane: string): { esc: boolean; onResume: boolean } | null {
   const lines = pane.replace(/\n+$/, '').split('\n');
@@ -333,7 +334,7 @@ export function resumeDialog(pane: string): { esc: boolean; onResume: boolean } 
   if (!below.some((l) => RESUME_ROW.test(l)) || !below.some((l) => NEW_ROW.test(l))) return null;
   const cursor = [...below].reverse().find((l) => l.includes('❯'));
   if (cursor !== undefined && !RESUME_ROW.test(cursor) && !NEW_ROW.test(cursor)) return null;
-  return { esc: below.some((l) => l.includes('Esc to resume')), onResume: cursor !== undefined && RESUME_ROW.test(cursor) };
+  return { esc: below.some((l) => l.includes('Esc to resume') || l.includes('Esc to dismiss')), onResume: cursor !== undefined && RESUME_ROW.test(cursor) };
 }
 
 /** The folder the add-dir dialog asks about, or null when that dialog is not open. Both answers must

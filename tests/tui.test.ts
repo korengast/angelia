@@ -145,6 +145,16 @@ test('the resume dialog of a long idle session is found by its title and options
   for (const other of ['trust', 'imports', 'adddir', 'permission', 'idle', 'model-dialog']) assert.equal(resumeDialog(fixture(other)), null, other);
 });
 
+// pane-resume-idle.txt is written after the 2.1.332 program text, not captured.
+test('the idle form of the resume dialog (no numbers, "Esc to dismiss") is found, with any row or none highlighted', () => {
+  const d = fixture('resume-idle');
+  assert.equal(paneIdle(d), false);
+  assert.deepEqual(resumeDialog(d), { esc: true, onResume: false });
+  assert.deepEqual(resumeDialog(d.replace('❯ Start', '  Start')), { esc: true, onResume: false });
+  assert.deepEqual(resumeDialog(d.replace('❯ Start', '  Start').replace('  Resume\n', '❯ Resume\n')), { esc: true, onResume: true });
+  assert.equal(resumeDialog(d + fixture('idle')), null);
+});
+
 // The add-dir fixtures are not raw captures: they were written after a real claude 2.1.326 frame, at
 // 120 columns (the rule's width), where the panes run at 220, and the folder is a placeholder. In
 // pane-adddir-wrapped.txt the folder has the real wrap of a 220-column pane: Ink breaks it at column
