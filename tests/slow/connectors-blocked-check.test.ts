@@ -35,22 +35,41 @@ process.stdin.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\\n'
   return f;
 }
 
-/** Long enough for a node child to start under a loaded test run and print its warning. */
-const CHECK_MS = 3000;
+/** The check's own timer never fires in these tests: each one is run by hand, once the stderr it
+ *  must count has been read (events, not wall time: a loaded run took longer than any fixed wait). */
+const NEVER_MS = 600_000;
+
+/** Resolves once the brain has counted `names` blocked connectors from the child's stderr, or the
+ *  stderr ended: looked at now and at each chunk, after the brain's own listener (added first, at the
+ *  spawn) has read it. */
+function counted(b: unknown, names: number): Promise<void> {
+  const x = b as { blocked: string[]; child: import('node:child_process').ChildProcess };
+  return new Promise((done) => {
+    const check = () => { if (x.blocked.length >= names) done(); };
+    x.child.stderr!.on('data', () => setImmediate(check));
+    x.child.stderr!.on('end', () => done());
+    check();
+  });
+}
+
+/** The check the timer would make, now. */
+const checkNow = (b: unknown) => (b as { checkBlocked(): void }).checkBlocked();
 
 test('print mode: a start that names fewer connectors as blocked than it drops warns once, in the log, after the connector list had its time', { timeout: 40_000 }, async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'angelia-blocked-')));
   const profile = Config.parse({ profiles: { x: { cwd: dir } }, routes: [] }).profiles.x;
   const ONE = 'Warning: claude.ai MCP server blocked by enterprise policy: claude.ai Gmail';
   const run = async (denied: string[], warn: string, late = false) => {
-    const b = new ClaudeBrain(profile, { id: '11111111-2222-3333-4444-555555555555', started: false }, { bin: fakeClaude(dir, warn, late), blockedCheckMs: CHECK_MS, mcp: { args: [], settings: { deniedMcpServers: denied.map((serverUrl) => ({ serverUrl })) } } });
+    const b = new ClaudeBrain(profile, { id: '11111111-2222-3333-4444-555555555555', started: false }, { bin: fakeClaude(dir, warn, late), blockedCheckMs: NEVER_MS, mcp: { args: [], settings: { deniedMcpServers: denied.map((serverUrl) => ({ serverUrl })) } } });
     const logs: string[] = [], short: string[] = [];
     b.on('log', (l: string) => logs.push(l));
     b.on('connectors-short', (t: string) => short.push(t));
-    const t0 = Date.now();
     b.start();
+    // One timer per start, set at the spawn: not one per turn.
+    assert.ok((b as unknown as { blockedTimer?: unknown }).blockedTimer, 'the check is armed at the start');
     for (let i = 0; i < 2; i++) for await (const _ of b.turn('hi')) { /* drain */ }
-    await new Promise((r) => setTimeout(r, Math.max(0, t0 + CHECK_MS + 300 - Date.now())));
+    if (warn) await counted(b, 1);
+    checkNow(b);
     await b.stop();
     return { logs, short };
   };
@@ -66,13 +85,13 @@ test('print mode: a start that names fewer connectors as blocked than it drops w
   // The warning after the first answer (Claude Code does not wait for the connector list): still counted.
   const late = await run([GMAIL], ONE, true);
   assert.deepEqual(late.short, [], 'the count waits for the list, not for the first result');
-  // A child gone before the check says nothing.
-  const b = new ClaudeBrain(profile, { id: '11111111-2222-3333-4444-555555555556', started: false }, { bin: fakeClaude(dir, ''), blockedCheckMs: CHECK_MS, mcp: { args: [], settings: { deniedMcpServers: [{ serverUrl: GMAIL }] } } });
+  // A child gone before the check says nothing: its exit disarms the timer, and the check itself is quiet.
+  const b = new ClaudeBrain(profile, { id: '11111111-2222-3333-4444-555555555556', started: false }, { bin: fakeClaude(dir, ''), blockedCheckMs: NEVER_MS, mcp: { args: [], settings: { deniedMcpServers: [{ serverUrl: GMAIL }] } } });
   const short: string[] = [];
   b.on('connectors-short', (t: string) => short.push(t));
   b.start();
   await b.stop();
-  await new Promise((r) => setTimeout(r, CHECK_MS + 300));
+  checkNow(b);
   assert.deepEqual(short, []);
 });
 
@@ -84,17 +103,25 @@ test('the orchestrator tells the owner once per profile, in a direct chat of the
   writeFileSync(join(cwd, RECORD), JSON.stringify({ version: 1, connectors: [], connectorsAll: true, connectorsDenied: [GMAIL, DRIVE], mcpOwn: [], mcpDeny: [] }));
   const cfg = Config.parse({ profiles: { a: { cwd } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a', owners: ['1'] }], defaults: { max_out_per_min: 1000 } });
   const sent: { chat: string; text: string }[] = [];
-  const o = new Orchestrator(cfg, { telegram: { send: async (chat: string, text: string) => { sent.push({ chat, text }); } } } as any, { stateDir: join(dir, 'state'), blockedCheckMs: CHECK_MS, bins: { 'claude-code': fakeClaude(dir, 'Warning: claude.ai MCP server blocked by enterprise policy: claude.ai Gmail') } });
+  let told: () => void = () => {};
+  const o = new Orchestrator(cfg, { telegram: { send: async (chat: string, text: string) => { sent.push({ chat, text }); if (text.includes('named 1 as blocked')) told(); } } } as any, { stateDir: join(dir, 'state'), blockedCheckMs: NEVER_MS, bins: { 'claude-code': fakeClaude(dir, 'Warning: claude.ai MCP server blocked by enterprise policy: claude.ai Gmail') } });
   t.after(() => o.shutdown());
   const msg = (text: string) => o.handle({ platform: 'telegram', chat: '1', sender: '1', senderName: 'Owner', text, isGroup: false, mentioned: false, media: [] });
-  const settle = () => new Promise((r) => setTimeout(r, CHECK_MS + 500));
+  const brain = () => (o as unknown as { brains: Map<string, unknown> }).brains.get('telegram:1');
+  // Each start: its warning read, then the check; the first one's notice sent before the second start.
+  const first = new Promise<void>((r) => { told = r; });
   await msg('hi');
-  await settle();
+  await counted(brain(), 1);
+  checkNow(brain());
+  await first;
   await msg('/new');
   await msg('hi again');
-  await settle();
-  const told = sent.filter((x) => x.text.includes('named 1 as blocked'));
-  assert.equal(told.length, 1, JSON.stringify(sent));
-  assert.equal(told[0].chat, '1');
-  assert.match(told[0].text, /Check the addresses with: angelia check-config/);
+  await counted(brain(), 1);
+  checkNow(brain());
+  // The second notice would be sent as the first was (connectorsShort): give its send the same turn.
+  await new Promise((r) => setImmediate(r));
+  const all = sent.filter((x) => x.text.includes('named 1 as blocked'));
+  assert.equal(all.length, 1, JSON.stringify(sent));
+  assert.equal(all[0].chat, '1');
+  assert.match(all[0].text, /Check the addresses with: angelia check-config/);
 });
