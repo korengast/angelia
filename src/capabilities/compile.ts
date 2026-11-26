@@ -293,10 +293,32 @@ export function readGuard(stateDir: string, name: string): LaunchGuard | undefin
 
 const guardFile = (stateDir: string, name: string) => join(stateDir, 'compiled', `${encodeURIComponent(name)}.json`);
 
-/** The MCP keys of a Claude profile's launch as a settings file, beside its guard: what the /status
- *  terminal line passes with --settings, so the line names no address (fix2 N1). Written by compile,
- *  only when there are keys. */
-export const mcpSettingsFile = (stateDir: string, name: string) => join(stateDir, 'compiled', `${encodeURIComponent(name)}.settings.json`);
+/** The MCP keys of a Claude profile's launch as a settings file, in the state folder: what print
+ *  mode and the /status terminal line pass with --settings, so no command line names an address
+ *  (fix2 N1). In a folder of its own: beside the guards, `<name>.settings.json` was also the guard of a
+ *  profile named `<name>.settings`. Written by compile, only when there are keys, and at a launch
+ *  (launchSettingsFile). */
+export const mcpSettingsFile = (stateDir: string, name: string) => join(stateDir, 'compiled', 'settings', `${encodeURIComponent(name)}.json`);
+/** Where 0.4.2 to 0.4.8 kept it: removed at a compile, unless it is the guard of another profile. */
+const legacySettingsFile = (stateDir: string, name: string) => join(stateDir, 'compiled', `${encodeURIComponent(name)}.settings.json`);
+
+/** The settings file of a launch's MCP keys (mcpSettingsFile), written now when it does not hold
+ *  exactly them: the keys come from the guard, so they are what the compile wrote there (a guard from
+ *  before the file, or a file removed, is no reason to put them on a command line). Undefined when
+ *  there are no keys, or the file cannot be written: the caller passes them inline. */
+export function launchSettingsFile(stateDir: string, name: string, settings: Record<string, unknown>): string | undefined {
+  if (!Object.keys(settings).length) return undefined;
+  const file = mcpSettingsFile(stateDir, name);
+  const text = JSON.stringify(settings, null, 2) + '\n';
+  try { if (readPlainText(file) === text) return file; } catch { /* missing or unreadable: written below */ }
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, text, { mode: 0o600 });
+    renameSync(tmp, file);
+    return file;
+  } catch { return undefined; }
+}
 
 function writeGuard(stateDir: string, name: string, g: LaunchGuard): void {
   mkdirSync(join(stateDir, 'compiled'), { recursive: true, mode: 0o700 });
@@ -1528,8 +1550,11 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
       writeGuard(stateDir, name, { cwd: p.cwd, deny: wantDeny, backend: p.backend, ...(wantSandbox ? { sandbox: true } : {}), ...(p.backend === 'codex' && p.sandbox !== false ? { codexSandbox: true } : {}), ...(p.backend === 'pi' && p.sandbox !== false ? { piSandbox: true } : {}), ...(p.backend === 'agy' && p.sandbox !== false ? { agySandbox: true } : {}), ...(gdir ? { agy: { mcpServers: agyMcp, skills: Object.keys(wantLinks) } } : {}), stateReach: record.stateReach, ...(guardMcp ? { mcp: guardMcp, claudeConfig: claudeUserFiles(home, opts.env ?? process.env).config } : {}) });
       const sfile = mcpSettingsFile(stateDir, name);
       const keys = guardMcp ? mcpLaunch(p.cwd, guardMcp).settings : {};
-      if (Object.keys(keys).length) writeFileSync(sfile, JSON.stringify(keys, null, 2) + '\n', { mode: 0o600 });
+      if (Object.keys(keys).length) { if (!launchSettingsFile(stateDir, name, keys)) throw new Error(`${sfile} cannot be written`); }
       else rmSync(sfile, { force: true });
+      // The copy where 0.4.2 to 0.4.8 kept it holds the same addresses: not left behind, unless that
+      // path is the guard of a profile named `<name>.settings`.
+      if (!(`${name}.settings` in cfg.profiles)) rmSync(legacySettingsFile(stateDir, name), { force: true });
     }, o.waitMs); },
   };
 }

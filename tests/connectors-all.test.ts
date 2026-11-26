@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse, stringify } from 'yaml';
 import { configNotes, loadConfig } from '../src/instance/config/load.js';
 import { connectorMode, droppedConnectors } from '../src/capabilities/resolve.js';
-import { deniedHash, deniedMatches, guardMcpLaunch, launchCheck, mcpLaunch, mcpSettingsFile, planProfile, planText, readGuard, readRecord, recordKey, RECORD } from '../src/capabilities/compile.js';
+import { deniedHash, deniedMatches, guardMcpLaunch, launchCheck, launchSettingsFile, mcpLaunch, mcpSettingsFile, planProfile, planText, readGuard, readRecord, recordKey, RECORD } from '../src/capabilities/compile.js';
 import { claudeArgv, claudeTerminalLine, claudeTuiArgv, tuiSettings } from '../src/brain/argv.js';
 import { claudeAskArgv } from '../src/brain/ask.js';
 import { exitReason } from '../src/brain/brain.js';
@@ -269,4 +269,36 @@ test('all mode: the record keeps a dropped address as a keyed hash; a record fro
   // Another key (or none) cannot vouch for the record: the start is refused until a compile.
   editJson(join(r.cwd, RECORD), (j) => { j.connectorsDenied = [deniedHash(GMAIL, Buffer.alloc(32, 7))]; });
   assert.equal(r.check().length, 1);
+});
+
+test('the launch\'s settings file: no clash with a profile named <name>.settings; written at a launch when gone; the old copy removed', () => {
+  const r = rig((t) => { t.profiles['home.settings'] = { cwd: join(t.profiles.home.cwd, '..', 'other') }; });
+  mkdirSync(join(r.root, 'other'));
+  // As 0.4.8 left it: the copy beside the guards.
+  const legacy = join(r.state, 'compiled', 'home.settings.json');
+  mkdirSync(join(r.state, 'compiled'), { recursive: true });
+  writeFileSync(legacy, '{"deniedMcpServers":[{"serverUrl":"https://gmailmcp.googleapis.com/*"}]}');
+  r.plan().apply();
+  // The guard of home.settings is that path: the copy is not removed, and it is not taken for one.
+  planProfile(r.cfg(), 'home.settings', { home: r.home, stateDir: r.state, env: {} }).apply();
+  assert.equal(readGuard(r.state, 'home.settings')!.cwd, join(r.root, 'other'));
+  assert.notEqual(mcpSettingsFile(r.state, 'home'), legacy);
+  const mcp = guardMcpLaunch(r.state, 'home', r.cwd)!;
+  assert.deepEqual(JSON.parse(readFileSync(mcpSettingsFile(r.state, 'home'), 'utf8')), mcp.settings);
+  // Gone (a guard from before the file): written again at the launch, so no command line names an address.
+  rmSync(mcpSettingsFile(r.state, 'home'));
+  const p = r.cfg().profiles.home;
+  const line = claudeTerminalLine(p, 'sid', r.home, { mcp, settingsFile: mcpSettingsFile(r.state, 'home') });
+  assert.ok(line.includes('gmailmcp'), 'a file that is gone is not named: the keys go inline');
+  const file = launchSettingsFile(r.state, 'home', mcp.settings)!;
+  assert.equal(file, mcpSettingsFile(r.state, 'home'));
+  assert.ok(!claudeArgv(p, session, 'claude', undefined, mcp, file).join(' ').includes('gmailmcp'));
+  assert.ok(!claudeTerminalLine(p, 'sid', r.home, { mcp, settingsFile: file }).includes('gmailmcp'));
+  assert.equal(launchSettingsFile(r.state, 'home', {}), undefined, 'no keys, no file');
+  // Without a profile named home.settings, the next compile removes the old copy.
+  const r2 = rig();
+  mkdirSync(join(r2.state, 'compiled'), { recursive: true });
+  writeFileSync(join(r2.state, 'compiled', 'home.settings.json'), '{}');
+  r2.plan().apply();
+  assert.ok(!existsSync(join(r2.state, 'compiled', 'home.settings.json')));
 });
