@@ -1,0 +1,40 @@
+⏺ The commit did not run. The Bash call was denied, so note.txt is still
+  unstaged and no commit exists.
+
+  I did not retry the command. Tell me how you want to proceed:
+
+  - Run it again exactly as written (-m x, no trailer).
+  - Run it with the attribution trailer the harness asks for. The message would
+    be x plus a blank line and Co-Authored-By: Claude Haiku 5.5
+    <noreply@anthropic.com>.
+
+✻ Cooked for 6s · done 7:45 PM
+
+❯ Run exactly this with the Bash tool, one call, keeping the newlines:
+  printf "%s\n" "line one" \
+    "line two" \
+    "line three" > out.txt
+
+⏺ Writing three lines to out.txt using printf
+  ⎿  $ printf "%s\n" "line one" \
+     "line two" \
+     "line three" > out.txt
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode"
+ below
+ Write three lines to out.txt using printf
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ printf "%s\n" "line one" \
+ │   "line two" \
+ │   "line three" > out.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to /private/tmp/tmt-between/between-exp-WFoB
+      4A/a-rather-long-project-folder-name-for-wrapping from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend

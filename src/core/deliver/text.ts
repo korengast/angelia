@@ -19,6 +19,10 @@ export function notDeliveredLine(reason?: string): string {
   const why = (reason ?? '').replace(/^not delivered:\s*/, '').trim();
   return `Your message did not reach the agent${why ? `: ${why}` : ''}. Nothing was stopped, and its background work goes on. Send the message again in a few minutes. /stop ends the session, and its background work with it.`;
 }
+/** tmux mode: the turn's reader gave up on a tmux server that did not answer (brain/tui.ts,
+ *  TMUX_STALLS calls in a row timed out). The reason the turn ends with, and the chat's line for it. */
+export const TMUX_STALLED = 'tmux did not answer';
+export const TMUX_STALLED_LINE = 'tmux on this Mac did not answer for over a minute, so Angelia stopped watching this turn. The agent got your message and the session goes on: its answer reaches the chat when it comes. /stop ends it.';
 /** tmux mode: the session was handed to another reader (a handoff) while this message waited for the
  *  prompt, so it was never typed. No ids in it. */
 export const RELEASED_LINE = 'Your message did not reach the agent: the session changed while the message waited. Send the message again.';
@@ -54,6 +58,14 @@ export const LATE_ANSWER_LINE = 'Too late: that request is no longer waiting for
 export function permissionLine(id: string, tool: string, preview: string): string {
   return `🔐 ${tool}: ${preview}\nReply "yes" or "no". (request ${shortId(id)})`;
 }
+
+/** Above a request of a turn the agent started by itself between the chat's turns, tied to the chat's
+ *  work (the end of its background task, its teammate's message): nobody in the chat asked for this turn. */
+export const SELF_ASK_LINE = 'The agent woke up by itself (a background task ended, or a message came) and asks:';
+/** Above a request between the chat's turns of a turn nothing ties to the chat's work (a scheduled
+ *  prompt, another session's message, one the owner may have typed in the Claude app): asked, whatever
+ *  the levels say. */
+export const SELF_ASK_UNTIED_LINE = 'A turn Angelia did not type in this session asks (the agent woke by itself, or someone typed in the Claude app):';
 
 /** A request's id as the chat is shown it. */
 export function shortId(id: string): string { return id.slice(0, 8); }

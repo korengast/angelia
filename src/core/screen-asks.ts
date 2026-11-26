@@ -25,10 +25,16 @@ const PREVIEW_MAX = 160;
 
 /** A chat's pane: its tmux name and its private folder (brain/tui.ts, `dir`). */
 export interface DialogPane { key: string; name: string; dir?: string }
-export interface ScreenAlarm { key: string; name: string; tool: string; preview: string; at: number }
+/** `from`: who asks, when the dialog says (a teammate: "the restart-relay agent"). */
+export interface ScreenAlarm { key: string; name: string; tool: string; preview: string; from?: string; at: number }
 
-export function screenAlarmLine(a: Pick<ScreenAlarm, 'name' | 'tool' | 'preview'>, socket = TMUX_SOCKET): string {
-  return `A permission dialog waits in this chat's session and did not come through the chat (${shown(a.tool, TOOL_MAX)}: ${shown(a.preview, PREVIEW_MAX)}, as the screen draws it). The chat cannot answer it: answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t ${a.name}); /stop ends the turn.`;
+/** What the dialog asks, as the line names it: "Bash command from the restart-relay agent". */
+export function askedBy(a: Pick<ScreenAlarm, 'tool' | 'from'>): string {
+  return `${shown(a.tool, TOOL_MAX)}${a.from ? ` from ${shown(a.from, TOOL_MAX)}` : ''}`;
+}
+
+export function screenAlarmLine(a: Pick<ScreenAlarm, 'name' | 'tool' | 'preview' | 'from'>, socket = TMUX_SOCKET): string {
+  return `A permission waits: ${askedBy(a)} (${shown(a.preview, PREVIEW_MAX)}, as the screen draws it). It did not come through the chat, and the chat cannot answer it: answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t ${a.name}); /stop ends the turn.`;
 }
 
 /** Short, and with anything shaped like a credential masked: the line goes to a chat. */
@@ -53,7 +59,7 @@ function hookWaiting(dir: string): boolean {
  * right under the question, and nothing after them but option rows and the dialog's own foot, so the
  * question is the last thing drawn.
  */
-export function openDialog(pane: string): { tool: string; preview: string } | null {
+export function openDialog(pane: string): { tool: string; preview: string; from?: string } | null {
   if (paneHasBox(pane)) return null;
   const d = permissionDialog(pane);
   if (!d) return null;
@@ -63,7 +69,21 @@ export function openDialog(pane: string): { tool: string; preview: string } | nu
   if (at < 0 || !/^\s*❯\s*1\.\s*\S/.test(lines[at + 1] ?? '')) return null;
   const option = /^\s*(❯\s*)?\d+\.\s/;
   const foot = /^\s*(Esc to cancel|Tab to amend|ctrl\+e to explain)|^\s*$/i;
-  for (const l of lines.slice(at + 2)) if (!option.test(l) && !foot.test(l)) return null;
+  /** Under the dialog's foot Claude Code may list the session's agents, one row each, as it does
+   *  under the input box (fixture pane-busy-teammates: "⏺ main", "◯ <name>  <task>  <clock>"). */
+  const agentRow = /^\s*[⏺◯●○]\s+\S/;
+  /** An option too long for the pane goes on in rows of its own, indented past its number (measured
+   *  on 2.1.332 at 80 columns: "2. Yes, and don't ask again for git add and git commit commands in"
+   *  and the folder on the next rows). A pane is that narrow when a small terminal is attached to it. */
+  const wrapped = /^\s{4,}\S/;
+  let footSeen = false, inOption = true;
+  for (const l of lines.slice(at + 2)) {
+    if (/^\s*Esc to cancel/i.test(l)) footSeen = true;
+    if (option.test(l)) { inOption = !footSeen; continue; }
+    if (inOption && !footSeen && wrapped.test(l)) continue;
+    inOption = false;
+    if (!foot.test(l) && !(footSeen && agentRow.test(l))) return null;
+  }
   return d;
 }
 
@@ -106,7 +126,7 @@ export class ScreenAsks {
         looked.add(p.name);
         const pane = await this.capture(p.name);
         const d = pane === null ? null : openDialog(pane);
-        const sig = d ? `${d.tool}\n${d.preview}` : null;
+        const sig = d ? `${d.tool}\n${d.from ?? ''}\n${d.preview}` : null;
         // Answered in the pane or the app, or another dialog now: told of no longer.
         if (this.told.get(p.name) !== sig) this.told.delete(p.name);
         if (!d || !sig || hookWaiting(p.dir ?? paneDir(p.name))) { this.seen.delete(p.name); continue; }
@@ -114,7 +134,7 @@ export class ScreenAsks {
         if (!s || s.dialog !== sig) { this.seen.set(p.name, { dialog: sig, since: now }); continue; }
         if (now - s.since < (this.h.orphanMs ?? ORPHAN_MS) || this.told.has(p.name)) continue;
         try {
-          await this.h.tell({ key: p.key, name: p.name, tool: d.tool, preview: d.preview, at: now });
+          await this.h.tell({ key: p.key, name: p.name, tool: d.tool, preview: d.preview, ...(d.from ? { from: d.from } : {}), at: now });
           this.told.set(p.name, sig);
           this.h.log(`permission dialog with no relay key=${p.key} pane=${p.name} open ${Math.round((now - s.since) / 1000)} s: told to the chat`);
         } catch (e) { this.h.log(`permission dialog line failed key=${p.key} ${(e as Error).message}`); }

@@ -69,9 +69,12 @@ warm between turns, background tasks outlive a turn, and slash commands behave a
   ids of a task's end, and a key (a hash) of the typed prompt. The daemon reads the marker between
   turns while the daemon holds the session. A late answer of its own turn is sent when the turn's one
   typed prompt has the key of what Angelia typed; the answer to a task's end only when each task
-  it names was started in a turn Angelia typed, at most 6 an hour per chat. A turn a person typed
-  or typed into, a prompt the session scheduled, a teammate's message, or a turn the hook cannot
-  place, is not.
+  it names was started in a turn Angelia typed, at most 6 an hour per chat; the same for a named
+  teammate's message (2.1.332: a user row with no origin, `rowSource: recorded`, the line "Another
+  Claude session sent a message:", then `<teammate-message teammate_id="<name>">`) when that teammate
+  was spawned in such a turn, or in a turn such a message started; 30 an hour, counted apart, and a
+  teammate's idle note not counted. A turn a person typed or typed into, a prompt the
+  session scheduled, a teammate the owner spawned, or a turn the hook cannot place, is not.
 
 - **A message that comes while a turn runs.** It waited in Angelia's queue until the turn ended,
   and ran as a turn of its own; in a terminal, Claude Code queues what is typed meanwhile and gives
@@ -133,7 +136,7 @@ land in a group by surprise; decide deliberately rather than inherit it.
 A session is read between turns only while the daemon holds it (`idle_exit_minutes` after the chat's
 last turn or the last turn woken by the end of the chat's own work). After a daemon restart, or once the pane is
 parked, what the agent says by itself stays in the session until the chat's next message, and is
-not sent then. A teammate's or another agent's message is `unknown` until its row is measured. A
+not sent then. Another agent's or session's message is `unknown` until its row is measured. A
 prompt the session scheduled names no task: the row that fires it was not seen to carry an id that
 ties it to the turn that scheduled it, so its answer stays in the app. The text the agent writes in
 a turn the CLI started while one of Angelia's waited to be taken is read as that turn's progress;

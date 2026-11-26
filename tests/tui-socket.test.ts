@@ -31,6 +31,8 @@ test('a pane on another tmux server: every tmux call names it, and so does the l
   assert.equal((usual as any).socket, 'angelia');
   assert.match(screenOnlyLine('pane-1', 'angelia-canary-1'), /\(tmux -L angelia-canary-1 attach -t pane-1\)/);
   assert.match(screenOnlyLine('pane-1'), /\(tmux -L angelia attach -t pane-1\)/);
+  // A dialog the screen names: a teammate's, by its agent.
+  assert.match(screenOnlyLine('pane-1', 'angelia', { tool: 'Bash command', from: 'the restart-relay agent' }), /^A permission waits: Bash command from the restart-relay agent\. It did not come through Angelia/);
   // The start's own failure text is built from the same name.
   assert.ok(readFileSync(join(import.meta.dirname, '..', 'src', 'brain', 'tui.ts'), 'utf8').includes('(look with: tmux -L ${this.socket} attach -t ${this.name})'));
 });

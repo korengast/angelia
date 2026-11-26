@@ -29,7 +29,24 @@ import { createHash } from 'node:crypto';
  * alone, but only in a transcript where no row says where it came from (an older CLI): where others
  * do, a row that says nothing and opens with a task's tag is unknown. A row whose `origin.kind` is
  * something else and whose text opens with no known tag is `unknown`, and the kind is in the why.
- * Not measured: a teammate's or an agent's message, `unknown` until it is.
+ * Measured on Claude Code 2.1.332 (tests/live-tui-teammate.mts, 2026-11-25): a named teammate (the
+ * Agent tool with `name`, in-process) that sends the lead a message starts a turn with a user row that
+ * has no `origin` (in a transcript whose other rows have one), `rowSource: recorded`, and text that
+ * opens with "Another Claude session sent a message:" and then `<teammate-message teammate_id="<name>"
+ * ...>`; a row that lacks any of these is no teammate's message. When the teammate stops, its idle note comes the same way, with a JSON body of type
+ * `idle_notification`. Such a turn is a `notification` with `origin_teammates` (the names); the daemon
+ * delivers it only when it saw each of those teammates spawned in a turn of its own. `origin_idle`:
+ * every row that started it is an idle note. An agent's or another session's message is still
+ * `unknown`.
+ * Measured on Claude Code 2.1.332 (tests/live-tui-cross.mts, 2026-11-25): another local session's
+ * message (SendMessage to a session ListAgents lists) is a `queue-operation` enqueue whose text opens
+ * with `<cross-session-message from="...">`, then a user row with `isMeta: true`, `origin.kind: peer`,
+ * no `rowSource`, and text that opens with the same "Another Claude session sent a message:" line,
+ * then `<cross-session-message from="...">`. The origin and the meta flag tell it from a teammate's
+ * (isTeammateRow); its turn is `unknown`. Into a turn that runs (measured the same day, step 4): an
+ * enqueue, then a `remove` (not a dequeue), then at the next tool boundary, after the tool's result, an
+ * `attachment` row of type `queued_command` with `origin.kind: peer`: a row nobody typed that joins the
+ * typed turn (requestOrigin's `joined`, kind `other`).
  *
  * A turn may have several such rows (a prompt typed while a task's end is answered, a second task that
  * ends meanwhile). One typed prompt among them makes the whole turn `prompt`: its answer may speak to
@@ -44,9 +61,19 @@ import { createHash } from 'node:crypto';
 
 /** The one row Claude Code queues by itself that this file calls a notification: a background task ended. */
 const QUEUED = /^\s*<(task-notification)\b/;
-/** Other rows Claude Code writes as a user message that nobody typed, and no kind this file delivers.
- *  A teammate's or another agent's message is one until its row is measured. */
-const WRAPPED = /^\s*<(teammate-message|agent-message|cross-session-message|system-reminder)\b/;
+/** Other rows Claude Code writes as a user message that nobody typed, and no kind this file delivers
+ *  (a teammate's message too, in a transcript that does not say where its rows come from). */
+const WRAPPED = /^\s*(?:Another Claude session sent a message:\s*)?<(teammate-message|agent-message|cross-session-message|system-reminder)\b/;
+/** A teammate's message to the lead, as Claude Code 2.1.332 writes it (measured): the line, then the
+ *  tag. Both are needed, with the row's `rowSource: recorded` (isTeammateRow). */
+const TEAMMATE = /^\s*Another Claude session sent a message:\s*<teammate-message\b/;
+/** Every opening tag of a teammate's message in a row, closed or not. */
+const TEAMMATE_OPEN = /<teammate-message\b/g;
+/** Each message in such a row: the teammate's name (its id up to `@`) and the body. */
+const TEAMMATE_MESSAGE = /<teammate-message\b([^>]*)>([\s\S]*?)<\/teammate-message>/g;
+const TEAMMATE_ID = /\bteammate_id="([A-Za-z0-9_.-]{1,64})(?:@[^"]*)?"/;
+/** A teammate's note that it stopped and waits (its body is JSON of this type). */
+const IDLE = /^\s*\{\s*"type"\s*:\s*"idle_notification"/;
 /** `origin.kind` of a queued row this file calls a notification. */
 const NOTIFICATION_KINDS = new Set(['task-notification']);
 /** A tool-use id in a task's end, as background.ts reads it; the daemon ties the turn to its own work by it. */
@@ -59,7 +86,6 @@ const STAMPED = /"origin":\s*\{\s*"kind"/;
 const COMMAND_ROW = /^\s*<command-(name|message|args)>/;
 const LOCAL_ROW = /^\s*<local-command-[a-z]+>/;
 const INTERRUPTED = '[Request interrupted by user';
-const REJECTED = 'User rejected tool use';
 const HOOK_FEEDBACK = 'Stop hook feedback:';
 /** `origin.kind` of a row a person typed. */
 const HUMAN = 'human';
@@ -73,6 +99,30 @@ const QUEUED_COMMAND = 'queued_command';
 function idsOf(text) {
   const ids = [...new Set([...String(text).matchAll(TOOL_USE_ID)].map((m) => m[1]))];
   return ids.length <= IDS_MAX ? ids : [];
+}
+
+/** A row with no origin (on a CLI that stamps the rows a person types) is a teammate's message only
+ *  as 2.1.332 writes one: `rowSource: recorded`, the line, then the tag. A row with an `origin` field of
+ *  any shape, or a meta row, never is: another session's message has both (measured on 2.1.332:
+ *  `origin.kind: peer`, `isMeta`, no `rowSource`), and opens with the same line. */
+function isTeammateRow(text, rowSource, row) {
+  return row?.origin === undefined && row?.isMeta !== true && rowSource === 'recorded' && TEAMMATE.test(text);
+}
+
+/** The teammates whose messages a row holds, and whether each one is only an idle note. A message
+ *  whose name is no plain word, or a tag that does not close, ties the turn to nothing: no names. */
+function teammatesOf(text) {
+  const names = [];
+  let idle = true, any = 0, bad = false;
+  for (const m of String(text).matchAll(TEAMMATE_MESSAGE)) {
+    any++;
+    const id = TEAMMATE_ID.exec(m[1]);
+    if (!id) bad = true;
+    else if (!names.includes(id[1])) names.push(id[1]);
+    if (!IDLE.test(m[2])) idle = false;
+  }
+  if (any !== (String(text).match(TEAMMATE_OPEN) ?? []).length) bad = true;
+  return { names: !bad && names.length <= IDS_MAX ? names : [], idle: any > 0 && idle };
 }
 
 /** Claude Code 2.1.330 writes a pasted text of more than one line into the transcript inside
@@ -93,12 +143,6 @@ function userText(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   return content.map((b) => (b?.type === 'text' ? String(b.text ?? '') : '')).join('\n');
-}
-
-function refused(row, block) {
-  if (row.toolUseResult === REJECTED) return true;
-  const c = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
-  return block.is_error === true && c.startsWith("The user doesn't want to proceed");
 }
 
 /** The row's own word for where it came from (`origin.kind`), when it is a plain identifier. */
@@ -162,7 +206,8 @@ export function turnStarters(raw) {
       const at = Date.parse(String(a.timestamp ?? row.timestamp ?? ''));
       const when = Number.isNaN(at) ? {} : { at };
       const queued = QUEUED.exec(text);
-      if (said && NOTIFICATION_KINDS.has(said)) push({ kind: 'notification', tag: queued ? queued[1] : said, ids: idsOf(text), ...when, said, queuedCommand: true });
+      if (!said && stamped && isTeammateRow(text, a.rowSource ?? row.rowSource, a)) { const t = teammatesOf(text); push({ kind: 'notification', tag: 'teammate-message', teammates: t.names, idle: t.idle, ...when, queuedCommand: true }); }
+      else if (said && NOTIFICATION_KINDS.has(said)) push({ kind: 'notification', tag: queued ? queued[1] : said, ids: idsOf(text), ...when, said, queuedCommand: true });
       else if (said && said !== HUMAN) push({ kind: 'other', ...when, said, queuedCommand: true });
       else push({ kind: 'prompt', key: promptKey(text), ...when, ...(said ? { said } : {}), queuedCommand: true });
       continue;
@@ -192,8 +237,11 @@ export function turnStarters(raw) {
     // says of itself that something other than a person sent it is read on, as a row that may start a turn.
     if (row.isMeta === true && !queued && !(said && said !== HUMAN)) { if (state === 'command' && !LOCAL_ROW.test(text)) state = 'open'; continue; }
     const results = blocks.filter((b) => b?.type === 'tool_result');
-    // Cut short (Esc, a "No" in Claude Code's own dialog): the turn is over, and no Stop comes for it.
-    if (text.trimStart().startsWith(INTERRUPTED) || results.some((b) => refused(row, b))) { state = 'none'; starters = []; continue; }
+    // Cut short (Esc, or a "No" in Claude Code's own dialog, which writes this row after the refusal):
+    // the turn is over, and no Stop comes for it.
+    if (text.trimStart().startsWith(INTERRUPTED)) { state = 'none'; starters = []; continue; }
+    // A refusal with no such row after it is a "No" with words for the model (or a tool's error that
+    // reads like one, which a model can shape): the turn goes on, and what started it still did.
     if (results.length) { state = 'open'; continue; }
     // The CLI answered a slash command itself: that was no turn.
     if (LOCAL_ROW.test(text)) { if (state === 'command') { state = 'none'; starters = []; } continue; }
@@ -202,16 +250,18 @@ export function turnStarters(raw) {
     if (!text.trim() && !blocks.length) continue;
     const at = Date.parse(String(row.timestamp ?? ''));
     const wrapped = WRAPPED.exec(text);
+    // A teammate's message: no origin, on a CLI that stamps the rows a person types (measured 2.1.332).
+    const teammate = !said && stamped && isTeammateRow(text, row.rowSource, row) ? teammatesOf(text) : undefined;
     // A person typed it, whatever it looks like; else a queued row by its tag (on a CLI that stamps its
-    // rows, only one that says it is a notification); else a row the CLI says nobody typed, of a kind
-    // not known here; else a prompt.
+    // rows, only one that says it is a notification), or a teammate's message; else a row the CLI says
+    // nobody typed, of a kind not known here; else a prompt.
     const kind = said === HUMAN ? 'prompt'
-      : queued && (said ? NOTIFICATION_KINDS.has(said) : !stamped) ? 'notification'
+      : teammate || (queued && (said ? NOTIFICATION_KINDS.has(said) : !stamped)) ? 'notification'
         : queued || wrapped || said ? 'other' : 'prompt';
     push({
       kind,
       ...(kind === 'prompt' ? { key: promptKey(text) } : queued ? { tag: queued[1] } : wrapped ? { tag: wrapped[1] } : {}),
-      ...(kind === 'notification' ? { ids: idsOf(text) } : {}),
+      ...(teammate ? { teammates: teammate.names, idle: teammate.idle } : kind === 'notification' ? { ids: idsOf(text) } : {}),
       ...(Number.isNaN(at) ? {} : { at }),
       ...(said ? { said } : {}),
     }, COMMAND_ROW.test(text));
@@ -226,7 +276,7 @@ export function turnStarters(raw) {
 export function turnOrigin(raw) {
   const starters = turnStarters(raw);
   if (!starters.length) return { origin: 'unknown', origin_why: 'no row that starts a turn' };
-  const told = (s) => `${s.kind === 'prompt' ? (s.queuedCommand ? 'a prompt typed while the turn ran' : 'a typed prompt') : s.tag === 'scheduled-prompt' ? 'a scheduled prompt' : s.tag ? `<${s.tag}>` : s.unseen ? 'no row that starts it' : s.queuedCommand ? 'a queued row nobody typed' : 'a row nobody typed'}${s.said ? ` (origin ${s.said})` : ''}`;
+  const told = (s) => `${s.kind === 'prompt' ? (s.queuedCommand ? 'a prompt typed while the turn ran' : 'a typed prompt') : s.tag === 'scheduled-prompt' ? 'a scheduled prompt' : s.tag ? `<${s.tag}>` : s.unseen ? 'no row that starts it' : s.queuedCommand ? 'a queued row nobody typed' : 'a row nobody typed'}${s.said ? ` (origin ${s.said})` : ''}${s.idle ? ' (idle)' : ''}`;
   const why = [...new Set(starters.map(told))].join(', ');
   const typed = starters.filter((s) => s.kind === 'prompt');
   if (typed.length) {
@@ -235,16 +285,57 @@ export function turnOrigin(raw) {
     return { origin: 'prompt', origin_why: why, ...(last.at === undefined ? {} : { prompt_at: last.at }), prompt_key: last.key, prompts: typed.length };
   }
   if (starters.some((s) => s.kind === 'other')) return { origin: 'unknown', origin_why: why };
-  // `origin_ids`: the tool-use ids of the tasks whose end started the turn, only when each row that
-  // started it names one (a scheduled prompt names none). The daemon sends the answer only when it
-  // started each of those tasks in a turn of its own.
-  const tied = starters.every((s) => s.ids?.length);
-  return { origin: 'notification', origin_why: why, ...(tied ? { origin_ids: [...new Set(starters.flatMap((s) => s.ids))].slice(0, IDS_MAX) } : {}) };
+  // `origin_ids`: the tool-use ids of the tasks whose end started the turn, and `origin_teammates`: the
+  // names of the teammates whose message did, only when each row that started it names one (a
+  // scheduled prompt names none). The daemon sends the answer only when it started each of those
+  // tasks and teammates in a turn of its own.
+  const tied = starters.every((s) => s.ids?.length || s.teammates?.length);
+  const ids = [...new Set(starters.flatMap((s) => s.ids ?? []))].slice(0, IDS_MAX);
+  const teammates = [...new Set(starters.flatMap((s) => s.teammates ?? []))].slice(0, IDS_MAX);
+  return {
+    origin: 'notification', origin_why: why,
+    ...(tied && ids.length ? { origin_ids: ids } : {}),
+    ...(tied && teammates.length ? { origin_teammates: teammates } : {}),
+    ...(starters.every((s) => s.idle) ? { origin_idle: true } : {}),
+  };
+}
+
+/**
+ * What the permission hook writes with a request (scripts/tui-permission-hook.mjs): turnOrigin's
+ * fixed words, keys, ids, names, time and counts, never the conversation.
+ */
+export function requestOrigin(raw) {
+  const o = turnOrigin(raw);
+  // For a turn a prompt was typed into, also `prompt_keys` (the last IDS_MAX) and `opened_by` (the kind
+  // of the row that opened it): the daemon holds a request to the chat's turn only when a prompt opened
+  // that turn and every prompt typed into it is the chat's own. And `joins` (how many) and `joined` (the
+  // last IDS_MAX): the rows nobody typed that joined it (another session's message, a scheduled prompt,
+  // a task's end, a teammate's message), each its kind (`notification`, `scheduled`, `other`) and the
+  // task ids or teammates it names: such a row keeps the chat turn's levels only when it is the chat's own work.
+  const starters = o.prompt_key ? turnStarters(raw) : [];
+  const joined = starters.filter((s) => s.kind !== 'prompt');
+  return {
+    origin: o.origin, origin_why: o.origin_why,
+    ...(o.prompt_key ? { prompt_key: o.prompt_key, prompts: o.prompts, prompt_keys: starters.filter((s) => s.kind === 'prompt').slice(-IDS_MAX).map((s) => s.key), opened_by: starters[0]?.kind, joins: joined.length } : {}),
+    ...(joined.length ? { joined: joined.slice(-IDS_MAX).map((s) => ({
+      kind: s.tag === 'scheduled-prompt' ? 'scheduled' : s.kind,
+      ...(s.ids?.length ? { ids: s.ids } : {}),
+      ...(s.teammates?.length ? { teammates: s.teammates } : {}),
+    })) } : {}),
+    ...(typeof o.prompt_at === 'number' ? { prompt_at: o.prompt_at } : {}),
+    ...(o.origin_ids ? { origin_ids: o.origin_ids } : {}),
+    ...(o.origin_teammates ? { origin_teammates: o.origin_teammates } : {}),
+  };
 }
 
 /** The tags a text may open with that the shape names; any other reads `other`. */
 const SHAPE_TAGS = new Set(['task-notification', 'teammate-message', 'agent-message', 'cross-session-message', 'system-reminder',
   'command-name', 'command-message', 'command-args', 'local-command-stdout', 'local-command-stderr', 'local-command-caveat', 'pasted_content']);
+/** Lines Claude Code writes before a tag in a row nobody typed (2.1.332, measured: a teammate's
+ *  message); the shape says `<lead>` for one, never the words of another. */
+const SHAPE_LEADS = ['Another Claude session sent a message:'];
+/** The tags whose attribute names the shape gives: the messages of another agent or session. */
+const SHAPE_ATTR_TAGS = new Set(['teammate-message', 'agent-message', 'cross-session-message']);
 /** The content block types the shape names; any other reads `other`. */
 const SHAPE_BLOCKS = new Set(['text', 'thinking', 'redacted_thinking', 'tool_use', 'tool_result', 'image', 'document']);
 
@@ -254,18 +345,32 @@ const SHAPE_BLOCKS = new Set(['text', 'thinking', 'redacted_thinking', 'tool_use
  * in the pane's environment (tests/live-tui-origin.mts sets it).
  *
  * Never a word of the conversation. One row is made of these only:
- * - `type`, `subtype`, `operation`, `origin.kind`, and an attachment's `type` and `origin.kind`, each
- *   only when it is one plain identifier of at most 32 characters (letters, digits, `_`, `-`); these
- *   are Claude Code's own field values, and a new one is what this is for;
+ * - `type`, `subtype`, `operation`, `origin.kind`, `rowSource` (`src=`), and an attachment's `type`,
+ *   `origin.kind` and `rowSource`, each only when it is one plain identifier of at most 32 characters
+ *   (letters, digits, `_`, `-`); these are Claude Code's own field values, and a new one is what this is for;
+ * - with `o.keys`, of a user or attachment row of the session, the names of its fields (`{a,b}`),
+ *   never their values (ANGELIA_TUI_ORIGIN_DEBUG=keys);
  * - the flags `meta` and `sidechain`;
  * - `msg=<n>`: which API message an assistant row is part of, numbered in the order seen here, so
  *   rows of one answer read alike; no part of the id itself;
  * - each content block's type, from a fixed list, else `other`; `string` for content that is a string;
- * - the tag a text opens with, from a fixed list, else `other`.
+ * - the tag a text opens with, from a fixed list, else `other`, and for a tag on that list the names
+ *   of a message tag's attributes (SHAPE_ATTR_TAGS: `<teammate_id,color>`), never their values; `<lead>` before it when the text
+ *   opens with a line of SHAPE_LEADS.
  */
-export function rowShapes(raw, n = 14) {
+export function rowShapes(raw, n = 14, o = {}) {
   const word = (v) => (typeof v === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(v) ? v : undefined);
-  const tag = (t) => { const m = /^\s*<([a-z_-]+)/.exec(String(t ?? '')); return m ? `<${SHAPE_TAGS.has(m[1]) ? m[1] : 'other'}>` : ''; };
+  const tag = (t) => {
+    let s = String(t ?? '');
+    // A line Claude Code puts before the tag (SHAPE_LEADS): `<lead>`, then the tag.
+    const lead = SHAPE_LEADS.find((l) => s.trimStart().startsWith(l));
+    if (lead) s = s.trimStart().slice(lead.length);
+    const m = /^\s*<([a-z_-]+)((?:\s+[a-z_]{1,32}="[^"]*")*)/.exec(s);
+    if (!m) return lead ? '<lead>' : '';
+    // The names of the tag's attributes (Claude Code's own words), never their values.
+    const names = SHAPE_ATTR_TAGS.has(m[1]) ? [...m[2].matchAll(/([a-z_]{1,32})="/g)].map((a) => a[1]).slice(0, 8) : [];
+    return `${lead ? '<lead>' : ''}<${SHAPE_TAGS.has(m[1]) ? m[1] : 'other'}>${names.length ? `<${names.join(',')}>` : ''}`;
+  };
   const messages = new Map();
   const out = [];
   for (const line of String(raw ?? '').split('\n').filter(Boolean).slice(-n)) {
@@ -282,8 +387,12 @@ export function rowShapes(raw, n = 14) {
       word(row.attachment?.origin?.kind) ? `attachment-origin=${word(row.attachment.origin.kind)}` : undefined,
       row.isMeta === true ? 'meta' : undefined, row.isSidechain === true ? 'sidechain' : undefined,
       word(row.origin?.kind) ? `origin=${word(row.origin.kind)}` : undefined,
+      word(row.rowSource) ? `src=${word(row.rowSource)}` : undefined,
+      word(row.attachment?.rowSource) ? `attachment-src=${word(row.attachment.rowSource)}` : undefined,
       id ? `msg=${messages.get(id)}` : undefined,
       blocks.length ? `[${blocks.join(',')}]` : undefined,
+      // A row that starts a turn: the names of its fields (Claude Code's own), to find what tells two kinds apart.
+      o.keys && (row.type === 'user' || row.type === 'attachment') && !row.isSidechain ? `{${Object.keys(row).filter((k) => /^[A-Za-z_]{1,32}$/.test(k)).sort().slice(0, 40).join(',')}}` : undefined,
     ].filter(Boolean).join(' '));
   }
   return out;

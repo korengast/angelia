@@ -4,7 +4,7 @@ import { dirname, extname, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { permissionPolicy, type Config, type Profile, type Route } from '../instance/config/schema.js';
 import { decide } from './permission-rules.js';
-import type { Inbound, BrainEvent, Platform, SessionRow, UnaskedAnswer } from './types.js';
+import type { Inbound, BrainEvent, Platform, SelfPermission, SessionRow, UnaskedAnswer } from './types.js';
 import { cleanName, cleanText, isGroupChat, parseSessionKey, sessionKey } from './types.js';
 import { matchRoute } from './router/match.js';
 import { gate, isOwner, OWNER_COMMANDS } from './router/gate.js';
@@ -24,7 +24,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, notDeliveredLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, RELEASED_LINE, selfCapLine } from './deliver/text.js';
+import { failureLine, notDeliveredLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, RELEASED_LINE, selfCapLine, TMUX_STALLED, TMUX_STALLED_LINE, SELF_ASK_LINE, SELF_ASK_UNTIED_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -201,6 +201,10 @@ const LINES_MAX = 100;
  *  in an hour. Past it they are held back, and the chat is told once: a loop of notifications in a
  *  session must not flood a group. */
 const SELF_PER_HOUR = 6;
+/** The same for turns only teammates' messages started (each report a teammate sends the lead): their
+ *  own count, as a team of several sends many in an hour. A turn only idle notes started counts in
+ *  neither: a teammate sends one when it stops, so they come no faster than teammates are spawned. */
+const TEAMMATE_PER_HOUR = 30;
 /** A sender who is not an owner went over max_in_per_hour: said at most once an hour. */
 export const SENDER_LIMIT_LINE = 'Too many messages. Wait up to one hour, then try again.';
 const BUSY_LINE = 'Still working through earlier messages in this chat, so this one was not taken. Send it again when I have answered.';
@@ -314,9 +318,14 @@ export class Orchestrator {
   /** When each chat got an answer to a turn its agent started by itself, in the last hour, and when it
    *  was last told that more are held back (SELF_PER_HOUR). */
   private selfSent = new Map<string, { at: number[]; toldAt: number }>();
+  /** The same for answers to teammates' messages (TEAMMATE_PER_HOUR). */
+  private teammateSent = new Map<string, { at: number[]; toldAt: number }>();
   /** Each chat's open permission requests by full id, so an answer by prefix (the chat's `y abcde`)
    *  is evented under the id the client was given, and a client that connects later can list them. */
   private asks = new Map<string, Map<string, WaitingPermission>>();
+  /** Per chat, the turn the agent started by itself whose requests came last (SelfPermission.turn), and
+   *  how many of them its levels approved and refused: the caps of a chat turn, per such turn. */
+  private selfCounts = new Map<string, { turn: number; approved: number; denied: number }>();
   /** When each open request's line reached the chat: by this machine's clock, and by the platform's own
    *  where the send gave one (Telegram), which is the clock the messages that answer it are stamped by.
    *  A request whose line never did (an app turn's, a send that failed) is not here, and no bare "yes"
@@ -417,6 +426,9 @@ export class Orchestrator {
       return;
     }
     this.busyTold.delete(key);
+    // The stop has begun (beforeStop) and its cut is not made yet: the message waits for the cut, so it
+    // is never typed into a pane the stop is about to let go of; then it goes as one that came at the stop.
+    while (this.closingDown && !this.cutDone) await this.untilCut();
     // The daemon stops: the message is not run here (atStop).
     if (this.stopping) return this.atStop(i, key, bare);
     const into = this.intoTurn(i, key, route.profile, profile, bare);
@@ -1009,7 +1021,79 @@ export class Orchestrator {
     });
     // tmux mode, between turns: an answer no turn waits for (a late one, or to a turn the agent started itself).
     b.on('unasked', (a: UnaskedAnswer) => { void this.unasked(key, a); });
+    // tmux mode, between turns: a permission of a turn the agent started by itself goes the profile's
+    // way, as one in a chat turn does (TuiBrain.betweenTurns).
+    b.on('self-permission', (e: SelfPermission) => { void this.selfPermission(key, b, e).catch((err) => this.log(`permission between turns failed key=${key} ${(err as Error).message}`)); });
+    b.on('self-permission-answered', (e: { id: string; allow: boolean }) => {
+      if (!this.asks.get(key)?.has(e.id)) return;
+      this.answered(key, e.id, e.allow, 'terminal');
+      void this.notify(key, `Permission ${e.allow ? 'allowed' : 'denied'} in the Claude app or the pane.`).catch((err) => this.log(`permission note failed key=${key} ${(err as Error).message}`));
+    });
     return b;
+  }
+
+  /**
+   * A permission request between the chat's turns of a turn nobody typed here (TuiBrain.betweenTurns),
+   * with what ties that turn to the chat (`e.work`). The pane is the chat's session, so the levels
+   * decide a turn tied to the chat's own work as in a chat turn: refuse and approve at once (the same
+   * caps per turn), ask in the chat, where only an owner answers (yes <id>, a bare word, a button). Work
+   * a peer's turn started (sender `profile`, as in runTurn) is refused at once but never approved: it is
+   * asked. A turn nothing ties to the chat's work (a scheduled prompt, another session's message, one
+   * the hook could not place: it may be the owner's own in the Claude app) is always asked, under its
+   * own line; the levels act on it at once neither way.
+   */
+  private async selfPermission(key: string, b: Brain, e: SelfPermission): Promise<void> {
+    const profile = this.profileFor(key);
+    if (!profile) { b.answerPermission(e.id, false); this.log(`permission between turns denied key=${key} tool=${e.tool} reason=not-routed`); return; }
+    const d = decide(permissionPolicy(profile), e.request, { cwd: profile.cwd });
+    const turn = e.work === 'chat' ? 'a turn the agent started by itself' : e.work === 'peer' ? 'a turn tied to a peer\'s work' : 'a turn nothing ties to the chat\'s work';
+    const by = `${d.rule ? `by=${d.rule}` : `by=default ${d.level}${d.unchecked ? ', rules not checkable on this request' : ''}`} (between turns, ${turn})`;
+    let n = this.selfCounts.get(key);
+    if (!n || n.turn !== e.turn) this.selfCounts.set(key, n = { turn: e.turn, approved: 0, denied: 0 });
+    const chat = this.chatOf(key);
+    if (e.work === 'none') { if (d.level !== 'ask') this.log(`permission asked key=${key} tool=${e.tool} ${by}: nothing ties it to the chat's work, so the levels do not ${d.level} it at once`); }
+    else if (d.level === 'refuse') {
+      if (++n.denied > AUTO_DENY_MAX) {
+        this.log(`permission auto-denied ${AUTO_DENY_MAX} times key=${key} between turns: session stopped`);
+        await this.stop(key);
+        await this.reply(chat, autoDenyCapLine(AUTO_DENY_MAX)).catch(() => {});
+        return;
+      }
+      if (b.answerPermission(e.id, false, { message: AUTO_DENY_MESSAGE })) { this.log(`permission auto-denied key=${key} tool=${e.tool} ${by}`); this.denied.add(key); }
+      else {
+        this.log(`permission auto-deny failed key=${key} tool=${e.tool}: no hook waits for it (between turns)`);
+        await this.reply(chat, AUTO_DENY_FAILED_LINE).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
+      }
+      return;
+    }
+    // As in a chat turn (runTurn): what a peer's turn started is never approved by the levels.
+    else if (d.level === 'approve' && e.work === 'peer') this.log(`permission asked key=${key} tool=${e.tool} ${by}: a peer's work is never auto-approved`);
+    else if (d.level === 'approve') {
+      if (++n.approved > AUTO_APPROVE_MAX) {
+        if (n.approved === AUTO_APPROVE_MAX + 1) this.log(`permission auto-approved ${AUTO_APPROVE_MAX} times key=${key} between turns: the rest of that turn is asked`);
+      } else if (b.answerPermission(e.id, true)) { this.log(`permission auto-approved key=${key} tool=${e.tool} ${by}`); return; }
+      else this.log(`permission auto-approve failed key=${key} tool=${e.tool}: asked instead (between turns)`);
+    }
+    if (e.work === 'chat' || d.level === 'ask') this.log(`permission asked key=${key} tool=${e.tool} ${by}`);
+    let open = this.asks.get(key);
+    if (!open) this.asks.set(key, open = new Map());
+    const ask: WaitingPermission = { key, at: new Date().toISOString(), id: e.id, tool: e.tool, preview: e.preview, ...(e.detail ? { detail: e.detail } : {}) };
+    open.set(e.id, ask);
+    this.emit(key, { type: 'permission', id: e.id, tool: e.tool, preview: e.preview, ...(e.detail ? { detail: e.detail } : {}) });
+    try {
+      this.shown.add(ask);
+      const detail = e.detail ? await this.post(chat, e.detail) : [];
+      const line = await this.post(chat, `${e.work === 'none' ? SELF_ASK_UNTIED_LINE : SELF_ASK_LINE}\n${permissionLine(e.id, e.tool, e.preview)}`, false, false, e.id);
+      const platform = line.at(-1)?.at;
+      this.posted.set(ask, { local: Date.now(), ...(platform !== undefined ? { platform } : {}), ...(this.justClosed(key) ? { noBare: true as const } : {}) });
+      this.keepLines(key, e.id, [...detail, ...line]);
+    } catch (err) { this.log(`permission line failed key=${key} ${(err as Error).message}`); }
+  }
+
+  /** The chat itself, as a line posted into it is addressed (notify): no message is being answered. */
+  private chatOf(key: string): Inbound {
+    const k = parseSessionKey(key);
+    return { ...k, sender: '', text: '', isGroup: isGroupChat(k.platform, k.chat), mentioned: false, media: [] };
   }
 
   /** `bare`: the message is a CLI command and goes as is, without the envelope. `preface` goes before
@@ -1037,7 +1121,9 @@ export class Orchestrator {
       end(taken, failed);
       // /stop, /new: what was typed into the turn goes with it, as what waited for it does.
       if (failed === 'stopped') { b?.releaseFollow?.(); end(untaken, failed); if (joined.length) this.log(`midturn: ${joined.length} message(s) typed into a stopped turn dropped key=${key}`); return; }
-      if (failed) this.intoTurnAgain(key, name, taken, failed);
+      // A stalled tmux ends the reader, not the turn: it runs on and answers them (late, or as a midturn
+      // answer); queued again, each would run twice.
+      if (failed && failed !== TMUX_STALLED) this.intoTurnAgain(key, name, taken, failed);
       // None left for a next turn this chat knows of: one the brain still waits for goes to the reader between turns.
       if (!untaken.length) { b?.releaseFollow?.(); return; }
       if (!b?.alive || !b.followAbsorbed) { b?.releaseFollow?.(); end(untaken, 'exit'); this.intoTurnAgain(key, name, untaken, 'the session is gone'); return; }
@@ -1046,7 +1132,7 @@ export class Orchestrator {
       this.chatTurns.add(last);
       const f = await this.turnOnce(last, key, name, { follow: b.followAbsorbed(), midturnFollow: true });
       end(untaken.slice(0, -1), f);
-      if (f && f !== 'stopped') this.intoTurnAgain(key, name, untaken, f);
+      if (f && f !== 'stopped' && f !== TMUX_STALLED) this.intoTurnAgain(key, name, untaken, f);
       failed = f;
     }
     return;
@@ -1117,7 +1203,8 @@ export class Orchestrator {
     }
     const b = await this.brainFor(key, name);
     const text = preface ? `${preface}\n\n${agentText(i, bare)}` : agentText(i, bare);
-    const events = follow ?? b.turn(text, { app });
+    // A turn another profile asked for (sender `profile`): what it starts is a peer's work (TurnFlags.peer).
+    const events = follow ?? b.turn(text, { app, ...(i.sender === 'profile' ? { peer: true } : {}) });
     if (!app) await sender?.typing?.(i.chat, true);
     let result: Extract<BrainEvent, { kind: 'result' }> | undefined;
     // Progress lines never hold the turn: they queue, merge while the bucket is full, and give way
@@ -1261,6 +1348,12 @@ export class Orchestrator {
       // /stop, /new and a model change all kill the child mid-turn on purpose. The chat was already
       // told what happened; a failure line on top of it reads like a bug that is not there.
       if (stopped) return 'stopped';
+      if (result?.reason === TMUX_STALLED) {
+        // The message reached the session; only the reading stopped. Its answer comes late (unasked).
+        if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
+        await this.reply(i, TMUX_STALLED_LINE).catch(() => {});
+        return TMUX_STALLED;
+      }
       if (result?.keep) {
         // The message never reached a session that is alive and busy with work of its own (tmux mode):
         // the session is not ended for it, since its background agents live in it. The chat sends again.
@@ -1344,7 +1437,8 @@ export class Orchestrator {
    * markers are one, and logs the ones that are not). `late`: the turn was closed without it and the
    * chat was told so, or got only its last line; it goes where that turn's answer went. `self`: the
    * agent was woken by background work a turn of the chat started; it goes to the chat, at most
-   * SELF_PER_HOUR an hour. Both are the agent's words, sent as an answer is. Never throws.
+   * SELF_PER_HOUR an hour (TEAMMATE_PER_HOUR for teammates' messages; a teammate's idle note counts in
+   * neither). Both are the agent's words, sent as an answer is. Never throws.
    */
   private async unasked(key: string, a: UnaskedAnswer): Promise<void> {
     const what = a.answer === 'late' ? 'late answer' : a.answer === 'midturn' ? 'mid-turn answer' : 'self-started answer';
@@ -1354,25 +1448,24 @@ export class Orchestrator {
       const profile = this.profileFor(key);
       if (!profile) return no('not-routed');
       if (!text || text === '[SILENT]') return no(text ? 'silent' : 'empty');
-      // The chat itself, as a line posted into it is addressed (notify): no message is being answered.
-      const k = parseSessionKey(key);
-      const chat: Inbound = { ...k, sender: '', text: '', isGroup: isGroupChat(k.platform, k.chat), mentioned: false, media: [] };
+      const chat = this.chatOf(key);
       let to = chat;
       if (a.answer === 'late' || a.answer === 'midturn') {
         // Where the turn's own answer went: the chat, or the app for a turn typed there. A message
         // typed into a turn came from the chat that turn was for.
         const prev = this.lastTurn.get(key);
         if (prev) to = prev;
-      } else {
+      } else if (!a.idle) {
         const now = Date.now();
-        const sent = this.selfSent.get(key) ?? { at: [], toldAt: 0 };
+        const [book, max] = a.by === 'teammate' ? [this.teammateSent, TEAMMATE_PER_HOUR] : [this.selfSent, SELF_PER_HOUR];
+        const sent = book.get(key) ?? { at: [], toldAt: 0 };
         sent.at = sent.at.filter((t) => t > now - 3600_000);
-        this.selfSent.set(key, sent);
-        if (sent.at.length >= SELF_PER_HOUR) {
+        book.set(key, sent);
+        if (sent.at.length >= max) {
           no('hourly-limit');
           if (now - sent.toldAt < 3600_000) return;
           sent.toldAt = now;
-          await this.reply(chat, selfCapLine(SELF_PER_HOUR)).catch((e) => this.log(`self-started limit line failed key=${key} ${(e as Error).message}`));
+          await this.reply(chat, selfCapLine(max)).catch((e) => this.log(`self-started limit line failed key=${key} ${(e as Error).message}`));
           return;
         }
         sent.at.push(now);
@@ -2107,7 +2200,9 @@ export class Orchestrator {
   async reapIdle(now = Date.now()): Promise<void> {
     const limit = this.cfg.defaults.idle_exit_minutes * 60_000;
     for (const [key, b] of this.brains) {
-      if (b.alive && now - b.lastUsedAt > limit && this.queue.queued(key) === 0) { this.log(`reap key=${key}`); await this.dropBrain(key, false); }
+      // A request waiting for the owner (one asked between turns, tmux mode) is work too: reaping would
+      // take it from the chat; it times out by itself.
+      if (b.alive && now - b.lastUsedAt > limit && this.queue.queued(key) === 0 && !b.pendingPermissionCount) { this.log(`reap key=${key}`); await this.dropBrain(key, false); }
     }
   }
 
@@ -2196,7 +2291,10 @@ export class Orchestrator {
     this.cutTurns();
   }
 
-  cutTurns(): void {
+  /** `owed`: chats owed the cut line that this daemon has not told yet (daemon.ts, a stop while it
+   *  starts: the last shutdown's cut list it took, the turns it could not adopt). They go into the cut
+   *  list beside this stop's own, so the next daemon tells them. */
+  cutTurns(owed: string[] = []): void {
     // Once: the daemon calls it before the adapters stop, shutdown() again; by then the readers it let
     // go of are no longer alive, and a second pass would drop the turns it kept for the next daemon.
     if (this.stopping) return;
@@ -2239,8 +2337,9 @@ export class Orchestrator {
       // From here on they are the next daemon's: this turn's end here settles none of them.
       this.intoTurnTaken.delete(key);
       const absorbed = b.midturnState?.();
+      const typedKey = b.turnKey?.();
       adopt.push({ key, session: row.id, since: b.turnSentAt, inbound, waiting,
-        ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}) });
+        ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}), ...(typedKey ? { typedKey } : {}) });
       // The turn's end is quiet here: the chat moved to the next daemon, as after a handoff.
       this.era.set(key, (this.era.get(key) ?? 0) + 1);
       dropRest(key, all);
@@ -2257,7 +2356,8 @@ export class Orchestrator {
       const joined = this.intoTurnTaken.get(key) ?? t.joined;
       this.intoTurnTaken.delete(key);
       const absorbed = b?.midturnState?.() ?? t.absorbed;
-      adopt.push({ ...t, waiting, ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}) });
+      const typedKey = b?.turnKey?.() ?? t.typedKey;
+      adopt.push({ ...t, waiting, ...(typedKey ? { typedKey } : {}), ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}) });
       this.era.set(key, (this.era.get(key) ?? 0) + 1);
       dropRest(key, all);
       if (b?.release) void b.release({ restart: true });
@@ -2277,7 +2377,7 @@ export class Orchestrator {
       if (typed) this.log(`shutdown: ${typed} message(s) typed into a turn that was not adopted are not carried key=${k}`);
     }
     this.cutAdopt = adopt;
-    try { writeCutTurns(state, cut); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
+    try { writeCutTurns(state, [...new Set([...cut, ...owed])]); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
     try { writeAdoptTurns(state, adopt); } catch (e) { this.log(`shutdown: turns to adopt not written: ${(e as Error).message}`); }
   }
 
@@ -2285,8 +2385,11 @@ export class Orchestrator {
    *  to the next daemon, it goes with it, last; otherwise it is not run, and the log says so (the chat
    *  hears the cut line for its running turn, if it had one). */
   private atStop(i: Inbound, key: string, bare: boolean): void {
-    // A "yes <id>" or a bare yes or no answered a request of this daemon: the next one asks again.
-    if (parsePermissionReply(i.text) || parseBareAnswer(i.text, i.botMentions) !== null) { this.log(`shutdown: a permission answer that came as the daemon stops is not carried key=${key}`); return; }
+    // A "yes <id>" or a bare yes or no, while the chat has a request open: it answered a request of
+    // this daemon, and the next one asks again. With none open it is a message like any other (an
+    // answer to the agent's own question), carried.
+    const answer = parsePermissionReply(i.text) !== null || parseBareAnswer(i.text, i.botMentions) !== null;
+    if (answer && (this.asks.get(key)?.size ?? 0) > 0) { this.log(`shutdown: a permission answer that came as the daemon stops is not carried key=${key}`); return; }
     const a = this.cutAdopt.find((x) => x.key === key);
     if (!a || i.surface === 'app') { this.log(`shutdown: a message that came as the daemon stops is not run key=${key}`); return; }
     a.waiting = [...(a.waiting ?? []), { inbound: i, bare }];
@@ -2306,10 +2409,9 @@ export class Orchestrator {
    * heartbeat goes, so its hook steps aside at once instead of waiting for a daemon that will not read
    * it. Each adoption gets ADOPT_TIMEOUT_MS: a tmux that does not answer must not hold the start (the
    * API and the platforms wait for this). Returns the chats whose turn could not be adopted: they get
-   * the cut line.
+   * the cut line. `lost`: the array they are put in as each is known (a stop meanwhile writes them).
    */
-  async restoreTurns(whenUp: (key: string, go: () => void) => void = (_k, go) => go()): Promise<string[]> {
-    const lost: string[] = [];
+  async restoreTurns(whenUp: (key: string, go: () => void) => void = (_k, go) => go(), lost: string[] = []): Promise<string[]> {
     const kept = new Set<string>();
     const taken = takeAdoptTurns(this.opts.stateDir ?? join(homedir(), '.angelia'));
     // Pending from the take: the file is gone now, and a stop before each is adopted writes it back (cutTurns).
@@ -2327,6 +2429,7 @@ export class Orchestrator {
       if (typeof n === 'string') kept.add(n);
       // Before its reader starts: what was typed into the turn, and whether it may take more.
       b.restoreMidturn?.(t.absorbed ?? []);
+      b.restoreTurnKey?.(t.typedKey);
       if (t.joined?.length) this.intoTurnTaken.set(t.key, t.joined);
       const follow = b.follow();
       this.log(`restart: turn adopted key=${t.key} session=${t.session.slice(0, 8)}${t.waiting?.length ? ` with ${t.waiting.length} waiting` : ''}`);

@@ -14,6 +14,8 @@ const HOOK = fileURLToPath(new URL('../scripts/tui-stop-hook.mjs', import.meta.u
 const landed = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ [Pasted text #1 +2 lines]');
 /** The prompt with text left in the box (a paste a restart cut before its Enter): C-u clears it. */
 const draft = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ half of an old message');
+/** The same with a second line: one C-u clears the cursor's line only (the last), so two are needed. */
+const draft2 = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ half of an old message\n  and its second line');
 // A turn at work with its empty input box, measured on claude 2.1.332; the same with a paste in the box;
 // a permission dialog of the same version (it replaces the box).
 const busyBox = readFileSync(join(here, 'fixtures', 'pane-busy-box-332.txt'), 'utf8');
@@ -32,6 +34,23 @@ export const ROW = {
   }),
   text: (text: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } }),
   call: (id: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'sleep 600' } }] } }),
+  /** A named teammate spawned (the Agent tool with `name`): its call, and the result as claude 2.1.332
+   *  writes it (measured live, tests/live-tui-teammate.mts; the prompt and paths left out). */
+  teammate: (id: string, name: string) => [
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Agent', input: { description: `The ${name} task`, name, prompt: 'p', run_in_background: true } }] } },
+    { type: 'user', message: { role: 'user', content: [{ tool_use_id: id, type: 'tool_result', content: [{ type: 'text', text: 'Spawned successfully.' }] }] },
+      toolUseResult: { status: 'teammate_spawned', agentId: `a${name}-1`, teammate_id: `${name}@session-1d6a42ef`, agent_id: `a${name}-1`, name, color: 'blue', tmux_pane_id: 'in-process', team_name: 'session-1d6a42ef' } },
+  ],
+  /** A teammate's message to the lead starts a turn: a user row with no origin, `rowSource: recorded`
+   *  (claude 2.1.332, measured live). `idle`: the note a teammate sends when it stops. */
+  teammateMessage: (name: string, body: string, at = Date.now()) => ({
+    type: 'user', timestamp: new Date(at).toISOString(), rowSource: 'recorded', promptId: 'p-1', turnPosition: { promptIndex: 1, turnIndex: 2 },
+    message: { role: 'user', content: `Another Claude session sent a message:\n<teammate-message teammate_id="${name}" color="blue" summary="Report to the lead">\n${body}\n</teammate-message>\n\nThis came from another Claude session — not typed by your user.` },
+  }),
+  teammateIdle: (name: string, at = Date.now()) => ({
+    type: 'user', timestamp: new Date(at).toISOString(), rowSource: 'recorded', promptId: 'p-1', turnPosition: { promptIndex: 1, turnIndex: 3 },
+    message: { role: 'user', content: `Another Claude session sent a message:\n<teammate-message teammate_id="${name}" color="blue">\n{"type":"idle_notification","from":"${name}","timestamp":"${new Date(at).toISOString()}","idleReason":"available"}\n</teammate-message>` },
+  }),
   /** A shell command sent to the background: its call, and the result that says so (background.ts). */
   background: (id: string) => [
     { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'make', run_in_background: true } }] } },
@@ -67,7 +86,7 @@ export interface PaneStub {
   stop(lastMessage: string): void;
   rows(...rows: object[]): void;
   /** The Stop hook's file, as the hook writes it: `at` is now unless given. */
-  mark(m: { text: string; origin?: string; origin_why?: string; prompt_at?: number; prompt_key?: string; prompts?: number; origin_ids?: string[]; at?: number; transcript_path?: string }): void;
+  mark(m: { text: string; origin?: string; origin_why?: string; prompt_at?: number; prompt_key?: string; prompts?: number; origin_ids?: string[]; origin_teammates?: string[]; origin_idle?: boolean; at?: number; transcript_path?: string }): void;
   /** What Angelia last typed into the pane, as it typed it. */
   typed: string;
   /** That, as the user row Claude Code writes for it. */
@@ -77,7 +96,7 @@ export interface PaneStub {
   /** What the screen shows from now on: `idle` (the default), `busy` (a turn at work, its box empty),
    *  `dialog` (a permission dialog), `half` (a turn at work, someone's text in the box). A paste into
    *  `busy` shows in the box; its Enter queues it (Claude Code's own queue) and the box is empty again. */
-  show(screen: 'idle' | 'busy' | 'dialog' | 'half' | 'draft'): void;
+  show(screen: 'idle' | 'busy' | 'dialog' | 'half' | 'draft' | 'draft2'): void;
   /** Messages Enter queued into a running turn, as typed. */
   queued: string[];
   /** Whether Angelia's absorb lock was there at each Enter that queued a message into a turn. */
@@ -130,7 +149,7 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
     marked: () => { try { readFileSync(join(b.dir, 'turn.json')); return true; } catch { return false; } },
     typed: '',
     prompt: (at) => ROW.prompt(stub.typed, at),
-    show: (screen) => { shown = { idle, busy: busyBox, dialog, half: halfTyped, draft }[screen]; },
+    show: (screen) => { shown = { idle, busy: busyBox, dialog, half: halfTyped, draft, draft2 }[screen]; },
     queued: [],
     buffers: [],
     lockedAtEnter: [],
@@ -150,6 +169,7 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
     if (a[0] === 'load-buffer') { buffer = readFileSync(a[a.length - 1], 'utf8'); stub.buffers.push(buffer); }
     else if (a[0] === 'paste-buffer' && shown === busyBox) shown = busyLanded;
     else if (a[0] === 'send-keys' && a.includes('C-u') && shown === draft) shown = idle;
+    else if (a[0] === 'send-keys' && a.includes('C-u') && shown === draft2) shown = draft;
     else if (a[0] === 'paste-buffer' && shown === draft) shown = landed.replace('❯ [Pasted', '❯ half of an old message[Pasted');
     else if (a[0] === 'paste-buffer') { for (const fn of pastes) fn(stub.enters + 1); shown = landed; }
     else if (a[0] === 'send-keys' && a.includes('Enter') && shown === busyLanded) {

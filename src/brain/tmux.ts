@@ -185,7 +185,7 @@ const clean = (l: string): string => l.replace(/[│╭╮╰╯┃]/g, ' ').rep
  *  so everything between that rule and the question is the dialog, and the transcript above it is
  *  not; the dashed rules are drawing. Measured on claude 2.1.287 (2.1.278 had the command first and
  *  no dashed rules); the fixture is in tests/fixtures. */
-export function permissionDialog(pane: string): { tool: string; preview: string } | null {
+export function permissionDialog(pane: string): { tool: string; preview: string; from?: string } | null {
   const raw = pane.split('\n');
   // The last one: the dialog is drawn at the foot of the screen, and the agent's own output above it
   // may quote the question, which would otherwise be read as the prompt.
@@ -196,7 +196,12 @@ export function permissionDialog(pane: string): { tool: string; preview: string 
   // 2.1.287 draws dashed rules (╌) above and below the command inside the box: drawing, not text.
   const body = raw.slice(top >= 0 ? top + 1 : Math.max(0, at - 6), at).map(clean).filter((l) => l && !/^[\s╌─━┄┈]+$/.test(l));
   if (!body.length) return { tool: 'tool', preview: 'a permission prompt is open' };
-  return { tool: body[0].slice(0, 40), preview: (body.slice(1).join(' · ') || body[0]).slice(0, 300) };
+  // A teammate's request names it after the title: "Bash command · from the restart-relay agent"
+  // (claude 2.1.332, seen in a chat's pane 2026-11-25).
+  // Only that shape: a title with a "·" of its own says nothing of who asks.
+  const asker = /^(.+?)\s*·\s*from\s+((?:the\s+)?[A-Za-z0-9_.-]{1,64}\s+agent)$/.exec(body[0]);
+  const tool = (asker ? asker[1] : body[0]).slice(0, 40);
+  return { tool, preview: (body.slice(1).join(' · ') || body[0]).slice(0, 300), ...(asker ? { from: asker[2].slice(0, 60) } : {}) };
 }
 
 /** A directory Claude Code has not been run in before opens a trust dialog before the first

@@ -11,8 +11,12 @@ import { permissionPreview } from './brain.js';
  * A dialog on the screen is text a command can shape (a line of `─` in a command reads as the dialog's
  * top edge), and a key press answers whichever dialog is open by then; neither is used to approve.
  *
- * The hook relays only while a turn from the chat is being read, which `beat` says on every poll.
- * Otherwise it steps aside at once, and Claude opens its own dialog in the pane and the Claude app.
+ * The hook relays while a turn from the chat is being read, which `beat` says on every poll, and
+ * between the chat's turns while the daemon holds the pane (`beat` with `idle`): then the hook adds
+ * what started the turn that asks (turnOrigin, as the Stop hook reads it), and the daemon either
+ * takes the request (a turn the agent started by itself: the profile's `permissions` decide) or tells
+ * the hook to step aside (`pass`: a turn a person typed in the Claude app or the pane). With no
+ * heartbeat at all it steps aside at once, and Claude opens its own dialog in the pane and the app.
  */
 
 /** A heartbeat older than this means nobody reads the chat. The hook has the same number. Only a
@@ -27,8 +31,22 @@ export const SCREEN_ONLY_MS = 1500;
 
 const REQUEST = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.request\.json$/;
 
-/** `at`: when the hook wrote it, by the hook's clock (it gives up HOOK_GIVE_UP_MS after). */
-export interface RelayedRequest { id: string; tool: string; input: unknown; at?: number }
+/** What started the turn a request between turns comes from, as the hook read it from the transcript
+ *  (scripts/turn-origin.mjs): `origin` notification, prompt or unknown, for a typed turn the key of
+ *  its last typed prompt and how many there were, and for a notification the tool-use ids of the
+ *  tasks whose end started it (`ids`) and the teammates whose message did (`teammates`), only when
+ *  each row that started it names one. */
+/** `promptKeys`: the keys of the prompts typed into the turn (the last 20; `prompts` counts them all);
+ *  `promptAt`: when the last was written; `openedBy`: what opened the turn (`prompt`, `notification`,
+ *  `other`); `joined`: the rows nobody typed that joined a typed turn (the last 20; `joins` counts them
+ *  all), each its kind (`notification`, `scheduled`, `other`) and the task ids and teammates it names. */
+export interface RequestOrigin { origin: string; why?: string; promptKey?: string; prompts?: number; promptKeys?: string[]; promptAt?: number; openedBy?: string; ids?: string[]; teammates?: string[]; joins?: number; joined?: JoinedRow[] }
+/** One row nobody typed in a typed turn (RequestOrigin.joined). */
+export interface JoinedRow { kind: string; ids?: string[]; teammates?: string[] }
+
+/** `at`: when the hook wrote it, by the hook's clock (it gives up HOOK_GIVE_UP_MS after). `origin`:
+ *  what started the turn that asks (the hook writes it on every request; one with none is of an older hook). */
+export interface RelayedRequest { id: string; tool: string; input: unknown; at?: number; origin?: RequestOrigin }
 
 /** How long the hook waits for an answer once it wrote its request (scripts/tui-permission-hook.mjs,
  *  GIVE_UP_MS). A request offered again after a restart has only what is left of it. */
@@ -49,8 +67,9 @@ export class PermissionRelay {
     this.seen.clear();
   }
 
-  /** While a turn is read from the chat, every RELAY_BEAT_MS. */
-  beat(now = Date.now()): void { this.put('relay.json', { at: now }); }
+  /** While a turn is read from the chat, every RELAY_BEAT_MS. `idle`: between the chat's turns, while
+   *  the daemon holds the pane: the hook then says what started the turn that asks. */
+  beat(now = Date.now(), idle = false): void { this.put('relay.json', idle ? { at: now, idle: true } : { at: now }); }
 
   /** Nobody reads the chat now: a hook waiting, or asking next, lets Claude open its own dialog. */
   quiet(): void { rmSync(join(this.dir, 'relay.json'), { force: true }); }
@@ -65,13 +84,14 @@ export class PermissionRelay {
     for (const name of names) {
       const id = REQUEST.exec(name)?.[1];
       if (!id || this.seen.has(id)) continue;
-      let row: { tool_name?: unknown; tool_input?: unknown; at?: unknown };
+      let row: { tool_name?: unknown; tool_input?: unknown; at?: unknown; origin?: unknown };
       try { row = JSON.parse(readFileSync(join(this.dir, name), 'utf8')); } catch { continue; }
       this.seen.add(id);
       this.open.add(id);
-      out.push({ id, tool: typeof row.tool_name === 'string' && row.tool_name ? row.tool_name : '?', input: row.tool_input, at: Number(row.at) || 0 });
+      const origin = originOf(row.origin);
+      out.push({ id, tool: typeof row.tool_name === 'string' && row.tool_name ? row.tool_name : '?', input: row.tool_input, at: Number(row.at) || 0, ...(origin ? { origin } : {}) });
     }
-    return out.sort((a, b) => a.at - b.at).map(({ id, tool, input, at }) => ({ id, tool, input, ...(at ? { at } : {}) }));
+    return out.sort((a, b) => a.at - b.at).map(({ at, ...r }) => ({ ...r, ...(at ? { at } : {}) }));
   }
 
   /** A hook waits on a request now, taken or not: Claude Code draws its own dialog while the hook
@@ -100,12 +120,60 @@ export class PermissionRelay {
     return false;
   }
 
+  /** Not the chat's to answer (a turn a person typed, between the chat's turns): the hook steps aside
+   *  and Claude asks in its own dialog, as with no daemon. False when no hook waits for it any more. */
+  pass(id: string): boolean {
+    if (!this.open.delete(id)) return false;
+    const request = join(this.dir, `${id}.request.json`);
+    if (!existsSync(request)) return false;
+    this.put(`${id}.answer.json`, { pass: true });
+    return true;
+  }
+
   private put(name: string, value: unknown): void {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const tmp = join(this.dir, `${name}.tmp`);
     writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 });
     renameSync(tmp, join(this.dir, name));
   }
+}
+
+/** The hook's `origin` field, kept only in its own shape: plain words, keys, a time, a count. */
+function originOf(v: unknown): RequestOrigin | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as { origin?: unknown; origin_why?: unknown; prompt_key?: unknown; prompts?: unknown; prompt_keys?: unknown; prompt_at?: unknown; opened_by?: unknown; origin_ids?: unknown; origin_teammates?: unknown; joins?: unknown; joined?: unknown };
+  const keys = Array.isArray(o.prompt_keys) && o.prompt_keys.length <= 20 && o.prompt_keys.every((k) => typeof k === 'string' && /^[0-9a-f]{1,128}$/.test(k)) ? o.prompt_keys as string[] : undefined;
+  if (typeof o.origin !== 'string' || !/^[a-z]{1,20}$/.test(o.origin)) return undefined;
+  return {
+    origin: o.origin,
+    ...(typeof o.origin_why === 'string' ? { why: o.origin_why.replace(/[^\w <>(),-]/g, '').slice(0, 120) } : {}),
+    ...(typeof o.prompt_key === 'string' && o.prompt_key.length <= 128 ? { promptKey: o.prompt_key } : {}),
+    ...(typeof o.prompts === 'number' && Number.isInteger(o.prompts) ? { prompts: o.prompts } : {}),
+    ...(keys ? { promptKeys: keys } : {}),
+    ...(typeof o.prompt_at === 'number' && Number.isFinite(o.prompt_at) ? { promptAt: o.prompt_at } : {}),
+    ...(typeof o.opened_by === 'string' && /^[a-z]{1,20}$/.test(o.opened_by) ? { openedBy: o.opened_by } : {}),
+    ...(words(o.origin_ids) ? { ids: words(o.origin_ids) } : {}),
+    ...(words(o.origin_teammates) ? { teammates: words(o.origin_teammates) } : {}),
+    ...(typeof o.joins === 'number' && Number.isInteger(o.joins) && o.joins >= 0 ? { joins: o.joins } : {}),
+    ...(Array.isArray(o.joined) && o.joined.length <= 20 ? { joined: o.joined.map(joinedOf) } : {}),
+  };
+}
+
+/** One entry of the hook's `joined`, in its own shape; anything else reads `other` (ties nothing). */
+function joinedOf(v: unknown): JoinedRow {
+  const j = v && typeof v === 'object' ? v as { kind?: unknown; ids?: unknown; teammates?: unknown } : {};
+  const ids = words(j.ids), mates = words(j.teammates);
+  if (typeof j.kind !== 'string' || !/^[a-z]{1,20}$/.test(j.kind)) return { kind: 'other' };
+  // A list that is there but not in its shape: the row is not known for anyone's work.
+  if ((j.ids !== undefined && !ids) || (j.teammates !== undefined && !mates)) return { kind: 'other' };
+  return { kind: j.kind, ...(ids ? { ids } : {}), ...(mates ? { teammates: mates } : {}) };
+}
+
+/** A list of ids or names as the hook writes them (turn-origin.mjs: TOOL_USE_ID, TEAMMATE_ID): plain
+ *  words, at most 20. Anything else is no list, and ties the request to nothing. */
+function words(v: unknown): string[] | undefined {
+  if (!Array.isArray(v) || !v.length || v.length > 20) return undefined;
+  return v.every((x) => typeof x === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(x)) ? v as string[] : undefined;
 }
 
 /** What Claude Code writes as the result of a tool use a person refused in its dialog (No or Esc).

@@ -5,8 +5,9 @@ import type { BrainEvent } from '../core/types.js';
 
 export type BackendName = Profile['backend'];
 
-/** What a brain may need to know of a turn besides its text. */
-export interface TurnFlags { app?: boolean }
+/** What a brain may need to know of a turn besides its text. `peer`: another profile asked for it
+ *  (sender `profile`): the work it starts is a peer's, which the levels never approve between turns. */
+export interface TurnFlags { app?: boolean; peer?: boolean }
 
 export interface BrainOptions {
   bin?: string;
@@ -151,6 +152,10 @@ export interface Brain extends EventEmitter {
    *  those the last daemon typed into it (a tui pane). */
   midturnState?(): unknown[];
   restoreMidturn?(list: unknown[]): void;
+  /** tmux mode: the key of what was typed for the turn read now, carried through a restart so that
+   *  turn's permission requests are still held to it (TuiBrain.ofThisTurn). */
+  turnKey?(): string | undefined;
+  restoreTurnKey?(key: unknown): void;
   /** A restarted daemon takes back a session it had sent to the background, or whose turn the restart
    *  cut off from its reader (then `follow` reads it for the chat). False: it is gone. */
   adopt?(turnSentAt: number): Promise<boolean>;

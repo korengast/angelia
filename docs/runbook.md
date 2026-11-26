@@ -228,8 +228,9 @@ one Angelia typed (someone typed into it): `late, but the prompt the hook read i
 Angelia typed`.
 
 **A message from the agent that nobody asked for (tui profiles).** A background task or a subagent
-that a turn of the chat started ended; Claude Code woke the agent, and Angelia sent what the agent
-said: `self-started answer delivered key=<chat> chars=<n>`. At most 6 an hour per chat; then the
+that a turn of the chat started ended, or a teammate such a turn spawned (the Agent tool with a
+name) sent the agent a message; Claude Code woke the agent, and Angelia sent what the agent said: `self-started answer delivered key=<chat> chars=<n>`. At most 6 an hour per chat for tasks' ends, and
+30 an hour for teammates' messages (counted apart; a teammate's idle note counts in neither); then the
 chat hears once that more are held back (`reason=hourly-limit`), and those are not kept. To stop a
 loop, `/stop` or `/new` in the chat ends the session and its tasks. The count is kept in the
 daemon's memory, so a restart starts it again; a Stop marker on disk when the daemon restarts is
@@ -245,10 +246,16 @@ not started by a turn of this chat`).
   it; it stays in the app.
 - `nothing ties it to work a turn of this chat started`, or `the work it reports was not started by
   a turn of this chat`: the turn was woken by something that names no task a turn of the chat
-  started: a task the owner started in the app, a prompt the session scheduled for itself, a
-  teammate's message, or a task started while nobody read the session. It stays in the app.
-- `what started it is not known (...)`: the Stop hook could not tell what started the turn (a
-  teammate's or another agent's message is one, until its row is measured); a kind
+  started: a task the owner started in the app, a prompt the session scheduled for itself, or a
+  task started while nobody read the session. It stays in the app.
+- `the teammate that sent it was not started by a turn of this chat`: a named teammate's message
+  woke the session, and the teammate was spawned in the app (or a teammate of the same name was
+  spawned there later), or while nobody read the session. A teammate a turn of the chat spawned is
+  the chat's: the answer to its message is sent, as a task's end is.
+- `a teammate's idle note, and [SILENT]`: a teammate of the chat's stopped, and the agent had
+  nothing to add.
+- `what started it is not known (...)`: the Stop hook could not tell what started the turn
+  (another agent's or session's message is one, until its row is measured); a kind
   of row it does not know is named in the brackets. Such an answer is never sent: the agent posts
   it with `angelia send`. A new Claude Code may write its rows another way: `LIVE_ROWS=1 npx tsx
   tests/live-tui-origin.mts` in the source tree runs a scratch session and prints the shape of the
@@ -303,10 +310,41 @@ ANGELIA_SESSION_KEY angelia restart`, outside print mode's process chain), with 
 `--force` it is refused as before; `--force` with both set is still deferred while that chat's turn runs. An agent can stop its own
 daemon in other ways as well (it runs as your user). What makes that harmless for a tmux turn is the adoption above, not this check.
 
+**`a permission between turns, in a turn the agent started by itself (...), tied to the chat's work`.**
+The end of a background task or a teammate's message woke the agent after the chat's turn ended, that
+work was started in a turn of this chat, and its next tool call asked. The words in brackets say what
+started that turn (`<task-notification>`, `<teammate-message>`). The next line says what the profile's
+`permissions` did: `permission auto-approved ... (between turns, ...)`, `permission auto-denied ...`, or
+`permission asked ...`, and then the chat has the request under "The agent woke up by itself ... and
+asks:". `tied to a peer's work`: another profile's turn (`angelia turn` with its token) started that
+work; it is refused at once by a refuse rule but never approved at once (`... a peer's work is never
+auto-approved`), as in a peer's own turn. `in a turn nothing ties to the chat's work (...)`: a
+scheduled prompt, another session's message, a turn the hook could not place (`no row that starts a
+turn`, `no row that starts it`), a teammate that ended (its end was read), or a
+request with no origin (an older hook). Such a turn may be the owner's own in the Claude app, so the levels
+act on it at once neither way: it is always asked, under "A turn Angelia did not type in this session
+asks ...". Up to 0.4.3 no request between turns reached the chat: the hook stepped aside. No
+such line, and Claude's own dialog in the pane: the daemon had let the pane go (idle, or a restart since
+the chat's last message), so nobody read it between turns; the screen notice below still comes.
+`... in a turn a person typed (...): not relayed, Claude asks in its own dialog`: someone typed that
+turn in the Claude app or the pane, so it is theirs; the hook stepped aside on purpose.
+`a permission while a chat turn is read, not of that turn, in ...`: the hook says what started the turn
+on every request, and a chat turn's reader keeps only a request of a turn the chat's own prompt opened
+and that holds no prompt but the chat's (what it typed, messages typed into it). Anything else went as
+a request between turns does (the same words follow): a turn Claude Code ran before the chat's message
+(a task's end or another session's message queued first, which the message may have joined), a
+person's turn, or a request written under the last idle beat. Up to 0.4.3 the turn's reader sent every
+request the levels' way.
+
 **`permission dialog with no relay key=...`.** A dialog in a chat's pane that no hook request accounts
-for stood 20 s while no turn of that chat was read (the hook stepped aside, or gave up after 11
-minutes): the chat got one line that it waits and where to answer it (the Claude app, or the pane's
-`tmux attach` command). The chat cannot answer it; nothing presses a key in the pane.
+for stood 20 s while no turn of that chat was read (a turn a person typed, the hook stepped aside, or gave up after 11
+minutes, or Claude Code's own safety check that no hook sees, such as a teammate's "Dangerous rm
+operation"): the chat got one line, "A permission waits: Bash command from the restart-relay agent
+(...)", with where to answer it (the Claude app, or the pane's `tmux attach` command). One line per
+dialog; inside a turn of the chat the turn's reader says the same within seconds. The chat cannot
+answer it; nothing presses a key in the pane. Up to 0.4.3 a dialog whose options wrapped (an 80-column
+terminal attached to the pane, a long folder in "don't ask again for ... in `<folder>`") was not read as
+open, so no line came.
 
 **Telegram: nothing arrives from a group.** Make the bot a group admin: Telegram's privacy mode hides
 plain @mentions from bots otherwise.

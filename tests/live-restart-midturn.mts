@@ -11,14 +11,15 @@
  * starts on the same state (restoreTurns): it adopts the running turn (restart-relay), and the turn's
  * one answer, with the second message's word in it, reaches the chat from the new daemon. Checks: the
  * message went into the turn; the turn was adopted, not cut; the old daemon said nothing; the new one
- * delivered the answer with the word. LIVE_KEEP=1 leaves the pane up. Exits 1 when a check fails.
+ * delivered the answer with the word. ANGELIA_TMUX_SOCKET picks the tmux server (default
+ * angelia-live-restart-midturn-<pid>). LIVE_KEEP=1 leaves the pane up. Exits 1 when a check fails.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const socket = `angelia-live-restart-midturn-${process.pid}`;
+const socket = process.env.ANGELIA_TMUX_SOCKET && process.env.ANGELIA_TMUX_SOCKET !== 'angelia' ? process.env.ANGELIA_TMUX_SOCKET : `angelia-live-restart-midturn-${process.pid}`;
 process.env.ANGELIA_TMUX_SOCKET = socket;
 const state = mkdtempSync(join(tmpdir(), 'angelia-live-rm-state-'));
 process.env.ANGELIA_STATE_DIR = state;

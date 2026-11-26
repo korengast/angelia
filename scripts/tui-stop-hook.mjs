@@ -65,7 +65,7 @@ try {
   let origin = { origin: 'unknown', origin_why: 'no transcript' };
   try { if (transcript) origin = turnOrigin(read(transcript)); } catch { origin = { origin: 'unknown', origin_why: 'the transcript could not be read' }; }
   // For measuring a new Claude Code: the shape of the last rows, names and flags only (rowShapes).
-  if (process.env.ANGELIA_TUI_ORIGIN_DEBUG && transcript) { try { origin = { ...origin, origin_rows: rowShapes(read(transcript)) }; } catch { /* a measurement only */ } }
+  if (process.env.ANGELIA_TUI_ORIGIN_DEBUG && transcript) { try { origin = { ...origin, origin_rows: process.env.ANGELIA_TUI_ORIGIN_DEBUG === 'keys' ? rowShapes(read(transcript), 40, { keys: true }) : rowShapes(read(transcript)) }; } catch { /* a measurement only */ } }
   // Written whole, then moved into place: the daemon reads this file between turns too, at any moment.
   writeFileSync(`${marker}.tmp`, JSON.stringify({ text, transcript_path: transcript, session_id: payload.session_id ?? '', at: Date.now(), ...origin }));
   renameSync(`${marker}.tmp`, marker);

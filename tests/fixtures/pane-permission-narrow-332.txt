@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Haiku 5.5 with low effort · Claude Max
+ ▝▝   ▝▝   /…/a-rather-long-project-folder-name-for-wrapping · /rc
+
+
+❯ Run exactly this with the Bash tool, one call: cd /tmp/tmt-between/between-ex
+  p-WFoB4A/a-rather-long-project-folder-name-for-wrapping && git add note.txt
+  && git commit -q -m x
+
+  /remote-control is active · Continue here, on your phone, or at
+  https://claude.ai/code/session_01Example
+
+  Staging note.txt and committing with message x
+  ⎿  $ cd /tmp/tmt-between/between-exp-WFoB4A/a-rather-long-project-folder-name-
+     for-wrapping && git add note.txt && git commit -q -m x
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode"
+ below
+ Stage note.txt and commit with message x
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ cd /tmp/tmt-between/between-exp-WFoB4A/a-rather-long-project-folder-name-for
+ │ -wrapping && git add note.txt && git commit -q -m x
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ This command requires approval
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for git add and git commit commands in
+      /private/tmp/tmt-between/between-exp-WFoB4A/a-rather-long-project-folder-
+      name-for-wrapping
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend

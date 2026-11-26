@@ -6,15 +6,16 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
-import { cleanText, type BrainEvent, type UnaskedAnswer } from '../core/types.js';
-import { isLimitText } from '../core/deliver/text.js';
+import { cleanText, type BrainEvent, type SelfPermission, type SelfWork, type UnaskedAnswer } from '../core/types.js';
+import { isLimitText, TMUX_STALLED } from '../core/deliver/text.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
 import { addDirAccepted, addDirDialog, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
-import { HOOK_GIVE_UP_MS, paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs } from './tui-permissions.js';
+import { HOOK_GIVE_UP_MS, paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs, type RelayedRequest, type RequestOrigin } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { mcpLaunch, readRecord } from '../capabilities/compile.js';
 import { readPlainText } from '../core/paths.js';
+import { askedBy } from '../core/screen-asks.js';
 
 export { transcriptPath } from './transcripts.js';
 
@@ -27,6 +28,9 @@ export const PRETOOL_HOOK = fileURLToPath(new URL('../../scripts/tui-pretool-hoo
 /** Past the PreToolUse hook's own longest wait (15 s). */
 const PRETOOL_HOOK_TIMEOUT_S = 30;
 const POLL_MS = 700;
+/** tmux calls in a row that timed out (TMUX_TIMEOUT_MS each) before a loop that waits on the screen
+ *  gives up: one is a loaded machine, three (a minute and a half) is a server that does not answer. */
+const TMUX_STALLS = 3;
 /** How long claude's add-dir dialog must stand before keys reach it (it drops them for ~1 s, 2.1.326). */
 const ADD_DIR_SETTLE_MS = 1500;
 const START_TIMEOUT_MS = 90_000;
@@ -85,6 +89,9 @@ const TRANSCRIPT_SLICE_MAX = 8 * 1024 * 1024;
  *  a file exists. Short: the next Stop overwrites the file, so a late answer followed at once by a
  *  task's end would be lost to a slow reader. BrainOptions.idlePollMs shortens it (tests). */
 const IDLE_POLL_MS = 1000;
+/** How often the reader between turns writes its heartbeat for the permission hook: well inside
+ *  RELAY_STALE_MS (30 s), and not a disk write every tick for each pane the daemon holds. */
+const IDLE_BEAT_MS = 5000;
 /** What an agent answers when it has nothing for the chat (jobs.ts reads the same word). */
 const SILENT = '[SILENT]';
 /** A tool call must have run this long, with no permission request, before a message is typed into the
@@ -131,11 +138,11 @@ const NOT_READ = 'no turn of the chat is read';
 const TAKEN_POLLS = 10;
 
 /** The Stop hook's file (scripts/tui-stop-hook.mjs). `origin`, `origin_why`, `prompt_at`, `prompt_key`,
- *  `prompts`, `origin_ids`: what started the turn, as the hook read it from the transcript
+ *  `prompts`, `origin_ids`, `origin_teammates`, `origin_idle`: what started the turn, as the hook read it from the transcript
  *  (scripts/turn-origin.mjs). */
 interface Marker {
   text?: unknown; at?: number; transcript_path?: string; origin?: unknown; origin_why?: unknown; prompt_at?: unknown;
-  prompt_key?: unknown; prompts?: unknown; origin_ids?: unknown;
+  prompt_key?: unknown; prompts?: unknown; origin_ids?: unknown; origin_teammates?: unknown; origin_idle?: unknown;
 }
 
 /** The key of a typed prompt, as scripts/turn-origin.mjs (promptKey) computes it from the transcript:
@@ -160,24 +167,60 @@ export const KEY_MISS_LINE = 'tmux: marker dropped, prompt key miss:';
 
 /** Background tasks remembered as started in a turn of Angelia's: a task's end is delivered by these. */
 const OURS_MAX = 500;
+/** Turn starts kept (turnStarts): more than spawns wait between two markers. */
+const TURN_STARTS_MAX = 50;
+/** The keys of every prompt typed into the turn a request came from, as the hook read them; none when
+ *  it holds more than the hook lists (then not each one can be known for the chat's). */
+function promptKeysOf(o: RequestOrigin): string[] {
+  if (o.promptKeys) return o.prompts === o.promptKeys.length ? o.promptKeys : [];
+  return o.promptKey && o.prompts === 1 ? [o.promptKey] : [];
+}
+
+/** Add to a set of the chat's own work as the newest one, and keep it within OURS_MAX. */
+function addOurs(set: Set<string>, v: string): void {
+  set.delete(v);
+  set.add(v);
+  if (set.size > OURS_MAX) set.delete(set.values().next().value!);
+}
 
 /** Calls kept while their result is awaited, so a turn of a thousand shell commands does not grow the map. */
 const CALLS_MAX = 500;
 
+/** How long a named teammate counts as open with no end of it read: it may never send one. */
+const TEAMMATE_MAX_MS = 12 * 60 * 60_000;
+
+/** The name of a spawned teammate, from its call's result (claude 2.1.332, measured: `name`, and
+ *  `teammate_id` as `<name>@<team>`), as its messages to the lead name it (`teammate_id="<name>"`).
+ *  Only a plain word. */
+export function teammateName(res: { name?: unknown; teammate_id?: unknown }): string | undefined {
+  const raw = typeof res.name === 'string' && res.name ? res.name : typeof res.teammate_id === 'string' ? res.teammate_id.split('@')[0] : '';
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(raw) ? raw : undefined;
+}
+
 /**
- * The tool_use ids of the background tasks a slice of transcript rows starts, as Claude Code writes
- * them: a shell command sent to the background (a `Bash` call whose result row carries
- * `backgroundTaskId`) and a subagent launched to run on its own (`status: async_launched`, or
- * `teammate_spawned` for a named one). The end of each comes back as a `<task-notification>` naming the
- * same id, which the Stop hook reports as `origin_ids`. `calls`: the kind of each call whose result
+ * What a slice of transcript rows says of background work, as Claude Code writes it. `starts`: the
+ * tool_use ids of the tasks it starts, a shell command sent to the background (a `Bash` call whose
+ * result row carries `backgroundTaskId`) and a subagent launched to run on its own (`status:
+ * async_launched`, or `teammate_spawned` for a named one, with the name it goes by: `teammate`).
+ * `ends`: the ids a queued `<task-notification>` names (a `queue-operation` row, `enqueue`), the end
+ * of each, which the Stop hook reports as `origin_ids`. `calls`: the kind of each call whose result
  * has not come yet, kept by the caller across slices (a call and its result may be read apart).
  */
-export function backgroundStarts(chunk: string, calls: Map<string, 'bash' | 'agent'> = new Map()): string[] {
-  const out: string[] = [];
-  type Block = { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown };
+export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent'> = new Map()): { starts: { id: string; teammate?: string }[]; ends: string[] } {
+  const starts: { id: string; teammate?: string }[] = [], ends: string[] = [];
+  type Block = { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown; text?: unknown };
   for (const l of chunk.split('\n')) {
-    let r: { type?: unknown; message?: { content?: unknown }; toolUseResult?: unknown } | null;
+    let r: { type?: unknown; operation?: unknown; content?: unknown; message?: { content?: unknown }; toolUseResult?: unknown } | null;
     try { r = JSON.parse(l); } catch { continue; }
+    if (r?.type === 'queue-operation' && r.operation === 'enqueue') {
+      const c = r.content;
+      const text = typeof c === 'string' ? c : Array.isArray(c) ? (c as Block[]).map((b) => (typeof b?.text === 'string' ? b.text : '')).join('\n') : '';
+      for (const n of text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
+        const id = /<tool-use-id>([\s\S]*?)<\/tool-use-id>/.exec(n[1])?.[1]?.trim();
+        if (id) ends.push(id);
+      }
+      continue;
+    }
     if (!Array.isArray(r?.message?.content)) continue;
     const content = r.message.content as Block[];
     if (r.type === 'assistant') {
@@ -196,14 +239,20 @@ export function backgroundStarts(chunk: string, calls: Map<string, 'bash' | 'age
     if (results.length !== 1) continue;
     const id = String(results[0].tool_use_id), kind = calls.get(id);
     calls.delete(id);
-    const res = r.toolUseResult as { backgroundTaskId?: unknown; status?: unknown } | undefined;
+    const res = r.toolUseResult as { backgroundTaskId?: unknown; status?: unknown; name?: unknown; teammate_id?: unknown } | undefined;
     if (!res || typeof res !== 'object') continue;
     // A background id counts for a shell call only (a call not seen is taken for one, as Claude Code
     // gives that id to shell commands alone).
-    if (res.backgroundTaskId && (kind ?? 'bash') === 'bash') out.push(id);
-    else if (res.status === 'async_launched' || res.status === 'teammate_spawned') out.push(id);
+    if (res.backgroundTaskId && (kind ?? 'bash') === 'bash') starts.push({ id });
+    else if (res.status === 'async_launched') starts.push({ id });
+    else if (res.status === 'teammate_spawned') { const teammate = teammateName(res); starts.push(teammate ? { id, teammate } : { id }); }
   }
-  return out;
+  return { starts, ends };
+}
+
+/** The tool_use ids of the background tasks a slice of transcript rows starts (backgroundRows). */
+export function backgroundStarts(chunk: string, calls: Map<string, 'bash' | 'agent'> = new Map()): string[] {
+  return backgroundRows(chunk, calls).starts.map((s) => s.id);
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -361,7 +410,8 @@ export function hookSettings(hook = HOOK, permission = PERMISSION_HOOK, pretool:
 
 /** For a dialog on the pane that did not come through the hook (tui-permissions.ts, ScreenDialogs).
  *  `socket`: the tmux server the pane is on, when not Angelia's own. */
-export function screenOnlyLine(pane: string, socket = TMUX_SOCKET): string {
+export function screenOnlyLine(pane: string, socket = TMUX_SOCKET, dialog?: { tool: string; from?: string }): string {
+  if (dialog) return `A permission waits: ${askedBy(dialog)}. It did not come through Angelia, so only the screen says what it asks and it cannot be answered from here. Answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t ${pane}); /stop ends the turn.`;
   return `A permission dialog is open that did not come through Angelia, so only the screen says what it asks and it cannot be answered from here. Answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t ${pane}); /stop ends the turn.`;
 }
 
@@ -378,6 +428,19 @@ export function screenOnlyLine(pane: string, socket = TMUX_SOCKET): string {
  */
 export class TuiBrain extends EventEmitter implements Brain {
   private permissions: PermissionBook;
+  /** Requests between the chat's turns, from a turn the agent started by itself (betweenTurns): a book
+   *  of their own, which the end of a chat turn does not clear. */
+  private selfBook: PermissionBook;
+  /** Those requests by id, and those answered in the pane or the app whose outcome the transcript has
+   *  yet to show (decide). */
+  private selfAsked = new Map<string, { tool: string; input: unknown }>();
+  private selfDeciding = new Map<string, { tool: string; input: unknown; since: number }>();
+  /** Counts the Stop markers taken between turns: the requests of one turn the agent started by itself
+   *  share a number (the orchestrator caps auto-approvals per turn). */
+  private selfTurn = 0;
+  /** The heartbeat on file is the reader between turns' (`idle`), not a turn's; and when it was written. */
+  private idleBeat = false;
+  private idleBeatAt = 0;
   private relay: PermissionRelay;
   /** When a relayed request last came, was answered or went: a dialog on the pane just then is its own. */
   private relayedAt = 0;
@@ -405,19 +468,48 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  loop that sees it move stops reading, so two loops never read one pane. */
   private gen = 0;
   /** Tool-use ids of the background tasks started in Angelia's turns (read while a turn of its own
-   *  ran). A task the owner started from the app is not among them. */
+   *  ran, or in a turn tied to the chat's work: settleSpawns). A task the owner started from the app is
+   *  not among them. */
   private ours = new Set<string>();
-  /** The calls that may start a background task, until their result row is read (backgroundStarts). */
+  /** The calls that may start a background task, until their result row is read (backgroundRows). */
   private calls = new Map<string, 'bash' | 'agent'>();
+  /** The named teammates spawned in this session and still open (no end of theirs read, and spawned
+   *  less than TEAMMATE_MAX_MS ago), by name: the tool_use id of the call that spawned it, and when. */
+  private openTeammates = new Map<string, { id: string; at: number }>();
+  /** The names of the teammates spawned in Angelia's turns (the Agent tool with a `name`): a turn their
+   *  message starts is the chat's, as a task's end is. */
+  private oursTeammates = new Set<string>();
+  /** Of those, the ones whose last start was read in a turn another profile asked for (TurnFlags.peer),
+   *  or in a turn tied to such work: a request of a turn they start is never approved by the levels. */
+  private peerIds = new Set<string>();
+  private peerTeammates = new Set<string>();
+  /** The turn typed here now is a peer's (TurnFlags.peer). */
+  private turnPeer = false;
+  /** Tasks and teammates started while no turn of Angelia's was read, since the last Stop marker taken
+   *  between turns: when takeIdle finds that turn was the chat's (tied to its work, a late answer, a
+   *  message typed into a turn), they are the chat's too; else they are not (settleSpawns). */
+  private pendingSpawns: { id: string; at: number; teammate?: string }[] = [];
+  /** Where in the transcript the row being read starts: what a spawn read in it is stamped with. */
+  private rowAt = 0;
+  /** The rows read that began a turn of the session's (a prompt, a task's end, a teammate's message
+   *  after a closed turn): their offset and time, the last TURN_STARTS_MAX. takeIdle settles only the
+   *  spawns of the marker's own turn (turnSpan): an owner's turn before it, cut by Esc or typed in the
+   *  desk app, or one after it, keeps its spawns out of the chat's. */
+  private turnStarts: { at: number; time: number }[] = [];
+  /** turnRows of the rows read so far, for turnStarts. */
+  private startState: TurnRows = 'none';
   /** Rows read now are of a turn Angelia typed here: set at its Enter (submit), cleared when that turn
    *  ends or its reader changes. Not turnSentAt: adopt() sets that with the transcript read from its
    *  start, and a released pane keeps it. */
   private recording = false;
   /** The last turn typed here that ended with no Stop marker (the quiet path), until its marker comes
    *  or another turn begins: when it was typed, when it was closed, and what the chat got as its answer. */
-  private quietEnd?: { sentAt: number; endedAt: number; said: string; key: string; taken: string[] };
+  private quietEnd?: { sentAt: number; endedAt: number; said: string; key: string; taken: string[]; peer: boolean };
   /** The key (promptKey) of what this turn typed, from its Enter until the turn ends. */
   private typedKey = '';
+  /** The same key, for holding a request to the turn it was typed for (ofThisTurn): unlike typedKey it
+   *  is kept when that turn is read again (follow: /resume, or a restart, which carries it: turnKey). */
+  private tieKey = '';
   /** The reader between turns (startIdle): it looks for a Stop marker no turn of Angelia's waits for. */
   private idle?: NodeJS.Timeout;
   /** Since when this object reads the session: its first turn. A marker from before is of a time when
@@ -476,11 +568,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.transcript = transcriptPath(profile.cwd, session.id);
     this.relay = new PermissionRelay(join(this.dir, 'permissions'));
     this.permissions = new PermissionBook(opts.permissionTimeoutMs ?? 10 * 60_000, (id) => { if (this.answerPermission(id, false)) this.emit('permission-timeout', id); });
+    this.selfBook = new PermissionBook(opts.permissionTimeoutMs ?? 10 * 60_000, (id) => { if (this.answerPermission(id, false)) this.emit('permission-timeout', id); });
   }
 
   get alive(): boolean { return this.up; }
-  get pendingPermissionCount(): number { return this.permissions.size; }
-  hasPendingPermission(id: string): boolean { return this.permissions.has(id); }
+  get pendingPermissionCount(): number { return this.permissions.size + this.selfBook.size; }
+  hasPendingPermission(id: string): boolean { return this.permissions.has(id) || this.selfBook.has(id); }
 
   private get dir(): string { return join(this.opts.stateDir ?? process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia'), 'tui', this.name); }
   private get settingsPath(): string { return join(this.dir, 'settings.json'); }
@@ -700,13 +793,11 @@ export class TuiBrain extends EventEmitter implements Brain {
         if (now !== pane) moved = true;
         pane = now;
       }
-      // Text left in the box (a paste a restart cut before its Enter, a draft): the message would be typed
-      // after it, as one. Cleared first, as a failed paste is.
-      if (boxText(pane)) {
-        this.emit('log', `tmux: the input box held text before a paste; cleared pane=${this.name}`);
-        await this.tm(['send-keys', '-t', this.name, 'C-u']);
-        await sleep(200);
-      }
+      // Text already in the box would go with ours: a message half cleared by an earlier failure, a
+      // paste a restart cut before its Enter, something typed in the app and not sent. Cleared line by
+      // line (clearBox: one Ctrl-U clears one line of a box of several), and what it was is said.
+      const leftover = await this.clearBox();
+      if (leftover) this.emit('log', `tmux: the input box held text before a paste; cleared: ${JSON.stringify(leftover.slice(0, 120))} pane=${this.name}`);
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       if ((await loadBuffer(this.name, text, this.dir, (a) => this.tm(a))).code !== 0) {
         this.emit('log', `tmux: the message could not be loaded into a paste buffer pane=${this.name}`);
@@ -797,11 +888,14 @@ export class TuiBrain extends EventEmitter implements Brain {
     const gen = this.gen;
     const left: { over?: UnaskedAnswer } = {};
     const submit = () => {
+      if (this.openTeammates.size) this.readTranscript(); // a teammate's end written since the last look
       // A Stop marker still here is of a turn that ended before this one: read as between turns, so a
       // late answer or a task's result is told before this turn's answer, never just deleted.
       left.over = this.takeIdle() ?? undefined;
+      // Started between turns in a turn whose marker never came: nothing shows it was the chat's.
+      this.settleSpawns(false);
       this.at = this.from = fileSize(this.transcript); // only rows written from here on are this turn's
-      this.rows = 'none';
+      this.rows = this.startState = 'none';
       this.openCalls.clear();
       // Messages typed into an earlier turn whose answer never came: none is waited for any more, so a
       // later turn with the same words is never taken for theirs.
@@ -813,9 +907,10 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.turnSentAt = sentAt;
       // A turn typed in the desk app is the owner's own: what it starts is not the chat's (TurnFlags).
       this.recording = !o.app;
+      this.turnPeer = o.peer === true;
       this.heldSince ??= sentAt;
       this.quietEnd = undefined;
-      this.typedKey = promptKey(cleanText(text));
+      this.typedKey = this.tieKey = promptKey(cleanText(text));
     };
     const typed = await this.paste(text, submit, gen);
     if (left.over) yield { kind: 'unasked', ...left.over };
@@ -959,10 +1054,18 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.emit('log', `tmux: a chat message went into the running turn (${text.length} chars) pane=${this.name}`);
       return true;
     };
+    let stalls = 0;
     for (;;) {
       await sleep(300);
       const pane = await this.capture(30);
-      if (!pane && this.captureTimedOut) continue;
+      if (!pane && this.captureTimedOut) {
+        if (++stalls < TMUX_STALLS) continue;
+        // Pressed already: only the transcript can say whether Claude Code took it (else it would go twice).
+        if (presses > 0 && await confirm()) return took();
+        this.emit('log', `tmux: a message for the running turn was not typed: ${stalls} captures in a row timed out; it waits for the turn to end pane=${this.name}`);
+        return false;
+      }
+      stalls = 0;
       if (!pane) return false;
       if (!pasteLanded(pane, text)) {
         // An Enter was pressed, and now the box is on screen without the text: taken, late (a redraw a
@@ -989,9 +1092,10 @@ export class TuiBrain extends EventEmitter implements Brain {
         // first Enter: no key.
         if (gen !== this.gen || (this.closing && !presses)) break;
         if (!presses) enterAt = fileSize(this.transcript);
+        // Set before the key: stopAbsorbing, which waits on it, may run while send-keys does.
+        this.pressed = true;
         await this.tm(['send-keys', '-t', this.name, 'Enter']);
         presses++;
-        this.pressed = true;
         for (let p = 0; p < TAKEN_POLLS && !emptied; p++) {
           await sleep(300);
           const now = await this.capture(30);
@@ -1116,8 +1220,10 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.absorbed = this.absorbed.filter((a) => !f.keys.includes(a.key));
     this.turnSentAt = f.since;
     this.recording = true;
+    // The chat's own messages: none goes into a peer's turn (Orchestrator.intoTurnAllowed).
+    this.turnPeer = false;
     this.followKeys = f.keys;
-    this.typedKey = f.keys[0];
+    this.typedKey = this.tieKey = f.keys[0];
     this.quietEnd = undefined;
     this.lastUsedAt = Date.now();
     try {
@@ -1170,8 +1276,9 @@ export class TuiBrain extends EventEmitter implements Brain {
         const nl = buf.indexOf(10, start);
         if (nl < 0) break;
         const line = buf.subarray(start, nl).toString('utf8');
+        this.rowAt = at + start;
         start = nl + 1;
-        if (at + start > seen && this.recording) for (const id of backgroundStarts(line, this.calls)) { this.ours.add(id); if (this.ours.size > OURS_MAX) this.ours.delete(this.ours.values().next().value!); }
+        if (at + start > seen) this.noteBackground(line);
         if (!line.includes('"user"')) continue;
         let row: { type?: unknown; isSidechain?: unknown; isMeta?: unknown; message?: { content?: unknown } } | null;
         try { row = JSON.parse(line); } catch { continue; }
@@ -1270,9 +1377,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     let lastAbove = '', aboveAt = 0;
     const quietMs = this.opts.quietMs ?? QUIET_MS, quietTextMs = this.opts.quietTextMs ?? QUIET_TEXT_MS, quietOpenMs = this.opts.quietOpenMs ?? QUIET_OPEN_MS;
     let hours = 0, lastPane = '', movedAt = Date.now();
+    /** tmux calls in a row that timed out (TMUX_STALLS). */
+    let stalls = 0;
     // A dialog still open when the turn ends can no longer be answered from the chat: its timer goes too.
     // A turn read for the chat leaves the session held: from here the reader between turns looks at it.
-    const over = (): void => { this.turnSentAt = undefined; this.recording = false; this.lastUsedAt = Date.now(); this.permissions.clear(); if (!background) { this.stopBeat(); this.startIdle(); } };
+    // A turn not read for the chat (typed in the desk app, a follow, the background): what it started is not the chat's.
+    const over = (): void => { if (!this.recording) this.settleSpawns(false); this.turnSentAt = undefined; this.recording = false; this.lastUsedAt = Date.now(); this.permissions.clear(); if (!background) { this.stopBeat(); this.startIdle(); } };
     // How the turn ended, for the log: which path, how long it ran and how long its answer is, never the words.
     const ended = (how: string, answer: string): void => { this.emit('log', `tmux: turn ended by ${how} after ${Math.round((Date.now() - sentAt) / 1000)} s, answer ${answer.length} chars pane=${this.name}`); };
     if (!background) this.startBeat(gen);
@@ -1359,6 +1469,10 @@ export class TuiBrain extends EventEmitter implements Brain {
         if (!background) {
           for (const r of this.relay.take()) {
             this.relayedAt = Date.now();
+            // Not this turn's: of a turn that ran before it (a task's end or another session's message
+            // Claude Code queued first), or written under the last idle beat. It goes as one between
+            // turns does, never the levels' way as this turn's.
+            if (!this.ofThisTurn(r.origin, sentAt, command)) { this.selfRequest(r, true); continue; }
             // Its timeout fits the hook's own time left: a request offered again after a restart is
             // denied before its hook steps aside, never answered into nothing.
             this.permissions.add(r.id, r.at ? Math.max(5000, HOOK_GIVE_UP_MS - (Date.now() - r.at) - 30_000) : undefined);
@@ -1369,7 +1483,10 @@ export class TuiBrain extends EventEmitter implements Brain {
           for (const id of this.relay.gone()) {
             this.relayedAt = Date.now();
             this.permissions.take(id);
-            const a = asked.get(id);
+            this.selfBook.take(id);
+            // One asked between turns, still open as this turn began, is told the same way.
+            const a = asked.get(id) ?? this.selfAsked.get(id);
+            this.selfAsked.delete(id);
             if (a) { asked.delete(id); deciding.set(id, { ...a, since: Date.now() }); }
           }
         }
@@ -1386,13 +1503,25 @@ export class TuiBrain extends EventEmitter implements Brain {
           // Told to the chat once, and answered in the app or the pane: nobody answers from the chat.
           const seen = dialogs.see(open, () => true);
           if (seen.announce && open) yield { kind: 'permission', id: seen.announce, tool: open.tool, preview: open.preview };
-        } else if (screen.see(open ? `${open.tool}\n${open.preview}` : null, this.permissions.size > 0 || Date.now() - this.relayedAt < REASK_MS)) {
-          yield { kind: 'notice', text: screenOnlyLine(this.name, this.socket) };
+        } else if (screen.see(open ? `${open.tool}\n${open.preview}` : null, this.permissions.size > 0 || this.selfBook.size > 0 || Date.now() - this.relayedAt < REASK_MS)) {
+          yield { kind: 'notice', text: screenOnlyLine(this.name, this.socket, open ?? undefined) };
         }
-        // A tmux that did not answer in time is not a pane that is gone: the next poll looks again.
-        if (!pane && this.captureTimedOut) { this.emit('log', `tmux: a capture timed out; the reader polls again pane=${this.name}`); continue; }
-        const gone = !pane ? await this.tm(['has-session', '-t', this.name]) : undefined;
-        if (gone?.timedOut) { this.emit('log', `tmux: has-session timed out; the reader polls again pane=${this.name}`); continue; }
+        // A tmux that did not answer in time is not a pane that is gone: the next poll looks again, up
+        // to TMUX_STALLS calls in a row. Then the reader gives up with a clear line; the pane is kept,
+        // and the turn's Stop marker, if it comes, is its answer, late (takeIdle).
+        const stalled = !pane && this.captureTimedOut;
+        const gone = !pane && !stalled ? await this.tm(['has-session', '-t', this.name]) : undefined;
+        if (stalled || gone?.timedOut) {
+          const what = stalled ? 'a capture' : 'has-session';
+          if (++stalls < TMUX_STALLS) { this.emit('log', `tmux: ${what} timed out (${stalls} in a row); the reader polls again pane=${this.name}`); continue; }
+          this.emit('log', `tmux: ${stalls} tmux calls in a row timed out; the turn's reader gives up and the pane is kept pane=${this.name}`);
+          over();
+          ended('tmux not answering', '');
+          if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: '', key: this.typedKey, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key), peer: this.turnPeer };
+          yield { kind: 'result', text: '', isError: true, reason: TMUX_STALLED, keep: true };
+          return;
+        }
+        stalls = 0;
         if (gone && gone.code !== 0) {
           if (gen !== this.gen) { this.recording = false; yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
           if (!background) this.up = false;
@@ -1428,7 +1557,7 @@ export class TuiBrain extends EventEmitter implements Brain {
             ended(how, answer);
             // The Stop marker may still come (a failed read of the screen, a slow hook): then it is this
             // turn's answer, late (takeIdle).
-            if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: answer, key: this.typedKey, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key) };
+            if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: answer, key: this.typedKey, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key), peer: this.turnPeer };
             if (!background) this.closeAbsorbed(sentAt, readTo);
             // No answer at all, and not to a slash command: the chat may be told the agent gave none, so
             // keep the screen that read as idle.
@@ -1473,14 +1602,20 @@ export class TuiBrain extends EventEmitter implements Brain {
       readSync(fd, buf, 0, buf.length, this.at);
       const cut = buf.lastIndexOf(10);
       if (cut < 0) return [];
+      const from = this.at;
       this.at += cut + 1;
       const rows = buf.subarray(0, cut).toString('utf8');
-      this.rows = turnRows(rows, this.rows);
-      // Started while a turn of Angelia's was read: its end may wake the agent, and that answer is the chat's.
-      if (this.recording) for (const id of backgroundStarts(rows, this.calls)) {
-        this.ours.add(id);
-        if (this.ours.size > OURS_MAX) this.ours.delete(this.ours.values().next().value!);
+      // Row by row, so each spawn is stamped with where its row starts, and each turn's start is known.
+      for (let start = 0; start <= cut;) {
+        const nl = buf.indexOf(10, start);
+        const end = nl < 0 || nl > cut ? cut : nl;
+        const line = buf.subarray(start, end).toString('utf8');
+        this.rowAt = from + start;
+        this.noteStart(line, this.rowAt);
+        this.noteBackground(line);
+        start = end + 1;
       }
+      this.rows = turnRows(rows, this.rows);
       this.noteRows(rows);
       return transcriptEvents(rows);
     } catch {
@@ -1548,9 +1683,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (!row?.at || row.at < sentAt) return null;
     rmSync(this.markerPath, { force: true });
     if (row.transcript_path && row.transcript_path !== this.transcript) {
+      const was = this.transcript;
       this.transcript = row.transcript_path;
       const id = sessionOf(row.transcript_path);
       if (id && id !== this.session.id) this.backendSessionId = id; // the CLI forked the session
+      // Another conversation: the names of the old one's teammates tie nothing in it.
+      if (id !== sessionOf(was)) this.forgetTeammates();
     }
     return String(row.text ?? '');
   }
@@ -1567,11 +1705,11 @@ export class TuiBrain extends EventEmitter implements Brain {
    *
    * Self-started: the hook says Claude Code queued what started the turn (`origin: notification`),
    * and each task whose end it names (`origin_ids`) was started while a turn of Angelia's was read
-   * (`ours`); such a marker counts as use of the session (lastUsedAt), sent or not. A turn a person
-   * typed (`prompt`), one the hook could not place (`unknown`, or a marker of an older hook with no
-   * origin), or one that names no task of Angelia's turns, is never delivered: the owner is working
-   * in the app. `inTurn`: found while a turn of Angelia's waits for its own marker (that turn's reader
-   * reads the rows, and nothing is late).
+   * (`ours`), and each teammate whose message it names (`origin_teammates`) was spawned in one
+   * (`oursTeammates`); such a marker counts as use of the session (lastUsedAt), sent or not. A turn a person typed (`prompt`), one the hook could not place (`unknown`, or a marker
+   * of an older hook with no origin), or one that names no task of Angelia's turns, is never
+   * delivered: the owner is working in the app. `inTurn`: found while a turn of Angelia's waits for
+   * its own marker (that turn's reader reads the rows, and nothing is late).
    *
    * Never the CLI's own error row or usage limit, an empty answer, or `[SILENT]`. Each marker not
    * delivered is one log line with the reason, never the words.
@@ -1580,6 +1718,46 @@ export class TuiBrain extends EventEmitter implements Brain {
     const m = this.readMarker();
     if (!m?.at) return null;
     rmSync(this.markerPath, { force: true });
+    if (!inTurn) this.selfTurn++;
+    // What the turn started between turns is the chat's when the turn is (`ours` below), whatever it
+    // then says; else it is not.
+    let ours = false, peer = false;
+    try { return this.judgeIdle({ ...m, at: m.at }, inTurn, turnFailed, (p = false) => { ours = true; peer = p; }); }
+    finally { this.settleSpawns(ours, this.turnSpan(m.at), peer); }
+  }
+
+  /** Where the turn a marker written at `at` ends began in the transcript, and where the next one began
+   *  (Infinity: none read yet): the last turn start read whose row was written by then. None read: an
+   *  empty span. */
+  private turnSpan(at: number): { from: number; to: number } {
+    let i = this.turnStarts.length - 1;
+    while (i >= 0 && this.turnStarts[i].time > at) i--;
+    if (i < 0) return { from: Infinity, to: Infinity };
+    return { from: this.turnStarts[i].at, to: this.turnStarts[i + 1]?.at ?? Infinity };
+  }
+
+  /** One row read: when it begins a turn after a closed one (turnRows), its offset and time go to turnStarts. */
+  private noteStart(line: string, at: number): void {
+    const before = this.startState;
+    if (!line.includes('"user"') && !line.includes('"assistant"')) return;
+    this.startState = turnRows(line, before);
+    if (before !== 'none' && before !== 'said' && before !== 'error') return;
+    if (this.startState !== 'open' && this.startState !== 'command') return;
+    let row: { type?: unknown; timestamp?: unknown; message?: { content?: unknown } } | null;
+    try { row = JSON.parse(line); } catch { return; }
+    if (row?.type !== 'user') return;
+    // A Stop hook that sent the answer back (the language check) goes on with the same turn.
+    const c = row.message?.content;
+    const text = typeof c === 'string' ? c : Array.isArray(c) ? c.map((b: { text?: unknown }) => String(b?.text ?? '')).join('\n') : '';
+    if (text.trimStart().startsWith('Stop hook feedback:')) return;
+    const time = Date.parse(String(row.timestamp ?? ''));
+    this.turnStarts.push({ at, time: Number.isNaN(time) ? 0 : time });
+    if (this.turnStarts.length > TURN_STARTS_MAX) this.turnStarts.shift();
+  }
+
+  /** takeIdle's verdict on a marker it took. `ours`: called once the turn proves to be the chat's;
+   *  `peer`: tied to a peer's work (a peer's turn closed on the quiet path, a peer's task or teammate). */
+  private judgeIdle(m: Marker & { at: number }, inTurn: boolean, turnFailed: boolean, ours: (peer?: boolean) => void): UnaskedAnswer | null {
     const text = String(m.text ?? '').trim();
     const no = (why: string): null => { this.emit('log', `tmux: a turn ended between turns and its answer is not delivered: ${why}; ${text.length} chars pane=${this.name}`); return null; };
     if (m.transcript_path && m.transcript_path !== this.transcript) {
@@ -1596,6 +1774,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const follower = this.followerOf(m);
     if (follower) {
       {
+        ours();
         this.absorbed = this.absorbed.filter((a) => !follower.includes(a));
         // It runs only after the turn it was typed into: a turn closed on the quiet path is over too.
         if (!inTurn && this.quietEnd && m.at! >= this.quietEnd.sentAt) this.quietEnd = undefined;
@@ -1622,9 +1801,8 @@ export class TuiBrain extends EventEmitter implements Brain {
         return no('late, but the prompt the hook read is not the one Angelia typed');
       }
       if (m.origin !== 'notification' && typedAt !== undefined && typedAt >= late.sentAt - 1000 && typedAt <= late.endedAt) {
-        // And its one typed prompt is what Angelia typed (the hook's key of it): a turn someone typed in
-        // the app inside that window, or into that turn, is theirs.
-        if (m.prompt_key !== late.key || m.prompts !== 1) return no('late, but the prompt the hook read is not the one Angelia typed');
+        // Its prompts are Angelia's (`own` above): the turn is the chat's.
+        ours(late.peer);
         // A usage limit comes as the CLI's error row too: named as what it is.
         if (isLimitText(text)) return no('late, and a usage limit of the CLI');
         if (failedRow) return no('late, and an API error of the CLI, not an answer');
@@ -1641,9 +1819,17 @@ export class TuiBrain extends EventEmitter implements Brain {
     }
     if (this.heldSince === undefined || m.at < this.heldSince) return no('it ended before this session was read');
     // Only the end of work a turn of Angelia's started: the owner's own background work, a prompt the
-    // session scheduled, a message from a teammate stay in the app.
+    // session scheduled, a message from a teammate the owner spawned stay in the app.
+    // A teammate's message (`origin_teammates`, the names) is tied the same way: the teammate was
+    // spawned in a turn of this chat's.
     const ids = Array.isArray(m.origin_ids) ? m.origin_ids.filter((x): x is string => typeof x === 'string') : [];
-    if (!ids.length || !ids.every((id) => this.ours.has(id))) return no(ids.length ? 'the work it reports was not started by a turn of this chat' : 'nothing ties it to work a turn of this chat started');
+    const mates = Array.isArray(m.origin_teammates) ? m.origin_teammates.filter((x): x is string => typeof x === 'string') : [];
+    if (!ids.length && !mates.length) return no('nothing ties it to work a turn of this chat started');
+    if (!ids.every((id) => this.ours.has(id))) return no('the work it reports was not started by a turn of this chat');
+    if (!mates.every((n) => this.oursTeammates.has(n))) return no('the teammate that sent it was not started by a turn of this chat');
+    // The turn is the chat's: a teammate it spawns, a task it starts, is the chat's work as well (a
+    // peer's, when it is tied to a peer's).
+    ours(ids.some((id) => this.peerIds.has(id)) || mates.some((n) => this.peerTeammates.has(n)));
     // A session woken by the end of the chat's own work is in use, whatever it then says (nothing,
     // [SILENT], an error): its idle time starts again, so long background work stays read while it is
     // active. Only tied ends count: the owner's own work in the app does not hold the pane.
@@ -1651,37 +1837,216 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (isLimitText(text)) return no('a usage limit of the CLI');
     if (failedRow) return no('an API error of the CLI, not an answer');
     if (!text) return no('no text');
-    if (text === SILENT) return no('[SILENT]');
-    return { answer: 'self', text };
+    if (text === SILENT) return no(m.origin_idle === true ? 'a teammate\'s idle note, and [SILENT]' : '[SILENT]');
+    return { answer: 'self', text, ...(ids.length ? {} : { by: 'teammate' as const }), ...(m.origin_idle === true ? { idle: true } : {}) };
+  }
+
+  /** The tasks and teammates started since the last marker taken between turns become the chat's
+   *  (`ours`: that marker's turn was the chat's) or stay out. A spawn read in a turn tied to the chat's
+   *  work counts as one of the chat's turns (measured on 2.1.332: the lead, woken by a teammate's
+   *  report, spawns the next). `turn`: only the spawns read in that marker's own turn (turnSpan) are
+   *  the chat's; those before it go, those after it wait for their own turn's marker. */
+  private settleSpawns(ours: boolean, turn?: { from: number; to: number }, peer = false): void {
+    if (ours) {
+      for (const s of this.pendingSpawns) {
+        if (turn && (s.at < turn.from || s.at >= turn.to)) continue;
+        this.own(s.id, s.teammate, peer);
+      }
+    }
+    this.pendingSpawns = turn && turn.to !== Infinity ? this.pendingSpawns.filter((s) => s.at >= turn.to) : [];
+  }
+
+  /** A task (`id`) or teammate (`teammate`) is the chat's work from now on; `peer`: a peer's turn started
+   *  it, or a turn tied to a peer's work, and the levels never approve what it starts. */
+  private own(id: string | undefined, teammate: string | undefined, peer: boolean): void {
+    if (id) { addOurs(this.ours, id); if (peer) addOurs(this.peerIds, id); else this.peerIds.delete(id); }
+    if (teammate) { addOurs(this.oursTeammates, teammate); if (peer) addOurs(this.peerTeammates, teammate); else this.peerTeammates.delete(teammate); }
+  }
+
+  /** What ties the turn a request between turns comes from to the chat (SelfWork), by what the hook
+   *  read of it. Only a positive tie counts: the end of a task or a teammate's message, each the chat's
+   *  (`ours`, `oursTeammates`; a teammate only while the book has it open), or the chat's own typed
+   *  message (typedByUs). A turn the hook could not
+   *  place (`unknown`: a "No" with words in Claude's dialog once read so, rows the hook does not know),
+   *  a scheduled prompt, a request with no origin (an older hook) is tied to nothing: it
+   *  may be one the owner typed in the Claude app. */
+  private workOf(o: RequestOrigin | undefined): SelfWork {
+    if (o?.origin === 'prompt') {
+      // Every prompt typed into that turn is one of the chat's own: one a person typed among them is theirs too.
+      const keys = promptKeysOf(o);
+      if (!keys.length || !keys.every((k) => this.typedByUs(k))) return 'none';
+      // A row nobody typed joined it (another session's message, a scheduled prompt, others' work).
+      if (!this.joinedOurs(o)) return 'none';
+      const q = this.quietEnd;
+      return q && keys.some((k) => q.key === k || q.taken.includes(k)) && q.peer ? 'peer' : 'chat';
+    }
+    if (o?.origin !== 'notification') return 'none';
+    const ids = o.ids ?? [], mates = o.teammates ?? [];
+    if (!ids.length && !mates.length) return 'none';
+    // A teammate counts only while the book has it open: spawned in the chat's turn and not ended. Its
+    // name alone, once it ended, is a word anyone can write.
+    if (!ids.every((id) => this.ours.has(id)) || !mates.every((n) => this.oursTeammates.has(n) && this.teammateOpen(n))) return 'none';
+    return ids.some((id) => this.peerIds.has(id)) || mates.some((n) => this.peerTeammates.has(n)) ? 'peer' : 'chat';
   }
 
   /** Read the Stop marker between turns, from the end of this session's first turn here until the
    *  pane is let go of, stopped or handed off (`gen`). While a turn of Angelia's runs it keeps off:
-   *  from the turn's Enter on, a marker is that turn's answer. One file check per tick, nothing else. */
+   *  from the turn's Enter on, a marker is that turn's answer. Each tick it also beats for the
+   *  permission hook (`idle`) and takes what the hook relayed (betweenTurns). */
   private startIdle(): void {
     if (this.idle || !this.up) return;
     const gen = this.gen;
-    this.idle = setInterval(() => {
+    const tick = (): void => {
       if (gen !== this.gen || !this.up) { this.stopIdle(); return; }
-      if (this.turnSentAt !== undefined) return;
+      if (this.turnSentAt !== undefined || this.beating) return;
+      if (!this.idleBeat || Date.now() - this.idleBeatAt >= IDLE_BEAT_MS) this.beatIdle();
+      try { this.betweenTurns(); } catch (e) { this.emit('log', `tmux: a permission between turns failed: ${(e as Error).message} pane=${this.name}`); }
       try {
         const a = this.takeIdle();
         if (a) this.emit('unasked', a);
       } catch (e) { this.emit('log', `tmux: reading between turns failed: ${(e as Error).message} pane=${this.name}`); }
-    }, this.opts.idlePollMs ?? IDLE_POLL_MS);
+    };
+    this.idle = setInterval(tick, this.opts.idlePollMs ?? IDLE_POLL_MS);
     this.idle.unref();
+    // The hook relays from the end of the turn on, not from the first tick.
+    if (this.turnSentAt === undefined && !this.beating) this.beatIdle();
   }
 
+  /** The reader between turns' heartbeat (`idle`): the hook relays, and says what started the turn. */
+  private beatIdle(): void {
+    this.idleBeatAt = Date.now();
+    this.relay.beat(this.idleBeatAt, true);
+    this.idleBeat = true;
+  }
+
+  /** The reader between turns stops: its heartbeat goes, and a hook waiting on it steps aside. */
   private stopIdle(): void {
     if (this.idle) clearInterval(this.idle);
     this.idle = undefined;
+    if (this.idleBeat) { this.relay.quiet(); this.idleBeat = false; }
+  }
+
+  /**
+   * A permission request between the chat's turns, while the daemon holds the pane. The hook says what
+   * started the turn that asks (RequestOrigin). A turn a person typed in the Claude app or the pane is
+   * theirs, as it always was: the hook steps aside (`pass`) and Claude asks in its own dialog. Any other
+   * goes to the orchestrator as `self-permission`, with what ties it to the chat (workOf): the end of
+   * the chat's own task or teammate's message, or the chat's own messages that Claude Code runs as a
+   * turn of their own (a late or untaken one), is the chat's (`chat`, or `peer` for a peer's work),
+   * and the profile's levels decide it as in a chat turn. Anything else (a scheduled prompt, another
+   * session's message, a turn the hook could not place, a request of an older hook with no origin) is
+   * `none`: the chat asks the owner. Requests answered in the
+   * pane or the app meanwhile are told as `self-permission-answered`.
+   */
+  private betweenTurns(): void {
+    const taken = this.relay.take();
+    // The rows since the last look first: a teammate's end written meanwhile closes it (teammateOpen),
+    // so its name no longer ties the turn that asks.
+    if (taken.length) this.readTranscript();
+    for (const r of taken) {
+      this.relayedAt = Date.now();
+      this.selfRequest(r);
+    }
+    for (const id of this.relay.gone()) {
+      this.relayedAt = Date.now();
+      this.selfBook.take(id);
+      const a = this.selfAsked.get(id);
+      if (a) { this.selfAsked.delete(id); this.selfDeciding.set(id, { ...a, since: Date.now() }); }
+    }
+    if (this.selfDeciding.size) for (const e of this.decide(this.selfDeciding, false)) this.emit('self-permission-answered', e);
+  }
+
+  /**
+   * One request of a turn the chat did not type now (betweenTurns), or one a chat turn's reader took
+   * that is not of that turn (`inTurn`: ofThisTurn said no). A turn a person typed, with none of the
+   * chat's own prompts in it, is theirs: the hook steps aside. Any other goes to the orchestrator as
+   * `self-permission`, tied by workOf; in a chat turn a turn that holds a prompt of the chat's but is
+   * not that turn (another opened it, a person typed into it, a row nobody typed joined it that is not
+   * the chat's own work) is tied to nothing.
+   */
+  private selfRequest(r: RelayedRequest, inTurn = false): void {
+    const o = r.origin;
+    const own = inTurn ? this.ownKeys() : new Set<string>();
+    const keys = o?.origin === 'prompt' ? (o.promptKeys?.length ? o.promptKeys : o.promptKey ? [o.promptKey] : []) : [];
+    const where = inTurn ? 'a permission while a chat turn is read, not of that turn' : 'a permission between turns';
+    if (o?.origin === 'prompt' && !keys.some((k) => own.has(k) || this.typedByUs(k))) {
+      this.relay.pass(r.id);
+      this.emit('log', `tmux: ${where}, in a turn a person typed (${o.why ?? 'a typed prompt'}): not relayed, Claude asks in its own dialog pane=${this.name}`);
+      return;
+    }
+    this.selfBook.add(r.id, r.at ? Math.max(5000, HOOK_GIVE_UP_MS - (Date.now() - r.at) - 30_000) : undefined);
+    this.selfAsked.set(r.id, { tool: r.tool, input: r.input });
+    const work = inTurn && o?.origin === 'prompt' ? 'none' : this.workOf(o);
+    const what = work === 'none' ? `a turn nothing ties to the chat's work (${o ? o.why ?? 'what started it is not known' : 'no origin: an older hook'})`
+      : `a turn the agent started by itself (${o?.why ?? 'what started it is not known'}), tied to ${work === 'peer' ? 'a peer\'s work' : 'the chat\'s work'}`;
+    this.emit('log', `tmux: ${where}, in ${what} pane=${this.name}`);
+    this.emit('self-permission', { ...relayedPermission(r), turn: this.selfTurn, work } satisfies SelfPermission);
+  }
+
+  /** The keys of the prompts the chat's turn read now may hold: what it typed, the messages typed into
+   *  it, and those of the last turn that Claude Code runs as this one (followAbsorbed). */
+  private ownKeys(): Set<string> {
+    const sentAt = this.turnSentAt;
+    return new Set([this.tieKey, ...this.followKeys, ...this.absorbed.filter((a) => a.turn === sentAt).map((a) => a.key)].filter(Boolean));
+  }
+
+  /**
+   * A request the chat turn's reader took is of that turn: the hook read a turn a typed prompt opened,
+   * every prompt typed into it is the chat's own (ownKeys), and every row nobody typed that joined it
+   * is the end of the chat's own task or a message of its own open teammate (workOf: `chat`). A slash
+   * command's row is not the text typed: its turn's one prompt, written from its Enter on, is its own,
+   * and its key is the turn's tie from then on (tieKey), for a message typed into the turn later and
+   * for a restart. Anything else is not, whatever the reader is waiting on: a turn Claude Code ran
+   * before it (a task's end, another session's message, queued first; this turn's message may have
+   * joined it), a turn another session's message, a scheduled prompt or anyone else's work joined, a
+   * person's turn, a request written under the last idle beat, or one with no origin or no `joins` (an
+   * older hook).
+   */
+  private ofThisTurn(o: RequestOrigin | undefined, sentAt: number, command: boolean): boolean {
+    if (o?.origin !== 'prompt' || o.openedBy !== 'prompt') return false;
+    const keys = promptKeysOf(o);
+    if (!keys.length) return false;
+    if (!this.joinedOurs(o)) return false;
+    if (command && keys.length === 1 && o.promptAt !== undefined && o.promptAt >= sentAt) { this.tieKey = keys[0]; return true; }
+    const own = this.ownKeys();
+    return keys.every((k) => own.has(k));
+  }
+
+  /** Each row nobody typed that joined a typed turn is known (the hook listed all of them: `joins`) and
+   *  is the chat's own work (workOf: `chat`): the end of its task, a message of its open teammate. A
+   *  scheduled prompt, another session's message, a row of a kind not known, a peer's or anyone else's
+   *  work is not; nor is a turn of an older hook, which does not say what joined it. */
+  private joinedOurs(o: RequestOrigin): boolean {
+    const joined = o.joined ?? [];
+    if (o.joins === undefined || o.joins !== joined.length) return false;
+    return joined.every((j) => j.kind === 'notification' && this.workOf({ origin: 'notification', ids: j.ids, teammates: j.teammates }) === 'chat');
+  }
+
+  /** The key of the turn read now, for the daemon after a restart (the orchestrator's cutTurns). */
+  turnKey(): string | undefined { return this.tieKey || undefined; }
+
+  /** After adopt, before the turn's reader starts: the key of what the last daemon typed for this turn. */
+  restoreTurnKey(key: unknown): void { if (typeof key === 'string' && /^[0-9a-f]{32}$/.test(key)) this.tieKey = key; }
+
+  /** A typed prompt's key is one of the chat's own: the turn closed on the quiet path, or a message
+   *  typed into a turn that Claude Code runs as one of its own. */
+  private typedByUs(key: string): boolean {
+    return this.quietEnd?.key === key || !!this.quietEnd?.taken.includes(key) || this.absorbed.some((a) => a.key === key);
+  }
+
+  /** Nothing is asked between turns any more: the pane is let go of or stopped. */
+  private forgetSelfAsks(): void {
+    this.selfBook.clear();
+    this.selfAsked.clear();
+    this.selfDeciding.clear();
   }
 
   /** A chat answer goes to the hook waiting on that request, and to no other; no key is pressed. False
    *  when that hook has stepped aside already: Claude then asks in its own dialog. */
   answerPermission(id: string, allow: boolean, how: PermissionAnswer = {}): boolean {
-    const full = this.permissions.take(id);
+    const full = this.permissions.take(id) ?? this.selfBook.take(id);
     if (!full) return false;
+    this.selfAsked.delete(full);
     this.relayedAt = Date.now();
     return this.relay.answer(full, allow, how.message);
   }
@@ -1691,18 +2056,22 @@ export class TuiBrain extends EventEmitter implements Brain {
   private startBeat(gen: number): void {
     if (this.beating) clearInterval(this.beating.timer);
     this.relay.beat();
+    this.idleBeat = false;
     const timer = setInterval(() => this.relay.beat(), RELAY_BEAT_MS);
     timer.unref();
     this.beating = { timer, gen };
   }
 
-  /** Nobody reads the chat now: a waiting hook steps aside at once. `keep`: while a turn is read, the
-   *  heartbeat is left as it is, for the daemon after a restart (release). */
+  /** The turn's reader stops beating. With the reader between turns on, its heartbeat takes over at
+   *  once (`idle`); else nobody reads the chat now, and a waiting hook steps aside at once. `keep`: while
+   *  a turn is read, the heartbeat is left as it is, for the daemon after a restart (release). */
   private stopBeat(keep = false): void {
     const beating = !!this.beating;
     if (this.beating) clearInterval(this.beating.timer);
     this.beating = undefined;
-    if (!(keep && beating)) this.relay.quiet();
+    if (keep && beating) return;
+    if (this.idle && this.up && this.turnSentAt === undefined) this.beatIdle();
+    else { this.relay.quiet(); this.idleBeat = false; }
   }
 
   /**
@@ -1720,6 +2089,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.gen++; // a turn being read stops being read; the pane goes on with it
     this.recording = false;
     this.permissions.clear();
+    this.forgetSelfAsks();
     // A shutdown for a restart leaves the last heartbeat to grow old: a hook waits for the next daemon,
     // which adopts the turn, instead of stepping aside into a dialog nobody can answer from the chat.
     this.stopBeat(o.restart);
@@ -1727,16 +2097,61 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.stopIdle();
     this.quietEnd = this.heldSince = undefined;
     this.absorbed = [];
+    // The next turn reads from the file's end: a teammate the owner spawns in the app meanwhile under
+    // a name of the chat's is never seen, so no name stays the chat's (its report stays in the app).
+    // Nobody reads the pane for its teammates' ends any more either.
+    this.forgetTeammates();
     this.up = false;
+  }
+
+  /** One transcript row read: the background work it starts or ends. Started while a turn of
+   *  Angelia's was read: its end may wake the agent, and that answer is the chat's (a peer's turn,
+   *  TurnFlags.peer, marks it a peer's work too). Started between turns: the chat's only when the turn
+   *  it was started in proves to be (settleSpawns). A named teammate is open until its end is read; one
+   *  the owner spawned from the app under a name of the chat's is theirs from then on. */
+  private noteBackground(line: string): void {
+    if (!line.includes('tool_result') && !line.includes('tool_use') && !line.includes('task-notification')) return;
+    const { starts, ends } = backgroundRows(line, this.calls);
+    for (const s of starts) {
+      if (s.teammate) {
+        this.openTeammates.delete(s.teammate);
+        this.openTeammates.set(s.teammate, { id: s.id, at: Date.now() });
+        if (this.openTeammates.size > OURS_MAX) this.openTeammates.delete(this.openTeammates.keys().next().value!);
+      }
+      if (this.recording) { this.own(s.id, s.teammate, this.turnPeer); continue; }
+      if (s.teammate) { this.oursTeammates.delete(s.teammate); this.peerTeammates.delete(s.teammate); }
+      this.pendingSpawns.push({ id: s.id, at: this.rowAt, ...(s.teammate ? { teammate: s.teammate } : {}) });
+      if (this.pendingSpawns.length > OURS_MAX) this.pendingSpawns.shift();
+    }
+    for (const id of ends) for (const [name, t] of this.openTeammates) if (t.id === id) this.openTeammates.delete(name);
+  }
+
+  /** A named teammate of that name is open here: spawned, no end of it read, and not past TEAMMATE_MAX_MS. */
+  private teammateOpen(name: string): boolean {
+    const t = this.openTeammates.get(name);
+    return !!t && Date.now() - t.at < TEAMMATE_MAX_MS;
+  }
+
+  /** No teammate name ties a turn to the chat any more, and nothing waits to be settled. Task ids stay
+   *  (`ours`): each is one call's, so no one else's work can take one on. */
+  private forgetTeammates(): void {
+    this.openTeammates.clear();
+    this.oursTeammates.clear();
+    this.peerTeammates.clear();
+    this.pendingSpawns = [];
+    this.turnStarts = [];
+    this.startState = 'none';
   }
 
   async stop(): Promise<void> {
     this.gen++;
     this.permissions.clear();
+    this.forgetSelfAsks();
     this.stopBeat();
     this.stopIdle();
     this.quietEnd = this.heldSince = undefined;
     this.absorbed = [];
+    this.forgetTeammates();
     await this.tm(['kill-session', '-t', this.name]);
     this.up = false;
     this.emit('exit', { code: 0, signal: null });

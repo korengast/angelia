@@ -18,11 +18,14 @@ test('a turn read from the chat: the hook\'s request is relayed whole, the answe
   const state = mkdtempSync(join(tmpdir(), 'angelia-tuirelay-'));
   process.env.ANGELIA_TMUX_SOCKET = socket;
   process.env.ANGELIA_STATE_DIR = state;
-  const { TuiBrain } = await import('../src/brain/tui.js');
+  const { TuiBrain, promptKey } = await import('../src/brain/tui.js');
   const tmux = (...a: string[]) => execFileSync('tmux', ['-L', socket, ...a], { encoding: 'utf8' }).trim();
   t.after(() => { try { tmux('kill-server'); } catch { /* already gone */ } });
 
   const cwd = mkdtempSync(join(tmpdir(), 'angelia-tuirelay-cwd-'));
+  // The turn's prompt, as the hook reads it: a request is that turn's when its prompt is what was typed.
+  const transcript = join(cwd, 'transcript.jsonl');
+  writeFileSync(transcript, `${JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), origin: { kind: 'human' }, message: { role: 'user', content: 'clean the build' } })}\n`);
   const profile = Config.parse({ profiles: { x: { cwd, tui: true } }, routes: [] }).profiles.x;
   const brain = new TuiBrain(profile, { id: '33333333-4444-5555-6666-777777777777', started: false }, { bin: FAKE, permissionTimeoutMs: 60_000 });
   brain.start();
@@ -30,14 +33,16 @@ test('a turn read from the chat: the hook\'s request is relayed whole, the answe
   const dir = join(state, 'tui', brain.name);
 
   // A turn read from the chat; follow() reads the one running, so nothing is pasted into the fake pane.
+  // Its key comes as after a restart (restoreTurnKey).
   brain.turnSentAt = Date.now() - 1000;
+  brain.restoreTurnKey(promptKey('clean the build'));
   const fg = brain.follow();
   const next = fg.next(); // the reader starts, and tells the hook so before its first poll
   const hook = spawn(process.execPath, [HOOK], { env: { ANGELIA_TUI_MARKER: join(dir, 'turn.json') }, stdio: ['pipe', 'pipe', 'pipe'] });
   let out = '';
   hook.stdout.on('data', (b: Buffer) => { out += b; });
   const closed = new Promise((r) => hook.on('close', r));
-  hook.stdin.end(JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'rm -rf build', description: 'Clean up' } }));
+  hook.stdin.end(JSON.stringify({ hook_event_name: 'PermissionRequest', transcript_path: transcript, tool_name: 'Bash', tool_input: { command: 'rm -rf build', description: 'Clean up' } }));
 
   const asked = (await next).value;
   assert.equal(asked?.kind, 'permission');
@@ -59,7 +64,9 @@ test('a turn read from the chat: the hook\'s request is relayed whole, the answe
 
   writeFileSync(join(dir, 'turn.json'), JSON.stringify({ text: 'done', at: Date.now() }));
   assert.deepEqual((await fg.next()).value, { kind: 'result', text: 'done', isError: false });
-  assert.ok(!existsSync(join(dir, 'permissions', 'relay.json')), 'the turn is over: the hook steps aside');
+  // The turn is over: the reader between turns beats instead (`idle`), so a turn the agent starts by
+  // itself still reaches the chat; the hook then says what started the turn that asks (tui-between.test.ts).
+  assert.equal(JSON.parse(readFileSync(join(dir, 'permissions', 'relay.json'), 'utf8')).idle, true, 'the turn is over: the reader between turns beats');
 
   // A reader let go of (the idle reap, a restart) stops the heartbeat, and its loop does not restart it.
   brain.turnSentAt = Date.now();
@@ -81,7 +88,7 @@ test('a request answered in the pane or the Claude app is reported, with its out
   process.env.ANGELIA_STATE_DIR = state;
   process.env.CLAUDE_CONFIG_DIR = config;
   t.after(() => { delete process.env.CLAUDE_CONFIG_DIR; });
-  const { TuiBrain } = await import('../src/brain/tui.js');
+  const { TuiBrain, promptKey } = await import('../src/brain/tui.js');
   const { transcriptPath } = await import('../src/brain/transcripts.js');
   const tmux = (...a: string[]) => execFileSync('tmux', ['-L', socket, ...a], { encoding: 'utf8' }).trim();
   t.after(() => { try { tmux('kill-server'); } catch { /* already gone */ } });
@@ -95,7 +102,9 @@ test('a request answered in the pane or the Claude app is reported, with its out
   const dir = join(state, 'tui', brain.name);
   const transcript = transcriptPath(cwd, session);
   mkdirSync(dirname(transcript), { recursive: true });
-  writeFileSync(transcript, '');
+  // The turn's prompt: its requests are held to it by its key (restoreTurnKey, as after a restart).
+  writeFileSync(transcript, `${JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), origin: { kind: 'human' }, message: { role: 'user', content: 'run the checks' } })}\n`);
+  brain.restoreTurnKey(promptKey('run the checks'));
   const row = (o: unknown) => appendFileSync(transcript, `${JSON.stringify(o)}\n`);
   const call = (id: string, command: string) => row({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } });
 
@@ -106,7 +115,7 @@ test('a request answered in the pane or the Claude app is reported, with its out
   const ask = async (command: string) => {
     const next = fg.next();
     const hook = spawn(process.execPath, [HOOK], { env: { ANGELIA_TUI_MARKER: join(dir, 'turn.json') }, stdio: ['pipe', 'ignore', 'ignore'] });
-    hook.stdin.end(JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command } }));
+    hook.stdin.end(JSON.stringify({ hook_event_name: 'PermissionRequest', transcript_path: transcript, tool_name: 'Bash', tool_input: { command } }));
     const asked = (await next).value;
     assert.equal(asked?.kind, 'permission');
     return { hook, id: asked?.kind === 'permission' ? asked.id : '' };

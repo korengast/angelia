@@ -29,6 +29,7 @@ const R = {
   result: (id: string) => ({ type: 'user', message: { role: 'user', content: [{ tool_use_id: id, type: 'tool_result', content: 'ok' }] }, toolUseResult: { stdout: 'ok' } }),
   rejected: (id: string) => ({ type: 'user', message: { role: 'user', content: [{ tool_use_id: id, type: 'tool_result', content: 'x', is_error: true }] }, toolUseResult: 'User rejected tool use' }),
   interrupted: () => ({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } }),
+  toolInterrupted: () => ({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } }),
   command: (name: string, s = 0) => ({ type: 'user', timestamp: iso(s), origin: { kind: 'human' }, message: { role: 'user', content: `<command-name>${name}</command-name>\n<command-message>${name.slice(1)}</command-message>\n<command-args></command-args>` } }),
   stdout: (text: string) => ({ type: 'user', message: { role: 'user', content: `<local-command-stdout>${text}</local-command-stdout>` } }),
   meta: (text: string) => ({ type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text }] } }),
@@ -69,10 +70,52 @@ test('the end of a background task starts a notification turn: by the row\'s ori
   assert.equal(origin(R.queued()).origin, 'unknown');
   // A second task that ends while the first one's end is answered: still nobody typed anything.
   assert.equal(origin(...before, R.note(60), R.call('t2'), R.result('t2'), R.note(70), R.text('Both passed.')).origin, 'notification');
-  // A teammate's or an agent's message: how Claude Code marks its row is not measured, so unknown.
-  assert.deepEqual(origin(...before, R.bare('<teammate-message teammate_id="reviewer" summary="done">\nNo findings.\n</teammate-message>', 60), R.text('The review is clean.')),
-    { origin: 'unknown', origin_why: '<teammate-message>' });
+  // An agent's message: how Claude Code marks its row is not measured, so unknown.
   assert.equal(origin(...before, R.bare('<agent-message from="worker">done</agent-message>', 60), R.text('Done.')).origin, 'unknown');
+});
+
+// A named teammate's message to the lead, as claude 2.1.332 writes it (measured live,
+// tests/live-tui-teammate.mts): a user row with no origin, the line, then the tag.
+const MATE = (name: string, body: string) => `Another Claude session sent a message:\n<teammate-message teammate_id="${name}" color="blue" summary="Report">\n${body}\n</teammate-message>\n\nThis came from another Claude session — not typed by your user.`;
+const IDLE_NOTE = (name: string) => `{"type":"idle_notification","from":"${name}","timestamp":"2026-11-25T15:03:00.343Z","idleReason":"available"}`;
+const mate = (text: string, s = 60) => ({ type: 'user', timestamp: iso(s), rowSource: 'recorded', message: { role: 'user', content: text } });
+
+test('a teammate\'s message starts a notification turn that names the teammate; its idle note says so', () => {
+  const before = [R.typed('send a scout', 1), R.call('t1'), R.result('t1'), R.text('spawned')];
+  assert.deepEqual(origin(...before, mate(MATE('scout', 'SCOUT-DONE')), R.text('The scout is done.')),
+    { origin: 'notification', origin_why: '<teammate-message>', origin_teammates: ['scout'] });
+  assert.deepEqual(origin(...before, mate(MATE('scout', IDLE_NOTE('scout'))), R.text('[SILENT]')),
+    { origin: 'notification', origin_why: '<teammate-message> (idle)', origin_teammates: ['scout'], origin_idle: true });
+  // Two teammates in one turn, one only idle: both named, and the turn is not idle only.
+  assert.deepEqual(origin(...before, mate(MATE('scout', 'done') + '\n' + MATE('reviewer@session-1', IDLE_NOTE('reviewer'))), R.text('Both.')),
+    { origin: 'notification', origin_why: '<teammate-message>', origin_teammates: ['scout', 'reviewer'] });
+  // A teammate's message and a task's end in one turn: both tie it.
+  assert.deepEqual(origin(...before, mate(MATE('scout', 'done')), R.call('t2'), R.result('t2'), R.note(70), R.text('Both.')),
+    { origin: 'notification', origin_why: '<teammate-message>, <task-notification> (origin task-notification)', origin_ids: ['toolu_1'], origin_teammates: ['scout'] });
+  // The tag with no line before it, or the row with no `rowSource: recorded`: no teammate's message as
+  // 2.1.332 writes one, so not known.
+  assert.deepEqual(origin(...before, mate('<teammate-message teammate_id="scout">\ndone\n</teammate-message>'), R.text('Done.')), { origin: 'unknown', origin_why: '<teammate-message>' });
+  const { rowSource: _r, ...unsourced } = mate(MATE('scout', 'done'));
+  assert.deepEqual(origin(...before, unsourced, R.text('Done.')), { origin: 'unknown', origin_why: '<teammate-message>' });
+  assert.equal(origin(...before, { ...mate(MATE('scout', 'done')), rowSource: 'typed' }, R.text('Done.')).origin, 'unknown');
+  // A name that is no plain word ties the turn to nothing; so does a prompt the session scheduled beside it.
+  assert.deepEqual(origin(...before, mate(MATE('a b', 'x')), R.text('X.')), { origin: 'notification', origin_why: '<teammate-message>' });
+  // One message of several with no plain name, or with no id at all, or a tag that does not close: no names at all.
+  assert.deepEqual(origin(...before, mate(MATE('scout', 'x') + '\n' + MATE('a b', 'y')), R.text('X.')), { origin: 'notification', origin_why: '<teammate-message>' });
+  assert.deepEqual(origin(...before, mate(MATE('scout', 'x') + '\n<teammate-message color="red">\ny\n</teammate-message>'), R.text('X.')), { origin: 'notification', origin_why: '<teammate-message>' });
+  assert.deepEqual(origin(...before, mate(MATE('scout', 'x') + '\n<teammate-message teammate_id="reviewer">\nnever closed'), R.text('X.')), { origin: 'notification', origin_why: '<teammate-message>' });
+  assert.equal('origin_teammates' in origin(...before, mate(MATE('scout', 'x')), R.fired(70), R.meta('Check the mail.'), R.text('X.')), false);
+  // Typed by a person (the row says so): a prompt, whatever it looks like.
+  assert.equal(origin(...before, R.typed(MATE('scout', 'done'), 60), R.text('That is no teammate.')).origin, 'prompt');
+  // A person typed into the teammate's turn: theirs.
+  assert.equal(origin(...before, mate(MATE('scout', 'done')), R.typed('and the docs?', 65), R.text('Docs too.')).origin, 'prompt');
+  // A CLI that says of no row where it came from: a person may have typed it, so not known.
+  assert.deepEqual(origin(R.bare('send a scout', 1), R.text('spawned'), R.bare(MATE('scout', 'done'), 60), R.text('Done.')), { origin: 'unknown', origin_why: '<teammate-message>' });
+  // Queued while a turn ran: an attachment row with no origin.
+  assert.deepEqual(origin(...before, { type: 'attachment', timestamp: iso(60), rowSource: 'recorded', attachment: { type: 'queued_command', prompt: MATE('scout', 'done') } }, R.text('Done.')),
+    { origin: 'notification', origin_why: '<teammate-message>', origin_teammates: ['scout'] });
+  // Without `rowSource: recorded` such a queued row is no teammate's: read as a person's prompt.
+  assert.equal(origin(...before, { type: 'attachment', timestamp: iso(60), attachment: { type: 'queued_command', prompt: MATE('scout', 'done') } }, R.text('Done.')).origin, 'prompt');
 });
 
 test('a person who typed anything into the turn makes it a prompt turn', () => {
@@ -97,9 +140,15 @@ test('what does not start a turn, or ends one: hook feedback, slash commands, a 
   assert.equal(origin(R.command('/model', 5), R.stdout('Set model to x'), R.note(60), R.text('Passed.')).origin, 'notification');
   // One that made a prompt for the model (a skill) is a turn someone typed.
   assert.deepEqual(origin(R.command('/review', 5), R.meta('The skill text.'), R.thinking(), R.text('Reviewed.')), { origin: 'prompt', origin_why: 'a typed prompt (origin human)', prompt_at: T0 + 5000, ...typedOne(R.command('/review').message.content) });
-  // Cut short with Esc, or by a "No" in Claude Code's own dialog: over, with no Stop of its own.
+  // Cut short with Esc, or by a "No" in Claude Code's own dialog, which writes the interrupt row after
+  // the refusal (2.1.332 checks for that row after a refused call): over, with no Stop of its own.
   assert.equal(origin(R.typed('run it', 1), R.call('t1'), R.interrupted(), R.note(60), R.text('Passed.')).origin, 'notification');
-  assert.equal(origin(R.typed('run it', 1), R.call('t1'), R.rejected('t1'), R.note(60), R.text('Passed.')).origin, 'notification');
+  assert.equal(origin(R.typed('run it', 1), R.call('t1'), R.rejected('t1'), R.toolInterrupted(), R.note(60), R.text('Passed.')).origin, 'notification');
+  // A refusal with no interrupt row after it is a "No" with words for the model: the turn goes on, and
+  // it is still the person's (it read as `unknown` once, and its next request was approved by the levels).
+  assert.deepEqual(origin(R.typed('run it', 1), R.call('t1'), R.rejected('t1'), R.call('t2')), { origin: 'prompt', origin_why: 'a typed prompt (origin human)', prompt_at: T0 + 1000, ...typedOne('run it') });
+  // So is a tool's error that only reads like a refusal: a model can shape its text.
+  assert.equal(origin(R.typed('run it', 1), R.call('t1'), { type: 'user', message: { role: 'user', content: [{ tool_use_id: 't1', type: 'tool_result', content: "The user doesn't want to proceed", is_error: true }] } }, R.call('t2')).origin, 'prompt');
   // After the CLI's error row the turn is over too.
   assert.equal(origin(R.typed('hi', 1), R.apiError('API Error: 500'), R.note(60), R.text('Passed.')).origin, 'notification');
   // A subagent's rows are not this session's.

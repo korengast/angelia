@@ -28,6 +28,8 @@ process.on('exit', killServer);
 const { Config } = await import('../src/instance/config/schema.js');
 const { Orchestrator } = await import('../src/core/orchestrator.js');
 const { ADOPT_TURNS, CUT_TURNS, takeAdoptTurns, writeAdoptTurns } = await import('../src/core/cut-turns.js');
+const { promptKey } = await import('../src/brain/tui.js');
+const { SELF_ASK_UNTIED_LINE } = await import('../src/core/deliver/text.js');
 const { ScreenAsks, screenAlarmLine, openDialog } = await import('../src/core/screen-asks.js');
 const { DeferredRestart, DEFERRED_LINE } = await import('../src/daemon/deferred-restart.js');
 const { restartCommand } = await import('../src/daemon/restart.js');
@@ -79,17 +81,23 @@ test('a restart in the middle of a tmux turn: the next daemon adopts it, offers 
   t.after(killServer);
   const one = rig(true);
   const o1 = one.o as any;
-  const { dir } = await runningTurn(o1, 'please update and restart');
+  const { brain, dir } = await runningTurn(o1, 'please update and restart');
   const relayFile = join(dir, 'permissions', 'relay.json');
   const row = o1.map.getActive(KEY);
+  // What the turn typed, as the hook reads it from the transcript, and its key (as turn() keeps it):
+  // the next daemon gets the key with the turn, so the request is still that turn's.
+  const transcript = join(state, 'rr-transcript.jsonl');
+  writeFileSync(transcript, `${JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), origin: { kind: 'human' }, message: { role: 'user', content: 'please update and restart' } })}\n`);
+  brain.restoreTurnKey(promptKey('please update and restart'));
 
   // The agent's next tool call needs a permission; the chat is asked.
   const hook = spawn(process.execPath, [HOOK], { env: { ANGELIA_TUI_MARKER: join(dir, 'turn.json') }, stdio: ['pipe', 'pipe', 'ignore'] });
   let out = '';
   hook.stdout.on('data', (b: Buffer) => { out += b; });
   const closed = new Promise((r) => hook.on('close', r));
-  hook.stdin.end(JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'sleep 5; angelia status' } }));
-  await until('the first request line', () => one.sent.find((l) => l.includes('sleep 5; angelia status')));
+  hook.stdin.end(JSON.stringify({ hook_event_name: 'PermissionRequest', transcript_path: transcript, tool_name: 'Bash', tool_input: { command: 'sleep 5; angelia status' } }));
+  const first = await until('the first request line', () => one.sent.find((l) => l.includes('sleep 5; angelia status')));
+  assert.ok(!first.startsWith(SELF_ASK_UNTIED_LINE), first);
 
   // The daemon stops for a restart: the turn is written down to be adopted, not cut, and the hook waits.
   // An orphaned heartbeat of another pane goes at the next start (its hook must not wait for nobody).
@@ -99,6 +107,7 @@ test('a restart in the middle of a tmux turn: the next daemon adopts it, offers 
   o1.cutTurns();
   await o1.shutdown();
   assert.ok(existsSync(join(state, ADOPT_TURNS)), 'the turn is kept for the next daemon');
+  assert.equal(JSON.parse(readFileSync(join(state, ADOPT_TURNS), 'utf8')).turns[0].typedKey, promptKey('please update and restart'), 'with the key of what it typed');
   assert.ok(!existsSync(join(state, CUT_TURNS)), 'and its chat is not told to send it again');
   assert.ok(existsSync(relayFile), 'the last heartbeat is left to grow old, not removed');
   await sleep(1500);
@@ -114,6 +123,7 @@ test('a restart in the middle of a tmux turn: the next daemon adopts it, offers 
   assert.ok(!existsSync(join(other, 'relay.json')), 'a pane nobody adopted has no heartbeat any more');
   assert.ok(existsSync(relayFile), 'the adopted one beats');
   const line = await until('the request offered again', () => two.sent.find((l) => l.includes('sleep 5; angelia status')));
+  assert.ok(!line.startsWith(SELF_ASK_UNTIED_LINE), `still the adopted turn's own: ${line}`);
   const id = /\(request ([0-9a-z-]+)\)/.exec(line)![1];
   await o2.handle(msg('boss', `yes ${id}`));
   await closed;
@@ -181,6 +191,42 @@ test('openDialog: only a dialog that is open now, with nothing drawn after it, a
   assert.equal(openDialog([rule, ' Bash command', '   ls', ' Do you want to proceed?', '   some text'].join('\n')), null);
 });
 
+test('a teammate\'s dialog (claude 2.1.332, the screen seen 2026-11-25): read as open, named with its agent, told once per dialog', async () => {
+  const frame = readFileSync(join(here, 'fixtures', 'pane-permission-teammate-332.txt'), 'utf8');
+  const d = openDialog(frame);
+  assert.deepEqual(d && { tool: d.tool, from: d.from }, { tool: 'Bash command', from: 'the restart-relay agent' });
+  assert.match(d!.preview, /rm -rf "\$RELAY_STATE"\/\* · Dangerous rm operation on possibly-empty variable path/);
+  // With the session's agents listed under the dialog's foot, as under the input box: still open.
+  assert.ok(openDialog(`${frame}\n  ⏺ main\n  ◯ restart-relay  Restart the relay                 2m 3s · ↓ 4.1k tokens\n`));
+  // Only "from (the) <name> agent" at the end of the title names an asker: any other "· from" is the title's own.
+  const titled = (t: string) => openDialog(frame.replace('Bash command · from the restart-relay agent', t));
+  assert.ok(frame.includes('Bash command · from the restart-relay agent'));
+  assert.deepEqual(titled('Bash command · from scout agent') && { tool: titled('Bash command · from scout agent')!.tool, from: titled('Bash command · from scout agent')!.from }, { tool: 'Bash command', from: 'scout agent' });
+  for (const t of ['Fetch · from the web', 'Bash command · from the restart-relay agent now', 'Read · from two agents agent x']) {
+    const d2 = titled(t);
+    assert.ok(d2 && d2.from === undefined, t);
+    assert.equal(d2.tool, t.slice(0, 40));
+  }
+  // But the same rows before the foot are no dialog's.
+  assert.equal(openDialog(frame.replace(' Esc to cancel · Tab to amend', '  ◯ restart-relay  Restart the relay\n Esc to cancel')), null);
+
+  const line = screenAlarmLine({ name: 'pane-1', ...d! }, SOCKET);
+  assert.match(line, /^A permission waits: Bash command from the restart-relay agent \(Run shell command · rm -rf /);
+  assert.match(line, /It did not come through the chat, and the chat cannot answer it: answer it in the Claude app, or in the pane \(tmux -L \S+ attach -t pane-1\)/);
+
+  // The scan: at first sight nothing, told once ORPHAN_MS (20 s) on, at the next look; a scan every
+  // SCAN_MS (10 s), so within about 30 s. Once per dialog: a new dialog is told again.
+  let now = 1_000_000, screen = frame;
+  const told: { key: string; tool: string; from?: string }[] = [];
+  const asks = new ScreenAsks({ panes: () => [{ key: KEY, name: 'pane-1', dir: mkdtempSync(join(tmpdir(), 'angelia-rr-mate-')) }], log: () => {}, env: () => process.env, now: () => now, tell: async (a) => { told.push(a); } });
+  (asks as any).capture = async () => screen;
+  for (let t = 0; t <= 60_000; t += 10_000) { now = 1_000_000 + t; await asks.scan(); if (t === 10_000) assert.equal(told.length, 0, 'not before 20 s'); }
+  assert.deepEqual(told.map((a) => [a.key, a.tool, a.from]), [[KEY, 'Bash command', 'the restart-relay agent']], 'told once, at 20 s');
+  screen = frame.replace('"$RELAY_STATE"/*', '"$RELAY_LOGS"/*');
+  for (let t = 70_000; t <= 100_000; t += 10_000) { now = 1_000_000 + t; await asks.scan(); }
+  assert.equal(told.length, 2, 'another dialog is told again');
+});
+
 test('a dialog in a chat\'s pane with no hook request is told once after ORPHAN_MS, and only told: no key reaches the pane', { skip: !hasTmux && 'no tmux', timeout: 30_000 }, async (t) => {
   t.after(killServer);
   const name = `rr-dialog-${process.pid}`;
@@ -213,8 +259,8 @@ test('a dialog in a chat\'s pane with no hook request is told once after ORPHAN_
   await asks.scan();
   assert.equal(told.length, 1, 'once');
   const line = screenAlarmLine(told[0], SOCKET);
-  assert.match(line, /^A permission dialog waits in this chat's session and did not come through the chat \(Bash command: /);
-  assert.match(line, /The chat cannot answer it: answer it in the Claude app, or in the pane \(tmux -L \S+ attach -t rr-dialog-\d+\)/);
+  assert.match(line, /^A permission waits: Bash command \(/);
+  assert.match(line, /the chat cannot answer it: answer it in the Claude app, or in the pane \(tmux -L \S+ attach -t rr-dialog-\d+\)/);
   assert.doesNotMatch(line, /reply "yes"|can answer it here/);
   await sleep(300);
   assert.equal(readFileSync(keys, 'utf8'), '', 'no key was pressed in the pane');
@@ -228,7 +274,7 @@ test('a chat message "yes" or "no" never reaches a dialog only the screen shows'
   const { o, sent } = rig(false);
   (o as any).screen = { scan: async () => {} };
   await (o as any).tellScreen({ key: KEY, name: 'p', tool: 'Bash command', preview: 'touch x', at: Date.now() });
-  assert.match(sent.at(-1)!, /^A permission dialog waits in this chat's session/);
+  assert.match(sent.at(-1)!, /^A permission waits: Bash command \(touch x/);
   assert.doesNotMatch(sent.at(-1)!, /reply "yes"|\(request /, 'nothing to answer it by');
   assert.equal((o as any).answerScreen, undefined, 'no answer path');
   assert.equal(typeof ScreenAsks.prototype.scan, 'function');

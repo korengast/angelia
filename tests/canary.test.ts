@@ -8,7 +8,7 @@ import { Config } from '../src/instance/config/schema.js';
 import { parseCommand } from '../src/core/commands.js';
 import { tmp } from './tmp.js';
 // @ts-expect-error: a plain script, no types
-import { turnOrigin } from '../scripts/turn-origin.mjs';
+import { requestOrigin, turnOrigin } from '../scripts/turn-origin.mjs';
 
 // Own state dir before tui.js reads it at import, so nothing here can touch a live Angelia.
 const ownState = process.env.ANGELIA_STATE_DIR = mkdtempSync(join(tmpdir(), 'angelia-canary-test-'));
@@ -83,11 +83,11 @@ async function rigWith(t: { after(fn: () => unknown): void }, fault: Fault = {})
   const rows = (...r: object[]) => appendFileSync(b.transcript, jsonl(r));
   const stop = (text: string) => { writeFileSync(join(b.dir, 'turn.json'), JSON.stringify({ text, at: Date.now() })); screen = 'idle'; };
   /** Claude Code's PermissionRequest hook, as scripts/tui-permission-hook.mjs does it: the request in
-   *  the pane's own folder, then a wait for the answer written beside it. */
+   *  the pane's own folder, with what started the turn, then a wait for the answer written beside it. */
   const ask = (command: string, then: (allow: boolean) => void) => {
     const id = crypto.randomUUID(), dir = join(b.dir, 'permissions');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${id}.request.json`), JSON.stringify({ tool_name: 'Bash', tool_input: { command, description: 'Run the command' }, at: Date.now() }));
+    writeFileSync(join(dir, `${id}.request.json`), JSON.stringify({ tool_name: 'Bash', tool_input: { command, description: 'Run the command' }, at: Date.now(), origin: requestOrigin(readFileSync(b.transcript, 'utf8')) }));
     const wait = () => {
       if (!existsSync(join(dir, `${id}.answer.json`))) return later(50, wait);
       const { allow } = JSON.parse(readFileSync(join(dir, `${id}.answer.json`), 'utf8'));

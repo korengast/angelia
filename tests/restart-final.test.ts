@@ -20,7 +20,8 @@ const { Orchestrator } = await import('../src/core/orchestrator.js');
 const { ADOPT_TURNS, writeAdoptTurns } = await import('../src/core/cut-turns.js');
 const { DeferredRestart } = await import('../src/daemon/deferred-restart.js');
 const { tmux } = await import('../src/brain/tmux.js');
-const { takeAdoptTurns } = await import('../src/core/cut-turns.js');
+const { TMUX_STALLED_LINE } = await import('../src/core/deliver/text.js');
+const { takeAdoptTurns, takeCutTurns } = await import('../src/core/cut-turns.js');
 const { ROW, stubChat, until, wait } = await import('./tui-stub.js');
 
 const KEY = 'whatsapp:g@g.us';
@@ -107,12 +108,31 @@ test('a stop while the turns are being taken back: the file is written again wit
   await o.shutdown();
 });
 
+test('a stop while starting: the chats owed the cut line go into the new cut list beside the stop\'s own', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-rf-owed-'));
+  const { o } = rig(dir);
+  const ctl = slowAdopt(o);
+  writeAdoptTurns(dir, [{ key: KEY, session: o.map.getActive(KEY).id, since: 1, inbound: msg('the turn') }]);
+  const restoring = o.restoreTurns(() => {}, []);
+  await sleep(50);
+  // The last shutdown's cut list (taken by the daemon at its start), and a turn already found lost.
+  o.cutTurns(['telegram:7', 'telegram:8', 'telegram:7']);
+  assert.deepEqual(takeCutTurns(dir), ['telegram:7', 'telegram:8']);
+  assert.equal(takeAdoptTurns(dir)[0].key, KEY, 'the turn not adopted yet is written back for the next daemon');
+  ctl.finish(false);
+  await restoring;
+  await o.shutdown();
+});
+
 test('the daemon has a stop handler before it takes the turns back, and swaps it for the full one after', () => {
   const src = readFileSync(join(here, '..', 'src', 'daemon', 'daemon.ts'), 'utf8');
   const early = src.indexOf("process.on('SIGTERM', earlyTerm)"), restore = src.indexOf('await orch.restoreTurns('), full = src.indexOf("process.on('SIGTERM', () => void shutdown('SIGTERM'))");
   assert.ok(early > 0 && restore > early && full > restore, 'early handler, restore, full handler, in that order');
   assert.ok(src.indexOf("process.off('SIGTERM', earlyTerm)") > restore);
-  assert.match(src.slice(src.indexOf('const earlyStop'), early), /orch\.cutTurns\(\)[\s\S]*process\.exit\(0\)/);
+  assert.match(src.slice(src.indexOf('const earlyStop'), early), /orch\.cutTurns\(owedCut\(\)\)[\s\S]*process\.exit\(0\)/);
+  // The old cut list is taken before the early handler, and told from the same list it writes back.
+  assert.ok(src.indexOf('const cutBefore = takeCutTurns(STATE_DIR)') > 0 && src.indexOf('const cutBefore = takeCutTurns(STATE_DIR)') < early);
+  assert.equal(src.split('takeCutTurns(').length, 2, 'taken once');
 });
 
 test('a permission answer that comes as the daemon stops is not carried as a chat message', async () => {
@@ -121,14 +141,44 @@ test('a permission answer that comes as the daemon stops is not carried as a cha
   stubAdopt(o, async () => { o.brains.set(KEY, b); return b; });
   writeAdoptTurns(state, [{ key: KEY, session: o.map.getActive(KEY).id, since: 1, inbound: msg('the turn') }]);
   assert.deepEqual(await o.restoreTurns(() => {}), []);
+  // The chat has a request open: a yes or no answered it, and the next daemon asks again.
+  o.asks.set(KEY, new Map([['1a2b3c4d-0000', { id: '1a2b3c4d-0000', tool: 'Bash', preview: 'ls', at: new Date().toISOString() }]]));
   o.cutTurns();
   await o.handle(msg('yes 1a2b3c4d'));
   await o.handle(msg('no'));
   await o.handle(msg('a real message'));
+  // None open: a bare "yes" is the chat's answer to the agent's own question, carried like any message.
+  o.asks.delete(KEY);
+  await o.handle(msg('yes'));
   const t = JSON.parse(readFileSync(join(state, ADOPT_TURNS), 'utf8')).turns[0];
-  assert.deepEqual(t.waiting.map((w: { inbound: Inbound }) => w.inbound.text), ['a real message']);
+  assert.deepEqual(t.waiting.map((w: { inbound: Inbound }) => w.inbound.text), ['a real message', 'yes']);
   assert.equal(logs.filter((l) => /permission answer that came as the daemon stops is not carried/.test(l)).length, 2);
   await o.shutdown();
+});
+
+test('a message for an idle chat while the stop settles: held until the cut, then it goes as one that came at the stop, never typed', { timeout: 45_000 }, async () => {
+  const one = await stubChat({}, {}, {}, {});
+  one.onEnter((n, p) => { if (n === 1) { p.rows(p.prompt(), ROW.text('Hi.')); p.stop('Hi.'); } });
+  await one.say('hello');
+  const o = one.o as any;
+  // Another chat's pane is between an Enter and Claude Code's word: the stop waits for it (stopAbsorbing).
+  let settle!: () => void;
+  const other = { alive: true, stopAbsorbing: () => new Promise<void>((r) => { settle = r; }) };
+  o.brains.set('telegram:2', other);
+  const stopping = o.beforeStop();
+  await wait(50);
+  assert.equal(o.cutDone, false, 'the cut is not made yet');
+  const late = one.say('are you there?');
+  await wait(400);
+  assert.equal(one.pane().enters, 1, 'not typed while the stop settles');
+  settle();
+  await stopping;
+  await late;
+  o.brains.delete('telegram:2');
+  assert.equal(one.pane().enters, 1, 'not typed after the cut either');
+  assert.ok(one.log.some((l) => l === `shutdown: a message that came as the daemon stops is not run key=${one.key}`), one.log.join('\n'));
+  assert.deepEqual(one.sent, ['Hi.']);
+  await one.o.shutdown();
 });
 
 test('a tmux call that timed out is told apart, and the reader polls again instead of ending a live turn', { timeout: 45_000 }, async () => {
@@ -141,7 +191,8 @@ test('a tmux call that timed out is told apart, and the reader polls again inste
   await until(() => !!b.beating, 10_000);
   await wait(800);
   const real = b.capture.bind(b);
-  let slow = 6;
+  // Two in a row (each a TMUX_TIMEOUT_MS of 30 s in real life): fewer than TMUX_STALLS.
+  let slow = 2;
   b.capture = async (l?: number) => { if (slow > 0) { slow--; b.captureTimedOut = true; return ''; } b.captureTimedOut = false; return real(l); };
   // tmux answers nothing in time meanwhile, has-session neither: taken for a dead pane, the turn would end.
   const tm = b.tm.bind(b);
@@ -152,6 +203,33 @@ test('a tmux call that timed out is told apart, and the reader polls again inste
   await turn;
   assert.deepEqual(one.sent, ['Done.']);
   assert.ok(b.up !== false, 'not taken for a pane that died');
+  await one.o.shutdown();
+});
+
+test('three tmux calls in a row that time out: the reader gives up with a clear line, the pane is kept, and the answer still comes, late', { timeout: 45_000 }, async () => {
+  const one = await stubChat();
+  one.onEnter((n, p) => { if (n === 1) { p.rows(p.prompt(), ROW.call('t1')); p.show('busy'); } });
+  const turn = one.say('one');
+  await until(() => one.pane()?.enters === 1);
+  const b = one.brain();
+  await until(() => !!b.beating, 10_000);
+  await wait(800);
+  const real = b.capture.bind(b);
+  let slow = true;
+  b.capture = async (l?: number) => { if (slow) { b.captureTimedOut = true; return ''; } b.captureTimedOut = false; return real(l); };
+  const tm = b.tm.bind(b);
+  b.tm = async (a: string[]) => (a[0] === 'has-session' && slow ? { code: 1, out: '', err: '', timedOut: true } : tm(a));
+  await turn;
+  assert.deepEqual(one.sent, [TMUX_STALLED_LINE]);
+  assert.ok(one.pane().logs.some((l) => /3 tmux calls in a row timed out; the turn's reader gives up and the pane is kept/.test(l)), one.pane().logs.join('\n'));
+  assert.ok(b.up !== false, 'not taken for a pane that died');
+  assert.equal(b.turnSentAt, undefined);
+  // tmux answers again, and the turn ends: its answer reaches the chat, late.
+  slow = false;
+  one.pane().rows(ROW.result('t1'), ROW.text('Done.'));
+  one.pane().stop('Done.');
+  await until(() => one.sent.length === 2, 10_000);
+  assert.equal(one.sent[1], 'Done.');
   await one.o.shutdown();
 });
 
@@ -286,5 +364,11 @@ test('a paste into a box that still holds text clears it first', { timeout: 30_0
   await one.say('again');
   assert.ok(one.pane().logs.some((l) => /the input box held text before a paste; cleared/.test(l)), one.pane().logs.join('\n'));
   assert.deepEqual(one.sent, ['Hi.', 'Again.']);
+  // A box of two lines: one Ctrl-U clears one line, so it takes two, and the paste goes into an empty box.
+  one.pane().show('draft2');
+  await one.say('third');
+  assert.ok(one.pane().logs.some((l) => l.includes('the input box held text before a paste; cleared: "half of an old message\\nand its second line"')), one.pane().logs.join('\n'));
+  assert.match(one.pane().typed, /\n\nthird$/, 'nothing of the old text went with it');
+  assert.deepEqual(one.sent, ['Hi.', 'Again.', 'Again.']);
   await one.o.shutdown();
 });

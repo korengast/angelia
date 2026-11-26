@@ -235,11 +235,18 @@ export async function runDaemon(configPath: string): Promise<void> {
   // chat's events once its platform can deliver. A pane that is gone is a cut turn (below).
   // A stop while the turns are taken back (the full shutdown below is not in place yet): what was taken
   // and not run is written back for the next daemon (cutTurns), then the process ends.
-  const earlyStop = (sig: string) => { logLine(`shutdown on ${sig} while starting`); try { orch.cutTurns(); } catch (e) { logLine(`shutdown: ${(e as Error).message}`); } process.exit(0); };
+  // Chats owed the cut line: the last shutdown's list (taken now: the file is gone) and the turns not
+  // adopted here. A stop before each is told writes them into the cut list again, beside its own, so a
+  // stop while starting never loses one or overwrites the list nobody read yet.
+  const cutBefore = takeCutTurns(STATE_DIR);
+  const lost: string[] = [];
+  const toldCut = new Set<string>();
+  const owedCut = () => [...cutBefore, ...lost].filter((k) => !toldCut.has(k));
+  const earlyStop = (sig: string) => { logLine(`shutdown on ${sig} while starting`); try { orch.cutTurns(owedCut()); } catch (e) { logLine(`shutdown: ${(e as Error).message}`); } process.exit(0); };
   const earlyTerm = () => earlyStop('SIGTERM'), earlyInt = () => earlyStop('SIGINT');
   process.on('SIGTERM', earlyTerm);
   process.on('SIGINT', earlyInt);
-  const lost = await orch.restoreTurns(whenUp).catch((e) => { logLine(`turn restore failed: ${(e as Error).message}`); return [] as string[]; });
+  await orch.restoreTurns(whenUp, lost).catch((e) => { logLine(`turn restore failed: ${(e as Error).message}`); });
   const api = new ApiServer({ ...apiDeps(orch, cfg, statusNow, STATE_DIR), restartAfterTurn: (key) => deferred.request(key) }, apiToken);
   const socket = join(STATE_DIR, API_SOCKET);
   await claimSocket(socket);
@@ -301,9 +308,9 @@ export async function runDaemon(configPath: string): Promise<void> {
   const note = takeRestartNote(STATE_DIR);
   if (note) whenUp(note.key, () => void orch.notify(note.key, `Angelia is back up (pid ${process.pid}).`).catch((e) => logLine(`restart note: ${(e as Error).message}`)));
   // Chats whose turn the last shutdown cut (core/cut-turns.ts): one line each, so nobody waits on an answer that is not coming.
-  for (const key of [...takeCutTurns(STATE_DIR), ...lost]) {
+  for (const key of new Set([...cutBefore, ...lost])) {
     if (key === note?.key) continue; // that chat asked for the restart and is told it is done
-    whenUp(key, () => void orch.notify(key, CUT_LINE).catch((e) => logLine(`cut turn note: ${(e as Error).message}`)));
+    whenUp(key, () => { toldCut.add(key); void orch.notify(key, CUT_LINE).catch((e) => logLine(`cut turn note: ${(e as Error).message}`)); });
   }
   const deferTimer = setInterval(() => deferred.tick(), 2000);
   // A permission dialog in a chat's pane that no relayed request accounts for: the chat hears of it within a minute (core/screen-asks.ts).

@@ -75,6 +75,19 @@ export interface SessionMapFile {
   chats: Record<string, ChatSessions>;
 }
 
+/** tmux mode, between the chat's turns: a permission request of a turn nobody is known to have typed
+ *  (TuiBrain.betweenTurns), emitted as `self-permission`. `turn`: the same number for the requests of
+ *  one such turn. `work`: what ties that turn to the chat (SelfWork). */
+export type SelfPermission = Extract<BrainEvent, { kind: 'permission' }> & { turn: number; work: SelfWork };
+
+/** What ties a turn between the chat's turns to the chat. `chat`: the end of a task or a teammate's
+ *  message, each started in a turn of the chat's whose sender is no peer, or the chat's own typed
+ *  message (a turn closed on the quiet path, one typed into a turn). `peer`: the same, but some of that
+ *  work was started in a turn another profile asked for. `none`: nothing does (a scheduled prompt,
+ *  another session's message, a turn the hook could not place, a request with no origin): it may be a
+ *  turn the owner typed in the Claude app. */
+export type SelfWork = 'chat' | 'peer' | 'none';
+
 export type BrainEvent =
   | { kind: 'progress'; text: string }
   /** A line from Angelia about the session itself, delivered to the chat as is (not agent text). */
@@ -98,7 +111,9 @@ export type BrainEvent =
  * `midturn`: the answer of a turn the CLI ran by itself for a chat message Angelia typed into the turn
  * before it, which that turn did not take (brain/tui.ts, absorb).
  */
-export interface UnaskedAnswer { answer: 'late' | 'self' | 'midturn'; text: string }
+/** `by`, of a `self` answer: `teammate` when only teammates' messages started the turn (no task's end).
+ *  `idle`: every message that started it is a teammate's idle note. */
+export interface UnaskedAnswer { answer: 'late' | 'self' | 'midturn'; text: string; by?: 'teammate'; idle?: boolean }
 
 export function sessionKey(i: Pick<Inbound, 'platform' | 'chat' | 'thread'>): string {
   return i.thread ? `${i.platform}:${i.chat}:${i.thread}` : `${i.platform}:${i.chat}`;

@@ -9,7 +9,14 @@
  * Claude as the decision. So the chat approves the request Claude made, never a dialog read off the
  * screen, where a command can draw anything, and an answer reaches no request but its own.
  *
- * When nobody reads the chat (no turn from it, a turn sent to the background), a daemon that stopped
+ * Every request says what started the turn that asks, read from the transcript as the Stop hook reads
+ * it (turn-origin.mjs): a chat turn's reader keeps only its own turn's requests. Between the chat's
+ * turns, while the daemon holds the pane, its heartbeat says so (`idle`), and the daemon decides by it. A turn the agent started by itself (a background task's
+ * end, a teammate's or another session's message, a scheduled prompt) goes the profile's way, as a
+ * chat turn does; for a turn a person typed in the Claude app or the pane the daemon says `pass`, and
+ * the hook steps aside.
+ *
+ * When nobody reads the chat (the daemon let go of the pane, a turn sent to the background), a daemon that stopped
  * does not come back within a minute (a restart comes back sooner, and adopts the turn), or no answer
  * comes, it steps aside and prints nothing: Claude opens its own dialog in the pane and
  * the Claude app, as in a terminal. With no marker in the environment the session belongs to whoever
@@ -18,6 +25,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { requestOrigin } from './turn-origin.mjs';
 
 const marker = process.env.ANGELIA_TUI_MARKER;
 if (!marker) process.exit(0);
@@ -51,7 +59,10 @@ const RESTART_WAIT_MS = Number(process.env.ANGELIA_RELAY_RESTART_WAIT_MS) || 60_
 /** 'live', 'stale' (a beat too old, or a file that cannot be read now) or 'gone' (no file). */
 const relay = () => {
   let at;
-  try { at = Number(JSON.parse(readFileSync(join(dir, 'relay.json'), 'utf8')).at); } catch (e) { return e?.code === 'ENOENT' ? 'gone' : 'stale'; }
+  try {
+    const beat = JSON.parse(readFileSync(join(dir, 'relay.json'), 'utf8'));
+    at = Number(beat.at);
+  } catch (e) { return e?.code === 'ENOENT' ? 'gone' : 'stale'; }
   return Date.now() - at < STALE_MS ? 'live' : 'stale';
 };
 let staleSince = 0;
@@ -81,8 +92,21 @@ const answer = join(dir, `${id}.answer.json`);
 const leave = () => { rmSync(request, { force: true }); rmSync(answer, { force: true }); };
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => { leave(); process.exit(0); });
 
+/** What started the turn that asks, on every request: between turns, for the daemon to tell a turn
+ *  the agent started by itself from one a person typed, and to tie it to the chat's own work (the task
+ *  ids and teammate names, as the Stop hook gives them); while a chat turn is read, for the daemon to
+ *  tell that turn's requests from those of a turn that runs before it (a task's end or a message
+ *  Claude Code queued first) or was written under the last idle beat. Fixed words, ids, names, keys,
+ *  a time and a count only, never the conversation. A transcript that cannot be read says `unknown`. */
+function originNow() {
+  const transcript = String(payload.transcript_path ?? '');
+  try {
+    return transcript ? requestOrigin(readFileSync(transcript, 'utf8')) : { origin: 'unknown', origin_why: 'no transcript' };
+  } catch { return { origin: 'unknown', origin_why: 'the transcript could not be read' }; }
+}
+
 try {
-  writeFileSync(`${request}.tmp`, JSON.stringify({ id, tool_name: payload.tool_name ?? '', tool_input: payload.tool_input ?? {}, at: Date.now() }), { mode: 0o600 });
+  writeFileSync(`${request}.tmp`, JSON.stringify({ id, tool_name: payload.tool_name ?? '', tool_input: payload.tool_input ?? {}, at: Date.now(), origin: originNow() }), { mode: 0o600 });
   renameSync(`${request}.tmp`, request);
 } catch { process.exit(0); }
 
@@ -92,6 +116,8 @@ function wait() {
   try { said = JSON.parse(readFileSync(answer, 'utf8')); } catch { said = undefined; }
   if (said) {
     leave();
+    // Not the chat's to answer (a turn a person typed, between the chat's turns): Claude asks in its own dialog.
+    if (said.pass === true) return;
     // The daemon names the refusal only for a profile that refuses without asking (permission_prompts: deny).
     const why = typeof said.message === 'string' && said.message ? said.message.slice(0, 500) : 'Denied from chat';
     const decision = said.allow === true ? { behavior: 'allow' } : { behavior: 'deny', message: why };
