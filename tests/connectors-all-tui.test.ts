@@ -39,7 +39,9 @@ function fakeClaude(dir: string, blocked: string[], fail = false): { bin: string
   writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('fs');
 const a = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(runs)}, JSON.stringify(a) + '\\n');
+// The settings file's content in place of its path: what the run was given. The path on its own goes to .raw.
+fs.appendFileSync(${JSON.stringify(runs)}, JSON.stringify(a[0] === '--settings' ? ['--settings', fs.readFileSync(a[1], 'utf8'), ...a.slice(2)] : a) + '\\n');
+fs.appendFileSync(${JSON.stringify(runs)} + '.raw', JSON.stringify(a) + '\\n');
 if (${fail}) process.exit(1);
 if (a.slice(-2).join(' ') !== 'mcp list') process.exit(2);
 const blocked = a[0] === '--settings' ? ${JSON.stringify(blocked)} : [];
@@ -55,7 +57,8 @@ test('tuiBlockedConnectors: the connectors only the plain list names; null when 
   const one = fakeClaude(dir, ['claude.ai Gmail']);
   assert.deepEqual(await tuiBlockedConnectors(one.bin, dir, process.env, deny), ['claude.ai Gmail']);
   const args = readFileSync(one.runs, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as string[]);
-  assert.deepEqual(args.find((a) => a[0] === '--settings'), ['--settings', JSON.stringify(deny), 'mcp', 'list'], 'the launch MCP keys, as JSON, before the subcommand');
+  assert.deepEqual(args.find((a) => a[0] === '--settings'), ['--settings', JSON.stringify(deny), 'mcp', 'list'], 'the launch MCP keys, by a file, before the subcommand');
+  assert.ok(!readFileSync(`${one.runs}.raw`, 'utf8').includes('googleapis'), 'no address on the command line');
   assert.ok(args.some((a) => a.join(' ') === 'mcp list'), 'and once without them');
   assert.equal(await tuiBlockedConnectors(fakeClaude(dir, [], true).bin, dir, process.env, deny), null);
   const empty = join(dir, 'empty');

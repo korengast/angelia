@@ -14,18 +14,18 @@ const LIST = ['claude.ai Notes: https://notes.example.com/mcp - ✔ Connected', 
 
 /** A fake `claude mcp list`: each run appends {args, env, start, end} to `runs`. A run whose settings
  *  deny a serverUrl leaves out BLOCKED (KEPT_NONE: every connector). It takes DELAY ms. */
-function fake(dir: string, o: { blocked?: string[]; keptNone?: boolean; delay?: number } = {}): { bin: string; runs: () => { args: string[]; env: Record<string, string>; start: number; end: number }[] } {
+function fake(dir: string, o: { blocked?: string[]; keptNone?: boolean; delay?: number } = {}): { bin: string; runs: () => { args: string[]; settings: any; env: Record<string, string>; start: number; end: number }[] } {
   const id = Math.random().toString(36).slice(2), bin = join(dir, `claude-${id}`), runs = join(dir, `runs-${id}`);
   writeFileSync(runs, '');
   writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('fs');
 const a = process.argv.slice(2), start = Date.now();
-const s = a[0] === '--settings' ? JSON.parse(a[1]) : {};
+const s = a[0] === '--settings' ? JSON.parse(fs.readFileSync(a[1], 'utf8')) : {};
 const urls = (s.deniedMcpServers || []).some((e) => e.serverUrl);
 setTimeout(() => {
   let lines = ${JSON.stringify(LIST)};
   if (urls) lines = ${!!o.keptNone} ? lines.filter((l) => !l.startsWith('claude.ai ')) : lines.filter((l) => !${JSON.stringify(o.blocked ?? [])}.some((b) => l.startsWith(b + ':')));
-  fs.appendFileSync(${JSON.stringify(runs)}, JSON.stringify({ args: a, env: process.env, start, end: Date.now() }) + '\\n');
+  fs.appendFileSync(${JSON.stringify(runs)}, JSON.stringify({ args: a, settings: s, env: process.env, start, end: Date.now() }) + '\\n');
   process.stdout.write('Checking MCP server health…\\n\\n' + lines.join('\\n') + '\\n');
 }, ${o.delay ?? 0});
 `, { mode: 0o755 });
@@ -50,15 +50,16 @@ test('both runs keep the denied servers by name and the .mcp.json out, and get n
   assert.equal(runs.length, 2);
   for (const r of runs) {
     assert.equal(r.args[0], '--settings');
-    const s = JSON.parse(r.args[1]);
-    assert.ok(s.deniedMcpServers.some((e: { serverName?: string }) => e.serverName === 'local-tool'), r.args[1]);
+    assert.ok(!r.args.join(' ').includes('googleapis'), 'no address on the command line');
+    const s = r.settings;
+    assert.ok(s.deniedMcpServers.some((e: { serverName?: string }) => e.serverName === 'local-tool'), JSON.stringify(s));
     assert.deepEqual(s.disabledMcpjsonServers, ['own']);
     for (const k of ['GITHUB_TOKEN', 'ANGELIA_SESSION_KEY', 'ANGELIA_API_TOKEN', 'ANTHROPIC_API_KEY']) assert.equal(r.env[k], undefined, k);
     assert.equal(r.env.HOME, '/Users/example');
     assert.equal(r.env.CLAUDE_CONFIG_DIR, '/cfg');
     assert.equal(r.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
   }
-  assert.equal(runs.filter((r) => JSON.parse(r.args[1]).deniedMcpServers.some((e: { serverUrl?: string }) => e.serverUrl)).length, 1, 'one run with the connector denies, one without');
+  assert.equal(runs.filter((r) => r.settings.deniedMcpServers.some((e: { serverUrl?: string }) => e.serverUrl)).length, 1, 'one run with the connector denies, one without');
   assert.deepEqual(Object.keys(mcpListEnv({ FOO: 'x', PATH: '/bin' })), ['PATH']);
 });
 

@@ -283,14 +283,16 @@ profiles:
   does not lift) or lists under `except:` is dropped, unless its own `capabilities:` gives it back.
   Only a connector that is a capability in the table can be dropped: add one for it first.
 - **How it loads.** No allow list. The launch passes `deniedMcpServers` in `--settings`, with each
-  dropped connector by its url. Measured with Claude Code 2.1.332: with that list and no allow list,
+  dropped connector by its url. The settings go by a file in the state folder, never on the command
+  line, and the record in the profile's folder holds each dropped url as a hash only: the agent does
+  not learn the address of what it is kept from. Measured with Claude Code 2.1.332: with that list and no allow list,
   every connector of the account loads but the dropped ones, and the profile's own `.mcp.json`
   servers (through `--mcp-config`) and user-level servers still load. A deny by a connector's name
   ("claude.ai Gmail") does nothing, so the url is used.
 - **A wrong address fails open.** The url is the only thing that keeps a dropped connector out. A
   typo, or a connector whose address the Claude app changed, matches nothing, and that connector
   loads; granted mode fails closed instead. So the compile and `check-config` give a note for each
-  dropped connector, with the url it uses. And 30 seconds after each print-mode start, the daemon
+  dropped connector, naming its capability (the url is in your routing table). And 30 seconds after each print-mode start, the daemon
   counts the connectors Claude Code's stderr warning named as blocked (it does not wait for the
   account's connector list before the first turn): when they are fewer than the ones dropped, the log
   gets a warning, and you hear it once in a direct chat of yours with the profile (until the daemon restarts; with

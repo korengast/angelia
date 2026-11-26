@@ -61,8 +61,9 @@ export function droppedConnectors(cfg: Config, name: string): [string, string][]
  * list matches a connector by its address only (measured: by name it does nothing), so a pattern with
  * a typo, or a connector whose address changed, matches nothing, and the connector loads: this mode
  * fails open where granted fails closed. The daemon warns when a start (print or tmux mode) blocks fewer
- * connectors than the profile drops (blockedShort).
+ * connectors than the profile drops (blockedShort). The note names the capability, never the address:
+ * compile and check-config lines can reach the agent (one that runs them), which must not learn it.
  */
-export function droppedConnectorNote(name: string, url: string): string {
-  return `connectors: all: ${name} is kept out by its address ${url} only; if that is not the address of the connector in the Claude app (a typo, or an address it changed), nothing is blocked and ${name} loads. Each start's warning from Claude Code should name it as blocked; the daemon log warns when a start blocks fewer connectors than this profile drops`;
+export function droppedConnectorNote(name: string): string {
+  return `connectors: all: ${name} is kept out by its address (capabilities.${name}.url in the routing table) only; if that is not the address of the connector in the Claude app (a typo, or an address it changed), nothing is blocked and ${name} loads. Each start's warning from Claude Code should name it as blocked; the daemon log warns when a start blocks fewer connectors than this profile drops`;
 }

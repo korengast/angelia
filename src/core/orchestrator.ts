@@ -1018,7 +1018,7 @@ export class Orchestrator {
       profileName: name,
       stateOpen: stateOpenPaths(this.cfg, name, this.opts.stateDir ?? join(homedir(), '.angelia')),
       // The MCP launch from the guard, never from the record in the agent's own folder (connectors fix2 N1).
-      ...(profile.backend === 'claude-code' ? { mcp: guardMcpLaunch(this.opts.stateDir ?? join(homedir(), '.angelia'), name, effective.cwd) } : {}),
+      ...(profile.backend === 'claude-code' ? { mcp: guardMcpLaunch(this.opts.stateDir ?? join(homedir(), '.angelia'), name, effective.cwd), mcpSettingsFile: mcpSettingsFile(this.opts.stateDir ?? join(homedir(), '.angelia'), name) } : {}),
       // Only a session that may take messages into a running turn gets the PreToolUse hook (intoTurnAllowed).
       midturn: profile.tui && profile.midturn !== false,
       ...(this.opts.blockedCheckMs !== undefined ? { blockedCheckMs: this.opts.blockedCheckMs } : {}),

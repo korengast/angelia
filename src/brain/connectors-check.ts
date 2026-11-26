@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { CLAUDE_ENV } from './argv.js';
 import { deniedConnectorCount, trackGroup } from './brain.js';
 
@@ -63,10 +66,21 @@ const MCP_LIST_MAX = 4 << 20;
  * One `claude mcp list`, with these settings when given: its connectors, or null when it failed. It
  * runs in its own process group under a timer of ours: at the timeout the whole group is killed and
  * the answer is given at once, so a claude that does not exit, or a server it started that holds its
- * output open, never holds the queue of checks.
+ * output open, never holds the queue of checks. The settings go by a private file, never on the
+ * command line: they name the dropped connectors' addresses, and any process of the user (the agent's
+ * too) can list a command line.
  */
 export function mcpListConnectors(bin: string, cwd: string, env: NodeJS.ProcessEnv, settings?: Record<string, unknown>, timeoutMs = MCP_LIST_TIMEOUT_MS): Promise<string[] | null> {
-  const args = [...(settings ? ['--settings', JSON.stringify(settings)] : []), 'mcp', 'list'];
+  let dir: string | undefined;
+  const args = ['mcp', 'list'];
+  if (settings) {
+    try {
+      dir = mkdtempSync(join(tmpdir(), 'angelia-mcp-list-'));
+      const file = join(dir, 'settings.json');
+      writeFileSync(file, JSON.stringify(settings), { mode: 0o600 });
+      args.unshift('--settings', file);
+    } catch { if (dir) rmSync(dir, { recursive: true, force: true }); return Promise.resolve(null); }
+  }
   return new Promise((done) => {
     const child = spawn(bin, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
     trackGroup(child); // the daemon's exit ends it too
@@ -78,6 +92,7 @@ export function mcpListConnectors(bin: string, cwd: string, env: NodeJS.ProcessE
       // Whatever is left of the run (a server it started) goes with it.
       if (child.pid) try { process.kill(-child.pid, 'SIGKILL'); } catch { /* the group is gone */ }
       child.stdout.destroy();
+      if (dir) rmSync(dir, { recursive: true, force: true });
       done(result);
     };
     const timer = setTimeout(() => end(null), timeoutMs);

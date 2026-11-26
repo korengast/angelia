@@ -1,4 +1,5 @@
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, linkSync, lstatSync, mkdirSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Capability, Config, Profile } from '../instance/config/schema.js';
@@ -63,8 +64,10 @@ export interface CompiledRecord {
    *  let in by its address as well. */
   mcpUrls?: string[];
   /** Claude, `connectors: all`: every connector of the account loads, but those of connectorsDenied
-   *  (url patterns, passed as deniedMcpServers). No allow list; this folder's .mcp.json servers
-   *  (mcpOwn) load through --mcp-config. */
+   *  (passed as deniedMcpServers, from the guard). No allow list; this folder's .mcp.json servers
+   *  (mcpOwn) load through --mcp-config. The record is in the agent's folder, so it holds each dropped
+   *  address as its hash only (deniedHash): the guard in the state folder keeps the addresses. A record
+   *  from 0.4.5 holds the addresses themselves, and compares the same. */
   connectorsAll?: boolean;
   connectorsDenied?: string[];
   /** Claude, `connectors: all` on a profile whose MCP is strict: the user-level servers of this
@@ -82,11 +85,17 @@ export interface McpLaunch { args: string[]; settings: Record<string, unknown> }
 
 const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v is string => typeof v === 'string') : []);
 
+/** What the record in the agent's folder holds for a dropped connector's address (connectorsDenied):
+ *  not the address, which tells the agent what it is kept from. One that is a hash already stays. */
+export function deniedHash(url: string): string {
+  return url.startsWith('sha256:') ? url : `sha256:${createHash('sha256').update(url).digest('hex').slice(0, 32)}`;
+}
+
 /** What a record says about the MCP launch, in the guard's shape (the guard holds it as compiled). */
 function recordMcp(rec: CompiledRecord): NonNullable<LaunchGuard['mcp']> {
   return {
     strict: !!rec.mcpStrict, connectors: strings(rec.connectors), allow: strings(rec.mcpAllow), own: strings(rec.mcpOwn), urls: strings(rec.mcpUrls),
-    ...(rec.connectorsAll === true ? { all: true, deniedUrls: strings(rec.connectorsDenied), deniedNames: strings(rec.mcpDeny) } : {}),
+    ...(rec.connectorsAll === true ? { all: true, deniedUrls: strings(rec.connectorsDenied).map(deniedHash), deniedNames: strings(rec.mcpDeny) } : {}),
   };
 }
 
@@ -102,9 +111,12 @@ function recordMcp(rec: CompiledRecord): NonNullable<LaunchGuard['mcp']> {
  */
 function allLaunch(file: string, own: string[], deniedNames: string[], deniedUrls: string[]): McpLaunch {
   const deny = [...deniedNames.map((serverName) => ({ serverName })), ...deniedUrls.map((serverUrl) => ({ serverUrl }))];
+  // A record's hash is no address to deny by (only the guard has them): no connector loads, rather
+  // than the dropped ones too. The launch check refuses such a start anyway.
+  const blind = deniedUrls.some((u) => u.startsWith('sha256:'));
   return {
     args: existsSync(file) ? ['--mcp-config', file] : [],
-    settings: { ...(deny.length ? { deniedMcpServers: deny } : {}), ...(own.length ? { disabledMcpjsonServers: own } : {}) },
+    settings: { ...(deny.length && !blind ? { deniedMcpServers: deny } : {}), ...(blind ? { disableClaudeAiConnectors: true, ...(deniedNames.length ? { deniedMcpServers: deniedNames.map((serverName) => ({ serverName })) } : {}) } : {}), ...(own.length ? { disabledMcpjsonServers: own } : {}) },
   };
 }
 
@@ -317,7 +329,7 @@ function mcpLaunchProblems(cwd: string, want: LaunchGuard['mcp'], settings: Reco
   const now = recordMcp(rec!);
   const all = want.all === true;
   if (now.strict !== !!want.strict || !same(now.connectors, want.connectors ?? []) || !same(now.allow, want.allow ?? []) || !same(now.own, want.own ?? []) || !same(now.urls, want.urls ?? [])
-    || !!now.all !== all || !same(now.deniedUrls ?? [], want.deniedUrls ?? []) || !same(now.deniedNames ?? [], want.deniedNames ?? [])) out.push(`the compiled record's MCP launch (strict MCP, connectors, servers let in or kept out) is not what the last compile wrote; compile again`);
+    || !!now.all !== all || !same(now.deniedUrls ?? [], (want.deniedUrls ?? []).map(deniedHash)) || !same(now.deniedNames ?? [], want.deniedNames ?? [])) out.push(`the compiled record's MCP launch (strict MCP, connectors, servers let in or kept out) is not what the last compile wrote; compile again`);
   if ((all ? (want.own ?? []).length : want.strict || (want.own ?? []).length) && !existsSync(join(cwd, '.mcp.json'))) out.push(`.mcp.json is gone, so the launch would not ${want.strict && !all && !(want.connectors ?? []).length ? 'be strict: user-level MCP servers would load' : 'load this profile\'s own servers'}; compile again`);
   // connectors: all on a strict profile: no --strict-mcp-config (it drops every connector), so each
   // user-level server is kept out by name, as the last compile listed them. One added since would load.
@@ -420,7 +432,10 @@ export function seedGuards(cfg: Config, stateDir = INSTANCE_DIR): string[] {
     const rec = readRecord(p.cwd);
     if (!rec || existsSync(guardFile(stateDir, name))) continue;
     // A record written since connectors carries its MCP launch: seeded with it, as the deny rules are.
-    const mcp = p.backend === 'claude-code' && Array.isArray(rec.connectors) ? { mcp: recordMcp(rec) } : {};
+    // Not one whose dropped addresses are hashes (deniedHash): the guard needs the addresses, so that
+    // launch is refused until a compile, never let start without its denies.
+    const hashed = strings(rec.connectorsDenied).some((u) => u.startsWith('sha256:'));
+    const mcp = p.backend === 'claude-code' && Array.isArray(rec.connectors) && !hashed ? { mcp: { ...recordMcp(rec), ...(rec.connectorsAll === true ? { deniedUrls: strings(rec.connectorsDenied) } : {}) } } : {};
     writeGuard(stateDir, name, { cwd: p.cwd, deny: rec.deny, ...(rec.sandbox ? { sandbox: true } : {}), ...mcp });
     seeded.push(name);
   }
@@ -1205,7 +1220,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
         notes.push('connectors: all on a profile that denies an MCP server: its user-level servers and those of each .mcp.json above its folder are kept out by name, as this compile found them; one added later stops the start until the next compile. MCP servers that come from a plugin are not kept out');
       }
       // A deny matches by address only, so a wrong pattern or a connector that moved fails open: it loads.
-      for (const [n, u] of dropped) notes.push(droppedConnectorNote(n, u));
+      for (const [n] of dropped) notes.push(droppedConnectorNote(n));
       // A deny wins over everything: a given connector whose address a dropped one covers does not load.
       for (const [n, c] of connectors) {
         const by = dropped.filter(([, u]) => urlsOverlap(u, c.url)).map(([d]) => d);
@@ -1213,9 +1228,14 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
       }
       if (!wasAll) changes.push(`+ connectors: all: every Claude app connector of the account loads for this profile, ones added later in the Claude app included${dropped.length ? `, but ${dropped.map(([n]) => n).join(', ')}` : ''}`);
       else {
-        const before = strings(rec?.connectorsDenied);
-        for (const [n, u] of dropped) if (!before.includes(u)) changes.push(`- connector ${n}: the Claude app connector at ${u} no longer loads for this profile`);
-        for (const u of before) if (!droppedUrls.includes(u)) changes.push(`+ connector ${u}: loads again for this profile`);
+        // Named by capability, never by address: the compile's lines can reach the agent (a chat that runs it).
+        const before = strings(rec?.connectorsDenied).map(deniedHash), now = droppedUrls.map(deniedHash);
+        for (const [n, u] of dropped) if (!before.includes(deniedHash(u))) changes.push(`- connector ${n}: no longer loads for this profile`);
+        for (const h of before) {
+          if (now.includes(h)) continue;
+          const named = Object.entries(cfg.capabilities).filter(([, c]) => c.kind === 'connector' && deniedHash(c.url) === h).map(([n]) => n);
+          changes.push(named.length ? `+ connector ${named.join(', ')}: loads again for this profile` : '+ a connector this profile dropped before loads again');
+        }
       }
       if (!same(wasAll ? strings(rec?.mcpDeny) : [], mcpDeny)) changes.push(`~ MCP kept out by name: ${mcpDeny.length ? mcpDeny.join(', ') : 'no server'}`);
       for (const [f, s] of [['settings.json', readJson(join(p.cwd, '.claude', 'settings.json'))], ['settings.local.json', readJson(join(p.cwd, '.claude', 'settings.local.json'))]] as const) {
@@ -1423,7 +1443,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     ...(wantSandbox ? { sandbox: true } : {}), ...(wantSockets.length ? { sockets: wantSockets } : {}),
     stateReach: reachInState(cfg, name, stateDir, home),
     ...(p.backend === 'claude-code' ? all
-      ? { connectors: [], connectorsAll: true, connectorsDenied: droppedUrls, mcpOwn, mcpDeny }
+      ? { connectors: [], connectorsAll: true, connectorsDenied: droppedUrls.map(deniedHash), mcpOwn, mcpDeny }
       : { connectors: connectorUrls, ...(connectorUrls.length ? { mcpAllow, mcpOwn, mcpUrls } : {}) } : {}),
   };
 

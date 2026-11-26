@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { parse, stringify } from 'yaml';
 import { configNotes, loadConfig } from '../src/instance/config/load.js';
 import { connectorMode, droppedConnectors } from '../src/capabilities/resolve.js';
-import { guardMcpLaunch, launchCheck, mcpLaunch, mcpSettingsFile, planProfile, planText, readGuard, readRecord, RECORD } from '../src/capabilities/compile.js';
+import { deniedHash, guardMcpLaunch, launchCheck, mcpLaunch, mcpSettingsFile, planProfile, planText, readGuard, readRecord, RECORD } from '../src/capabilities/compile.js';
 import { claudeArgv, claudeTerminalLine, claudeTuiArgv, tuiSettings } from '../src/brain/argv.js';
 import { claudeAskArgv } from '../src/brain/ask.js';
 import { exitReason } from '../src/brain/brain.js';
@@ -91,7 +91,8 @@ test('compile, all mode, MCP not strict: no allow list, a deny list of the dropp
   assert.equal(rec.mcpStrict, false);
   assert.equal(rec.connectorsAll, true);
   assert.deepEqual(rec.connectors, [], 'no connector is granted by list');
-  assert.deepEqual(rec.connectorsDenied, [GMAIL]);
+  assert.deepEqual(rec.connectorsDenied, [deniedHash(GMAIL)], 'the agent\'s folder holds no dropped address, its hash only');
+  assert.ok(!readFileSync(join(r.cwd, RECORD), 'utf8').includes('gmailmcp'));
   assert.deepEqual(rec.mcpOwn, ['fx-rates', 'mine']);
   assert.deepEqual(rec.mcpDeny, [], 'not strict: the user-level servers load, as before connectors');
   assert.equal(rec.mcpAllow, undefined);
@@ -103,12 +104,20 @@ test('compile, all mode, MCP not strict: no allow list, a deny list of the dropp
   const p = r.cfg().profiles.home;
   const mcp = guardMcpLaunch(r.state, 'home', r.cwd)!;
   assert.deepEqual(mcp, { args: ['--mcp-config', join(r.cwd, '.mcp.json')], settings: want });
-  assert.deepEqual(mcpLaunch(r.cwd), mcp, 'the record path gives the same launch');
+  // The record's hash is no address to deny by: its own launch loads no connector at all.
+  assert.deepEqual(mcpLaunch(r.cwd).settings, { disableClaudeAiConnectors: true, disabledMcpjsonServers: ['fx-rates', 'mine'] }, 'the record path fails closed');
   for (const argv of [claudeArgv(p, session, 'claude', undefined, mcp), claudeTuiArgv(p, session, 'claude', '/x/settings.json', 'n', undefined, mcp)]) {
     assert.ok(!argv.includes('--strict-mcp-config'));
     assert.equal(argv[argv.indexOf('--mcp-config') + 1], join(r.cwd, '.mcp.json'));
   }
   const s = lastSettings(claudeArgv(p, session, 'claude', undefined, mcp));
+  // Print mode passes the compile's copy by path: its command line names no dropped address.
+  const byFile = claudeArgv(p, session, 'claude', undefined, mcp, mcpSettingsFile(r.state, 'home'));
+  assert.equal(byFile[byFile.indexOf('--settings') + 1], mcpSettingsFile(r.state, 'home'));
+  assert.ok(!byFile.join(' ').includes('gmailmcp'), byFile.join(' '));
+  const other = join(r.root, 'other.settings.json');
+  writeFileSync(other, '{"deniedMcpServers":[]}');
+  assert.deepEqual(lastSettings(claudeArgv(p, session, 'claude', undefined, mcp, other)), s, 'a copy that differs is not passed: the keys go inline');
   assert.deepEqual(s.deniedMcpServers, want.deniedMcpServers);
   assert.equal(s.allowedMcpServers, undefined, 'no allow list: every connector of the account loads, later ones too');
   assert.deepEqual(tuiSettings(p, { hooks: {} }, mcp), { ...want, hooks: {} });
@@ -168,6 +177,9 @@ test('all mode: the record the agent rewrote decides nothing, and differs from t
     writeFileSync(recPath, before);
   }
   assert.deepEqual(r.check(), []);
+  // A record of 0.4.5 holds the address itself: the same launch, no refusal.
+  editJson(recPath, (j) => { j.connectorsDenied = [GMAIL]; });
+  assert.deepEqual(r.check(), []);
   // A server added to .mcp.json by hand would hold a tmux pane on its dialog, as for a granted connector.
   editJson(join(r.cwd, '.mcp.json'), (j) => { j.mcpServers.handmade = { command: 'y' }; });
   assert.match(r.check().join('\n'), /\.mcp\.json names "handmade"/);
@@ -201,9 +213,10 @@ test('all mode to granted and back: the change lines, and the granted launch aga
   assert.ok(again.changes.includes('+ connectors: all: every Claude app connector of the account loads for this profile, ones added later in the Claude app included, but calendar, gmail'), planText(again));
   again.apply();
   r.edit((t) => { t.profiles.home.deny = ['gmail']; });
-  assert.deepEqual(r.plan().changes.filter((c) => c.includes('connector')), [`+ connector ${CAL}: loads again for this profile`]);
+  assert.deepEqual(r.plan().changes.filter((c) => c.includes('connector')), ['+ connector calendar: loads again for this profile']);
   r.edit((t) => { t.profiles.home.deny = ['gmail', 'calendar', 'drive']; t.profiles.home.capabilities = ['fx-rates']; });
-  assert.ok(r.plan().changes.includes(`- connector drive: the Claude app connector at ${DRIVE} no longer loads for this profile`), planText(r.plan()));
+  assert.ok(r.plan().changes.includes('- connector drive: no longer loads for this profile'), planText(r.plan()));
+  assert.ok(!planText(r.plan()).includes(DRIVE.replace('*', '')), 'no dropped address in the plan');
 });
 
 test('all mode: angelia ask still loads no connector', () => {

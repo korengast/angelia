@@ -81,6 +81,10 @@ export interface BrainOptions {
    *  the agent cannot change. Unset: read from the record in its folder (tests, the canary, a compile
    *  from before connectors). */
   mcp?: McpLaunch;
+  /** Claude Code, print mode: the compile's copy of `mcp`'s settings in the state folder
+   *  (mcpSettingsFile), passed by path when it holds the same keys, so the command line names no
+   *  address of a dropped connector (any process of the user can list it, the agent's too). */
+  mcpSettingsFile?: string;
   /** Deny rules for this session only, on top of the compiled ones, in the backend's own form (agy;
    *  tests). Unset: the compiled ones alone. */
   deny?: string[];
