@@ -126,10 +126,9 @@ const FOLLOW_WAIT_MS = 5000;
 /** A chat message typed into a running turn (absorb): its key and text, when, the turn it went into
  *  (that turn's turnSentAt), and whether the transcript shows the turn took it. */
 export interface Absorbed { key: string; text: string; at: number; turn: number; seen: boolean }
-/** A message pressed into a running turn whose take the transcript never confirmed (TuiBrain.unsure). */
-interface Unsure { key: string; text: string; transcript: string; offset: number; at: number; answered: boolean }
-/** The `turn` of an unsure message read as an Absorbed entry (unsureOpen): no turn's. */
-const UNSURE_TURN = -1;
+/** A message pressed into a running turn whose take the transcript never confirmed (TuiBrain.unsure).
+ *  `turn`: the turnSentAt of the turn it was pressed into, as an Absorbed entry's. */
+interface Unsure { key: string; text: string; transcript: string; offset: number; at: number; turn: number; answered: boolean }
 /** How long an empty box after the Enter waits for the transcript's word that Claude Code queued the
  *  message (queuedSince): the row is written at the key (measured on 2.1.332), the screen may say so first. */
 const CONFIRM_MS = 8000;
@@ -547,7 +546,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   private restoredKeys: string[] = [];
   /** Messages an Enter was pressed for in a running turn that was not seen to take them, by message
    *  (the orchestrator's id for it, else its key): its key and text, the transcript and its size at that
-   *  Enter, the time of it, and whether a turn Claude Code ran for it was answered already (followerOf).
+   *  Enter, the time of it, the turn it was pressed into, and whether a turn Claude Code ran for it was answered already (followerOf).
    *  Looked at once more before each is typed as a turn of its own. From its Enter on, it is the chat's
    *  own (typedByUs, followerOf): Claude Code may take it late and run it by itself. */
   private unsure = new Map<string, Unsure>();
@@ -1179,7 +1178,7 @@ export class TuiBrain extends EventEmitter implements Brain {
         this.pressed = true;
         await this.tm(['send-keys', '-t', this.name, 'Enter']);
         presses++;
-        if (!this.unsure.has(id)) this.unsure.set(id, { key: promptKey(text), text, transcript: this.transcript, offset: enterAt, at: Date.now(), answered: false });
+        if (!this.unsure.has(id)) this.unsure.set(id, { key: promptKey(text), text, transcript: this.transcript, offset: enterAt, at: Date.now(), turn: sentAt, answered: false });
         if (this.unsure.size > 20) this.unsure.delete(this.unsure.keys().next().value!);
         for (let p = 0; p < TAKEN_POLLS && !emptied; p++) {
           await sleep(300);
@@ -1886,7 +1885,7 @@ export class TuiBrain extends EventEmitter implements Brain {
         ours();
         this.absorbed = this.absorbed.filter((a) => !follower.includes(a));
         // An unsure one answered here is not answered again when its own turn finds it taken late.
-        for (const u of this.unsure.values()) if (follower.some((a) => a.turn === UNSURE_TURN && a.key === u.key && a.at === u.at)) u.answered = true;
+        for (const u of this.unsure.values()) if (follower.some((a) => a.turn === u.turn && a.key === u.key && a.at === u.at)) u.answered = true;
         // It runs only after the turn it was typed into: a turn closed on the quiet path is over too.
         if (!inTurn && this.quietEnd && m.at! >= this.quietEnd.sentAt) this.quietEnd = undefined;
         this.lastUsedAt = Date.now();
@@ -2196,10 +2195,11 @@ export class TuiBrain extends EventEmitter implements Brain {
   }
 
   /** The unsure messages (unsure) not answered yet, of the transcript read now, as Absorbed entries of
-   *  no turn (UNSURE_TURN). An entry of another transcript can be in neither: its Enter's offset is not
-   *  this file's. */
+   *  the turn their Enter went into: that turn's own marker, keyed the same (the chat sent the same words
+   *  twice), is never taken as their follower (watch). An entry of another transcript can be in neither:
+   *  its Enter's offset is not this file's. */
   private unsureOpen(): Absorbed[] {
-    return [...this.unsure.values()].filter((u) => !u.answered && u.transcript === this.transcript).map((u) => ({ key: u.key, text: u.text, at: u.at, turn: UNSURE_TURN, seen: false }));
+    return [...this.unsure.values()].filter((u) => !u.answered && u.transcript === this.transcript).map((u) => ({ key: u.key, text: u.text, at: u.at, turn: u.turn, seen: false }));
   }
 
   /** Nothing is asked between turns any more: the pane is let go of or stopped. */

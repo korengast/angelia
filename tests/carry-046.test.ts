@@ -22,7 +22,7 @@ const brain = () => {
   return b;
 };
 const row = (o: object) => `${JSON.stringify(o)}\n`;
-const unsure = (b: any, text: string, at = Date.now() - 1000) => ({ key: promptKey(text), text, transcript: b.transcript, offset: 0, at, answered: false });
+const unsure = (b: any, text: string, at = Date.now() - 1000) => ({ key: promptKey(text), text, transcript: b.transcript, offset: 0, at, turn: at - 1000, answered: false });
 const marker = (b: any, m: object) => { mkdirSync(b.dir, { recursive: true }); writeFileSync(b.markerPath, JSON.stringify(m)); };
 
 test('a message pressed into a turn and taken late: the turn Claude Code ran for it is the chat\'s, and it is not answered twice', async () => {
