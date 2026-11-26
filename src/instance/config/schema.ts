@@ -146,7 +146,8 @@ export const Profile = z.object({
   answer_from: z.array(z.string()).default([]),
   /** Profiles whose agents may give this one a task (`angelia turn`): a turn in its own session, which
    *  can act. "*" for every profile; default none. The owner, jobs and this chat's own agent are not
-   *  limited. A line (`angelia send`) needs no listing: the chat sees it, labelled. */
+   *  limited. A line (`angelia send`) needs no listing to reach the chat, labelled; its agent reads it at
+   *  the next turn only when the sender is listed here. */
   accept_from: z.array(z.string()).default([]),
   /** May edit the workspace's _shared/ (doctrine every profile imports, the self prompt) and
    *  _capabilities/ (the skills and tools every profile runs). Default no: an agent that could edit

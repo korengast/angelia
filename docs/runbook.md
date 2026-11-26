@@ -376,8 +376,9 @@ and `/login` on this machine.
 
 **The agent repeats what a job already posted, or does not know of it.** What a `send:` job, a
 `run:` job's output or `angelia send` posts into a chat is kept (`~/.angelia/app-notes.json`) and
-read by the chat's agent at its next turn, before the message, as its own latest lines (`job
-<name>`, `owner`, `profile <name>`, `angelia`). It sees them once; a turn cut by a restart loses
+read by the chat's agent at its next turn, before the message, as data (`job <name>`, `owner`,
+`profile <name>`, `angelia`). A line from another profile is given only when the chat's profile
+lists it in `accept_from`. It sees them once; a turn cut by a restart loses
 them. `angelia export <platform:chat>` shows them with a `source` field. A script that posts with
 the owner's token names itself with `--source`.
 

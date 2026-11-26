@@ -1238,10 +1238,11 @@ export class Orchestrator {
     }
     const b = await this.brainFor(key, name);
     // What was posted into the chat past its agent since its last turn: told before the envelope, as
-    // its own latest messages. Taken at the turn's start: a turn the restart cuts loses them, and the
-    // cut line in the chat covers that. A bare CLI command goes as typed and leaves them, and so does
-    // a prompt Angelia wrote itself (a handoff brief).
-    const sent = o.sent ?? (!bare && !follow ? sentPreface(this.notes.takeUnseen(key), quoteLookalikes) : '');
+    // data. Taken at the turn's start: a turn the restart cuts loses them, and the cut line in the chat
+    // covers that. A bare CLI command goes as typed and leaves them, and so does a prompt Angelia wrote
+    // itself (a handoff brief). Another profile's line only when this profile takes its tasks
+    // (accept_from): a line is no back door past that list. The chat still saw it.
+    const sent = o.sent ?? (!bare && !follow ? sentPreface(this.notes.takeUnseen(key).filter((n) => this.peerLineShown(name, n.source)), quoteLookalikes) : '');
     o = { ...o, sent };
     const before = [preface, sent].filter(Boolean).join('\n\n');
     const text = before ? `${before}\n\n${agentText(i, bare)}` : agentText(i, bare);
@@ -2046,6 +2047,15 @@ export class Orchestrator {
     if (source === null) return;
     const label = fromKey ? `profile ${this.profileName(fromKey) ?? fromKey}` : source ?? 'angelia';
     this.notes.add(key, this.map.getActive(key)?.id ?? null, text, label);
+  }
+
+  /** May profile `name`'s agent read a posted line from `source`? A peer's (`profile <p>`) only when
+   *  `name` lists `p` in accept_from; every other source, yes. */
+  private peerLineShown(name: string, source: string): boolean {
+    const m = /^profile (.+)$/.exec(source);
+    if (!m) return true;
+    const list = this.cfg.profiles[name]?.accept_from ?? [];
+    return list.includes('*') || list.includes(m[1]);
   }
 
   private profileName(key: string): string | undefined {
