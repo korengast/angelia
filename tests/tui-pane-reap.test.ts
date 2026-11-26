@@ -51,7 +51,9 @@ test('the build a process runs is read through the link it was started by (a nat
   // macOS kills a copy of a system binary that keeps Apple's signature: sign it for this machine.
   if (process.platform === 'darwin') execFileSync('codesign', ['--force', '-s', '-', exe], { stdio: 'ignore' });
   symlinkSync(exe, join(root, 'bin', 'claude'));
-  const child = spawn(join(root, 'bin', 'claude'), ['30'], { stdio: 'ignore' });
+  // Linux runners may ship a multi-call coreutils that picks the tool by argv[0]: name it sleep there.
+  // The build is then read from /proc/<pid>/exe, the file the link points to.
+  const child = spawn(join(root, 'bin', 'claude'), ['30'], { stdio: 'ignore', ...(process.platform === 'linux' ? { argv0: 'sleep' } : {}) });
   const plain = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
   t.after(() => { child.kill('SIGKILL'); plain.kill('SIGKILL'); });
   await new Promise((r) => setTimeout(r, 300));
