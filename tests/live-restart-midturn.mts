@@ -65,27 +65,15 @@ function daemon(name: string) {
 }
 
 const one = daemon('old');
-void one.o.handle(msg('Run the shell command `sleep 12` with the Bash tool three times, one call at a time, never in the background. Then say "done" and repeat word for word any other message you got from me during this turn.'));
-// The sleep runs: the second message waits for its moment, then goes into the turn.
-await sleep(8000);
-void one.o.handle(msg('Second message: the secret word is MANGO.'));
-const into = await until(() => one.log.some((l) => /message went into the running turn/.test(l)), 30_000);
-check(into, 'the second message went into the running turn');
-// A restart in the middle of the turn.
-(one.o as any).cutTurns();
-await one.o.shutdown();
-one.stop();
-check(existsSync(join(state, ADOPT_TURNS)), 'the running turn was kept for the next daemon');
-const oldSaid = [...one.sent];
-
-const two = daemon('new');
+let two: ReturnType<typeof daemon> | undefined;
+let oneDown = false;
 
 /** What shows why a run failed, before the daemon lets go of the pane: kept in <state>/failure/. */
 async function keep(): Promise<void> {
   const out = join(state, 'failure');
   mkdirSync(out, { recursive: true });
   const tmux = (...a: string[]) => { try { return execFileSync('tmux', ['-L', socket, ...a], { encoding: 'utf8' }); } catch (e) { return `(tmux ${a[0]} failed: ${(e as Error).message})`; } };
-  const b = [...((two.o as any).brains as Map<string, any>).values()][0];
+  const b = two ? [...((two.o as any).brains as Map<string, any>).values()][0] : undefined;
   const name: string = b?.name ?? tmux('list-sessions', '-F', '#{session_name}').split('\n')[0];
   writeFileSync(join(out, 'pane.txt'), tmux('capture-pane', '-p', '-t', name, '-S', '-80'));
   const st = b && {
@@ -105,19 +93,43 @@ async function keep(): Promise<void> {
     writeFileSync(join(out, 'transcript-tail.txt'), rows.join('\n') + '\n');
   }
   writeFileSync(join(out, 'log-old.txt'), one.log.join('\n') + '\n');
-  writeFileSync(join(out, 'log-new.txt'), two.log.join('\n') + '\n');
+  writeFileSync(join(out, 'log-new.txt'), (two?.log ?? []).join('\n') + '\n');
   console.log(s(), 'kept for the failure:', out);
   console.log(readFileSync(join(out, 'pane.txt'), 'utf8').split('\n').filter((l) => l.trim()).slice(-25).join('\n'));
   console.log(JSON.stringify(st ?? {}, null, 1).slice(0, 3000));
 }
-const lost = await (two.o as any).restoreTurns();
-check(Array.isArray(lost) && lost.length === 0, 'the next daemon adopted the turn (no cut line)');
-const got = await until(() => two.sent.some((l) => /MANGO/.test(l)), 120_000);
-check(got, 'the turn\'s answer, with the second message\'s word, reached the chat from the new daemon');
-if (failures.length) await keep();
-check(!oldSaid.some((l) => /done|MANGO/i.test(l)), 'the old daemon sent no answer');
-two.stop();
-await two.o.shutdown();
-if (!process.env.LIVE_KEEP) { try { execFileSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' }); } catch { /* gone */ } }
+try {
+  void one.o.handle(msg('Run the shell command `sleep 12` with the Bash tool three times, one call at a time, never in the background. Then say "done" and repeat word for word any other message you got from me during this turn.'));
+  // The sleep runs: the second message waits for its moment, then goes into the turn.
+  await sleep(8000);
+  void one.o.handle(msg('Second message: the secret word is MANGO.'));
+  const into = await until(() => one.log.some((l) => /message went into the running turn/.test(l)), 30_000);
+  check(into, 'the second message went into the running turn');
+  // A restart in the middle of the turn.
+  (one.o as any).cutTurns();
+  await one.o.shutdown();
+  one.stop();
+  oneDown = true;
+  check(existsSync(join(state, ADOPT_TURNS)), 'the running turn was kept for the next daemon');
+  const oldSaid = [...one.sent];
+
+  const next = daemon('new');
+  two = next;
+  const lost = await (next.o as any).restoreTurns();
+  check(Array.isArray(lost) && lost.length === 0, 'the next daemon adopted the turn (no cut line)');
+  const got = await until(() => next.sent.some((l) => /MANGO/.test(l)), 120_000);
+  check(got, 'the turn\'s answer, with the second message\'s word, reached the chat from the new daemon');
+  check(!oldSaid.some((l) => /done|MANGO/i.test(l)), 'the old daemon sent no answer');
+} catch (e) {
+  // A throw is a failure too: kept like one, and the daemons and the tmux server still go.
+  check(false, `the run threw: ${(e as Error).stack ?? String(e)}`);
+} finally {
+  // Kept after the last check, so its failure is kept too, and before the daemon lets go of the pane.
+  if (failures.length) await keep().catch((e) => console.log('keep failed:', (e as Error).message));
+  if (!oneDown) { one.stop(); await one.o.shutdown().catch(() => {}); }
+  two?.stop();
+  await two?.o.shutdown().catch(() => {});
+  if (!process.env.LIVE_KEEP) { try { execFileSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' }); } catch { /* gone */ } }
+}
 console.log(failures.length ? `FAILED: ${failures.join('; ')}` : 'all checks passed', `(${Math.round((Date.now() - t0) / 1000)} s)`);
 process.exit(failures.length ? 1 : 0);

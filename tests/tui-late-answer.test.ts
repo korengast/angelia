@@ -172,8 +172,11 @@ describe('tmux mode: the Stop marker of a turn that was closed without it', { co
     await c.say('run the long check');
     assert.deepEqual(c.sent, [NO_ANSWER_LINE]);
     const p = c.pane();
-    // Someone typed into the cut turn while it ran (2.1.330 writes that as a queued_command attachment).
-    p.rows(ROW.queuedPrompt('and delete the logs'), ROW.result('t1'), ROW.text('Checked, and the logs are gone.'));
+    // Someone typed into the cut turn while it ran (2.1.330 writes that as a queued_command attachment),
+    // and Claude Code took it in after Angelia closed the turn: the row's time is a ms after the close at
+    // the least. Not Date.now(): on a fast machine that is the close's own ms, which is inside the turn's
+    // window, and the marker is then refused for its key instead (CI ubuntu, twice; the next test).
+    p.rows(ROW.queuedPrompt('and delete the logs', 'human', Date.now() + 1), ROW.result('t1'), ROW.text('Checked, and the logs are gone.'));
     p.stop('Checked, and the logs are gone.');
     await until(() => !p.marked());
     await wait(250);
@@ -189,6 +192,22 @@ describe('tmux mode: the Stop marker of a turn that was closed without it', { co
     await wait(250);
     assert.equal(c.sent.length, 2);
     assert.match(c.lines()[1], /late, but the prompt the hook read is not the one Angelia typed; 10 chars/);
+  });
+
+  test('a prompt typed into the cut turn before Angelia closed it: the late marker is refused for its key', { timeout: 18_000 }, async (t) => {
+    const c = await stubChat(); t.after(() => c.o.shutdown());
+    c.onEnter((n, p) => { if (n === 1) p.rows(p.prompt(), ROW.call('t1')); });
+    await c.say('run the long check');
+    assert.deepEqual(c.sent, [NO_ANSWER_LINE]);
+    const p = c.pane();
+    // The same words as above, taken in while the turn was still Angelia's: inside its window, and the
+    // last typed prompt the hook keys is not the one Angelia typed.
+    p.rows(ROW.queuedPrompt('and delete the logs', 'human', p.enteredAt[0] + 1), ROW.result('t1'), ROW.text('Checked, and the logs are gone.'));
+    p.stop('Checked, and the logs are gone.');
+    await until(() => !p.marked());
+    await wait(250);
+    assert.deepEqual(c.sent, [NO_ANSWER_LINE]);
+    assert.match(c.lines()[0], /late, but the prompt the hook read is not the one Angelia typed; 31 chars/);
   });
 
   test('an answer that ends while the next message waits to be typed goes out first, then the turn\'s', { timeout: 18_000 }, async (t) => {
