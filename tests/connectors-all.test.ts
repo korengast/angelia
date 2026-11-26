@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { parse, stringify } from 'yaml';
 import { configNotes, loadConfig } from '../src/instance/config/load.js';
 import { connectorMode, droppedConnectors } from '../src/capabilities/resolve.js';
-import { deniedHash, guardMcpLaunch, launchCheck, mcpLaunch, mcpSettingsFile, planProfile, planText, readGuard, readRecord, RECORD } from '../src/capabilities/compile.js';
+import { deniedHash, deniedMatches, guardMcpLaunch, launchCheck, mcpLaunch, mcpSettingsFile, planProfile, planText, readGuard, readRecord, recordKey, RECORD } from '../src/capabilities/compile.js';
 import { claudeArgv, claudeTerminalLine, claudeTuiArgv, tuiSettings } from '../src/brain/argv.js';
 import { claudeAskArgv } from '../src/brain/ask.js';
 import { exitReason } from '../src/brain/brain.js';
@@ -91,7 +91,10 @@ test('compile, all mode, MCP not strict: no allow list, a deny list of the dropp
   assert.equal(rec.mcpStrict, false);
   assert.equal(rec.connectorsAll, true);
   assert.deepEqual(rec.connectors, [], 'no connector is granted by list');
-  assert.deepEqual(rec.connectorsDenied, [deniedHash(GMAIL)], 'the agent\'s folder holds no dropped address, its hash only');
+  assert.deepEqual(rec.connectorsDenied, [deniedHash(GMAIL, recordKey(r.state))], 'the agent\'s folder holds no dropped address, its keyed hash only');
+  assert.match(rec.connectorsDenied![0], /^hmac:[0-9a-f]{32}$/);
+  // A guess the agent can test without the state folder's key: none.
+  assert.ok(!rec.connectorsDenied!.includes(deniedHash(GMAIL)), 'not the plain hash of the address');
   assert.ok(!readFileSync(join(r.cwd, RECORD), 'utf8').includes('gmailmcp'));
   assert.deepEqual(rec.mcpOwn, ['fx-rates', 'mine']);
   assert.deepEqual(rec.mcpDeny, [], 'not strict: the user-level servers load, as before connectors');
@@ -242,4 +245,28 @@ test('the warning for one connector left out (singular, measured live with a den
   const WARN = 'Warning: claude.ai MCP server blocked by enterprise policy: claude.ai Gmail';
   assert.equal(exitReason(`${WARN}\n`), 'exit');
   assert.equal(exitReason(`not logged in\n${WARN}\n`), 'exit: not logged in');
+});
+
+test('all mode: the record keeps a dropped address as a keyed hash; a record from 0.4.5 to 0.4.8 still starts, and the next compile keys it', () => {
+  const r = rig();
+  r.plan().apply();
+  const key = recordKey(r.state)!;
+  assert.equal(key.length, 32, 'a key of its own in the state folder');
+  assert.deepEqual(r.check(), []);
+  assert.ok(deniedMatches(deniedHash(GMAIL, key), GMAIL, key));
+  assert.ok(!deniedMatches(deniedHash(GMAIL, key), GMAIL), 'a keyed hash says nothing without the key');
+  assert.ok(!deniedMatches(deniedHash(GMAIL, key), DRIVE, key));
+  // The plain hash (0.4.6 to 0.4.8) and the address itself (0.4.5) compare the same: no refusal after an update.
+  for (const old of [deniedHash(GMAIL), GMAIL]) {
+    editJson(join(r.cwd, RECORD), (j) => { j.connectorsDenied = [old]; });
+    assert.deepEqual(r.check(), [], old);
+    const pl = r.plan();
+    assert.ok(pl.changes.includes('~ record: the dropped connectors are kept as keyed hashes (the key stays in the state folder)'), planText(pl));
+    assert.ok(!pl.changes.some((c) => c.includes('loads again') || c.includes('no longer loads')), planText(pl));
+  }
+  r.plan().apply();
+  assert.ok(!r.plan().changes.some((c) => c.startsWith('~ record')), 'keyed: nothing to change');
+  // Another key (or none) cannot vouch for the record: the start is refused until a compile.
+  editJson(join(r.cwd, RECORD), (j) => { j.connectorsDenied = [deniedHash(GMAIL, Buffer.alloc(32, 7))]; });
+  assert.equal(r.check().length, 1);
 });
