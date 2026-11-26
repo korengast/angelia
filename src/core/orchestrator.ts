@@ -26,7 +26,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, notDeliveredLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, LOGIN_LOST_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, RELEASED_LINE, selfCapLine, TMUX_STALLED, TMUX_STALLED_LINE, SELF_ASK_LINE, SELF_ASK_UNTIED_LINE } from './deliver/text.js';
+import { failureLine, notDeliveredLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, LOGIN_LOST_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, RELEASED_LINE, selfCapLine, NOT_RUN, TMUX_STALLED, TMUX_STALLED_LINE, SELF_ASK_LINE, SELF_ASK_UNTIED_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -1385,6 +1385,9 @@ export class Orchestrator {
     }
     // No turn ran for messages typed into the last one (Claude Code took them after all, unseen): nothing to say.
     if (o.midturnFollow && result?.isError && result.reason === 'nothing to follow') return undefined;
+    // None of them was given to the model (no row from their Enter on): each is typed again as a turn of
+    // its own (turn(), intoTurnAgain), which answers it. Nothing to say to the chat before that.
+    if (o.midturnFollow && result?.isError && result.reason === NOT_RUN) return NOT_RUN;
     if (!result || result.isError) {
       // Released while the message waited for the prompt: it was never typed. Every release moves the
       // era on first (clearForHandoff, dropBrain), so this comes before the check for a stop below, or

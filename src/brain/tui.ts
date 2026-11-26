@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent, type SelfPermission, type SelfWork, type UnaskedAnswer } from '../core/types.js';
-import { isLimitText, TMUX_STALLED } from '../core/deliver/text.js';
+import { isLimitText, NOT_RUN, TMUX_STALLED } from '../core/deliver/text.js';
 import { apiErrorReason, apiErrorText, isApiErrorRow } from './api-error.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { blockedShort, deniedConnectorCount, PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
@@ -126,8 +126,12 @@ function processAlive(pid: number): boolean {
 /** How long a turn Claude Code runs for untaken messages waits for its reader (followAbsorbed). */
 const FOLLOW_WAIT_MS = 5000;
 /** A chat message typed into a running turn (absorb): its key and text, when, the turn it went into
- *  (that turn's turnSentAt), and whether the transcript shows the turn took it. */
-export interface Absorbed { key: string; text: string; at: number; turn: number; seen: boolean }
+ *  (that turn's turnSentAt), and whether the transcript shows the turn took it. `offset`: the
+ *  transcript's size at its Enter, when known: where the rows that may give it to the model begin (ranSince). */
+export interface Absorbed { key: string; text: string; at: number; turn: number; seen: boolean; offset?: number }
+/** What a turn typed, for its reader (watch): the key its marker is held to, the path that typed it
+ *  (`turn`, `follow`, '' when none), and the typed text in promptForm ('' for a follow). */
+interface Typed { key: string; by: string; form: string }
 /** A message pressed into a running turn whose take the transcript never confirmed (TuiBrain.unsure).
  *  `turn`: the turnSentAt of the turn it was pressed into, as an Absorbed entry's. */
 interface Unsure { key: string; text: string; transcript: string; offset: number; at: number; turn: number; answered: boolean }
@@ -137,6 +141,10 @@ const CONFIRM_MS = 8000;
 /** The one log line of a box emptied after the Enter with no such row in CONFIRM_MS. */
 export const UNCONFIRMED_LINE = 'tmux: the box emptied after the Enter, but the transcript did not show the message queued; it waits for a turn of its own';
 
+/** The one log line of messages typed into the last turn that it did not take and that no turn ran: no
+ *  row from their Enter on gives them to the model (Claude Code put them back in the box, or dropped
+ *  them). They are typed again as a turn of their own (the orchestrator, NOT_RUN), never lost unsaid. */
+export const NOT_RUN_LINE = 'tmux: a message typed into the last turn was not taken and no turn ran it; it is typed again as a turn of its own';
 /** The text of a typed prompt row's content: a string, or its text blocks joined (skipToPrompt, queuedSince). */
 function promptText(c: unknown): string {
   return typeof c === 'string' ? c : Array.isArray(c) ? c.map((b: { type?: unknown; text?: unknown }) => (b?.type === 'text' ? String(b.text ?? '') : '')).join('\n') : '';
@@ -636,7 +644,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   private outcome?: { taken: number; untaken: number };
   /** Messages the last turn did not take, which Claude Code runs as the next turn: since when, and
    *  their keys, until followAbsorbed reads that turn (closeAbsorbed). */
-  private following?: { since: number; keys: string[]; claimed: boolean; scanFrom: number };
+  private following?: { since: number; keys: string[]; claimed: boolean; scanFrom: number; msgs: Absorbed[] };
   /** While followAbsorbed reads: the keys of the prompts that turn may hold. */
   private followKeys: string[] = [];
 
@@ -1016,7 +1024,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (u && u.transcript === this.transcript && this.queuedSince(u.offset, u.key)) {
       this.emit('log', `tmux: a message typed into the last turn was taken late; it is not typed again${u.answered ? ' (its answer went to the chat already)' : ''} pane=${this.name}`);
       // A turn Claude Code still runs for it by itself is the chat's (followerOf), from its Enter on.
-      if (!u.answered) this.absorbed.push({ key: u.key, text: u.text, at: u.at, turn: 0, seen: false });
+      if (!u.answered) this.absorbed.push({ key: u.key, text: u.text, at: u.at, turn: 0, seen: false, offset: u.offset });
       yield { kind: 'result', text: TAKEN_LATE_LINE, isError: false };
       return;
     }
@@ -1026,6 +1034,8 @@ export class TuiBrain extends EventEmitter implements Brain {
     // An empty capture is a pane that is gone, which paste() reports; a dialog is not a turn.
     if (!this.absorbed.some((a) => !a.seen) && paneBusy(await this.capture(30))) yield { kind: 'notice', text: BUSY_PANE_LINE };
     let sentAt = Date.now();
+    // The key of what this turn typed, made at its Enter: its reader holds the marker to it (watch).
+    let mine: Typed = { key: '', by: 'turn', form: '' };
     const gen = this.gen;
     const left: { over?: UnaskedAnswer } = {};
     const submit = () => {
@@ -1060,6 +1070,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.typedKey = this.tieKey = promptKey(cleanText(text));
       this.typedBy = 'turn';
       this.typedForm = promptForm(cleanText(text));
+      mine = { key: this.typedKey, by: this.typedBy, form: this.typedForm };
     };
     const typed = await this.paste(text, submit, gen);
     if (left.over) yield { kind: 'unasked', ...left.over };
@@ -1075,7 +1086,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       yield { kind: 'result', text: '', isError: true, reason: 'the message could not be typed into the session (no prompt, or Claude Code did not take it)' };
       return;
     }
-    yield* this.watch(sentAt, false, gen, text.trimStart().startsWith('/'));
+    yield* this.watch(sentAt, false, gen, text.trimStart().startsWith('/'), mine);
   }
 
   /**
@@ -1200,7 +1211,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     };
     const took = (): true => {
       this.unsure.delete(id);
-      this.absorbed.push({ key: promptKey(text), text, at: Date.now(), turn: sentAt, seen: false });
+      this.absorbed.push({ key: promptKey(text), text, at: Date.now(), turn: sentAt, seen: false, offset: enterAt });
       this.emit('log', `tmux: a chat message went into the running turn (${text.length} chars) pane=${this.name}`);
       return true;
     };
@@ -1311,6 +1322,24 @@ export class TuiBrain extends EventEmitter implements Brain {
     return false;
   }
 
+  /** The transcript from `offset` on has a row that gives `text` to the model: a queued_command row or a
+   *  typed prompt that holds it (alone, or joined with others), in promptForm. Claude Code's own
+   *  queue-operation rows (it queued it, it took it back) give nothing. Read without moving the reader. */
+  private ranSince(offset: number, text: string): boolean {
+    const want = promptForm(text);
+    if (!want) return true;
+    for (const line of readSlice(this.transcript, offset).split('\n')) {
+      if (!line.includes('queued_command') && !line.includes('"user"')) continue;
+      let row: { type?: unknown; isSidechain?: unknown; attachment?: { type?: unknown; prompt?: unknown }; message?: { content?: unknown } } | null;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (!row || typeof row !== 'object' || row.isSidechain === true) continue;
+      const got = row.type === 'attachment' && row.attachment?.type === 'queued_command' && typeof row.attachment.prompt === 'string' ? row.attachment.prompt
+        : row.type === 'user' ? promptText(row.message?.content) : '';
+      if (got && promptForm(got).includes(want)) return true;
+    }
+    return false;
+  }
+
   /** Clear our text from the input box once the box is on screen with it and no dialog is open, so a
    *  key never reaches a dialog. Text someone else typed is left alone. True when the box is on screen
    *  without our text (nothing to clear). */
@@ -1341,7 +1370,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.absorbed = untaken;
     if (!untaken.length) return;
     // Claude Code joins them into one prompt, one blank line between (measured by the review, 2.1.332).
-    const f = { since: Date.now(), keys: [...untaken.map((a) => a.key), ...(untaken.length > 1 ? [promptKey(untaken.map((a) => a.text).join('\n\n'))] : [])], claimed: false, scanFrom };
+    const f = { since: Date.now(), keys: [...untaken.map((a) => a.key), ...(untaken.length > 1 ? [promptKey(untaken.map((a) => a.text).join('\n\n'))] : [])], claimed: false, scanFrom, msgs: untaken.map((a) => ({ ...a })) };
     this.following = f;
     this.turnSentAt = f.since;
     setTimeout(() => { if (this.following === f && !f.claimed) this.releaseFollow(); }, this.opts.followWaitMs ?? FOLLOW_WAIT_MS).unref();
@@ -1402,9 +1431,20 @@ export class TuiBrain extends EventEmitter implements Brain {
         const pane = await this.capture(30);
         if (!pane && !(await this.sessionAlive())) { this.turnSentAt = undefined; this.recording = false; this.stopBeat(); yield { kind: 'result', text: '', isError: true, reason: 'exit' }; return; }
         idleSince = paneIdle(pane) ? idleSince || Date.now() : 0;
-        if (Date.now() > until || (idleSince && Date.now() - idleSince > (this.opts.quietMs ?? QUIET_MS))) {
-          this.emit('log', `tmux: no turn ran for the messages the last turn did not take pane=${this.name}`);
+        const quiet = !!idleSince && Date.now() - idleSince > (this.opts.quietMs ?? QUIET_MS);
+        if (quiet || Date.now() > until) {
           this.turnSentAt = undefined; this.recording = false; this.stopBeat(); this.startIdle();
+          // Taken after all, in a row not read as theirs: nothing to say. But with no row from their
+          // Enter on that gives them to the model (Claude Code put them back in the box, where the next
+          // paste clears them, or dropped them), they are typed again as a turn of their own (NOT_RUN):
+          // never lost unsaid. Only from an idle pane: a busy one may hold them in Claude Code's queue
+          // still, and typed again they would run twice.
+          if (quiet && f.msgs.length && f.msgs.every((a) => a.offset !== undefined && !this.ranSince(a.offset, a.text))) {
+            this.emit('log', `${NOT_RUN_LINE} (${f.msgs.length} message(s)) pane=${this.name}`);
+            yield { kind: 'result', text: '', isError: true, reason: NOT_RUN };
+            return;
+          }
+          this.emit('log', `tmux: no turn ran for the messages the last turn did not take pane=${this.name}`);
           yield { kind: 'result', text: '', isError: true, reason: 'nothing to follow' };
           return;
         }
@@ -1413,7 +1453,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.openCalls.clear();
       this.from = this.at;
       this.rows = 'open';
-      yield* this.watch(f.since, false, gen, false);
+      yield* this.watch(f.since, false, gen, false, { key: f.keys[0], by: 'follow', form: '' });
     } finally { this.followKeys = []; }
   }
 
@@ -1429,8 +1469,8 @@ export class TuiBrain extends EventEmitter implements Brain {
    * text typed into the box with ours does not get past the check before Enter (boxHoldsOnly). Never
    * for a turn Claude Code ran for several untaken messages (follow): its keys are the check there.
    */
-  private keptOnMiss(m: Marker, sentAt: number): boolean {
-    if (this.typedBy !== 'turn' || this.turnPeer || this.typedForm.length < KEPT_MIN_CHARS || typeof m.prompt_key !== 'string') return false;
+  private keptOnMiss(m: Marker, sentAt: number, typed: Typed): boolean {
+    if (typed.by !== 'turn' || this.turnPeer || typed.form.length < KEPT_MIN_CHARS || typeof m.prompt_key !== 'string') return false;
     // Written at the Enter (measured on 2.1.332); submitPasted may press it three times.
     if (typeof m.prompt_at !== 'number' || m.prompt_at < sentAt || m.prompt_at > sentAt + KEPT_WINDOW_MS) return false;
     for (const line of readSlice(this.transcript, this.from).split('\n')) {
@@ -1441,7 +1481,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       const text = promptText(row.message?.content);
       if (text && promptKey(text) === m.prompt_key) {
         const form = promptForm(text);
-        return form.startsWith(this.typedForm) || form.endsWith(this.typedForm);
+        return form.startsWith(typed.form) || form.endsWith(typed.form);
       }
     }
     return false;
@@ -1555,7 +1595,10 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  answers), and no hourly line. Ends early, as a failed result, once another reader takes the pane
    *  (`gen` moved). `command`: the turn is a slash command typed as is, which the CLI may answer
    *  itself, so an end with no answer is expected. */
-  private async *watch(sentAt: number, background: boolean, gen: number, command = false): AsyncGenerator<BrainEvent> {
+  /** `typed`: what this turn typed, made where it was typed (turn() at its Enter, followAbsorbed for the
+   *  messages it follows): the marker is held to it, never to the brain's latest key, which another path
+   *  may set while this reader runs. Without it (follow, backgroundTurn), the latest key as it stands now. */
+  private async *watch(sentAt: number, background: boolean, gen: number, command = false, typed: Typed = { key: this.typedKey, by: this.typedBy, form: this.typedForm }): AsyncGenerator<BrainEvent> {
     let pending: string | null = null;
     // Relayed requests by id, and those answered in the pane or the app whose outcome the transcript
     // has yet to show.
@@ -1626,18 +1669,22 @@ export class TuiBrain extends EventEmitter implements Brain {
           // Not for a slash command, whose row is not the text typed.
           // But a message of the chat's typed into the last turn, which Claude Code ran as a turn of its
           // own before this one: its answer is the chat's (takeIdle), and this turn waits on.
-          if (m?.at && m.at >= sentAt && this.followerOf(m)?.every((a) => a.turn !== sentAt)) {
+          // A message typed into this very turn counts too when the marker's prompt is not what this turn
+          // typed: Claude Code runs it only after this turn is over (this turn's own marker came and went
+          // unread), so its answer is the chat's, never a key miss to drop.
+          const follower = m?.at && m.at >= sentAt ? this.followerOf(m) : null;
+          if (follower && (follower.every((a) => a.turn !== sentAt) || (typeof m!.prompt_key === 'string' && !!typed.key && m!.prompt_key !== typed.key && !this.followKeys.includes(m!.prompt_key)))) {
             pending = null;
             const a = this.takeIdle(true, failed);
             if (a) yield { kind: 'unasked', ...a };
             failed = false; apiFailed = null;
             continue;
           }
-          if (m?.at && m.at >= sentAt && !command && m.origin === 'prompt' && m.prompts === 1 && typeof m.prompt_key === 'string' && this.typedKey && m.prompt_key !== this.typedKey && !this.followKeys.includes(m.prompt_key)) {
+          if (m?.at && m.at >= sentAt && !command && m.origin === 'prompt' && m.prompts === 1 && typeof m.prompt_key === 'string' && typed.key && m.prompt_key !== typed.key && !this.followKeys.includes(m.prompt_key)) {
             const text = String(m.text ?? '').trim();
             // Both keys' heads and lengths, and which path typed: what differs, never the words.
-            const keys = `typed=${this.typedKey.slice(0, 8)}/${this.typedForm ? this.typedForm.length : '?'} hook=${m.prompt_key.slice(0, 8)}/${typeof m.prompt_len === 'number' ? m.prompt_len : '?'} by=${this.typedBy || '?'}`;
-            if (this.keptOnMiss(m, sentAt)) {
+            const keys = `typed=${typed.key.slice(0, 8)}/${typed.form ? typed.form.length : '?'} hook=${m.prompt_key.slice(0, 8)}/${typeof m.prompt_len === 'number' ? m.prompt_len : '?'} by=${typed.by || '?'}`;
+            if (this.keptOnMiss(m, sentAt, typed)) {
               // The prompt Claude Code ran starts or ends with the message typed, after this turn's Enter: the
               // turn is this message's, with something more in its prompt. Its answer goes to the chat.
               this.emit('log', `${KEY_KEPT_LINE} prompts=1 chars=${text.length} ${keys}: the turn's one typed prompt starts or ends with the typed message, so its answer is delivered pane=${this.name}`);
@@ -1721,7 +1768,7 @@ export class TuiBrain extends EventEmitter implements Brain {
           this.emit('log', `tmux: ${stalls} tmux calls in a row timed out; the turn's reader gives up and the pane is kept pane=${this.name}`);
           over();
           ended('tmux not answering', '');
-          if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: '', key: this.typedKey, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key), peer: this.turnPeer };
+          if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: '', key: typed.key, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key), peer: this.turnPeer };
           yield { kind: 'result', text: '', isError: true, reason: TMUX_STALLED, keep: true };
           return;
         }
@@ -1767,7 +1814,7 @@ export class TuiBrain extends EventEmitter implements Brain {
             ended(how, answer);
             // The Stop marker may still come (a failed read of the screen, a slow hook): then it is this
             // turn's answer, late (takeIdle).
-            if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: answer, key: this.typedKey, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key), peer: this.turnPeer };
+            if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: answer, key: typed.key, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key), peer: this.turnPeer };
             if (!background) this.closeAbsorbed(sentAt, readTo);
             // No answer at all, and not to a slash command: the chat may be told the agent gave none, so
             // keep the screen that read as idle.
