@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator, quoteLookalikes } from '../src/core/orchestrator.js';
-import { ChatNotes, localStamp, sentPreface as preface, SENT_CHARS_PER_CHAT, SENT_PER_CHAT, SENT_PREFACE_HEAD as HEAD, SENT_PREFACE_MAX, SENT_TEXT_MAX } from '../src/core/session/notes.js';
+import { adoptOldNotes, ChatNotes, localStamp, sentPreface as preface, SENT_CHARS_PER_CHAT, SENT_PER_CHAT, SENT_PREFACE_HEAD as HEAD, SENT_PREFACE_MAX, SENT_TEXT_MAX } from '../src/core/session/notes.js';
 import { API_SOCKET, ApiServer, loadOrMintToken, sessionToken, sourceLabel } from '../src/daemon/api/server.js';
 import { PERMISSION_TIMEOUT_LINE, NO_ANSWER_LINE } from '../src/core/deliver/text.js';
 import { apiDeps } from '../src/daemon/api/deps.js';
@@ -334,6 +334,24 @@ test('a permission that timed out and a turn with no answer are recorded as Ange
   const kept = r.notes()['telegram:1'];
   assert.ok(kept.some((n) => n.source === 'angelia' && n.text.startsWith(PERMISSION_TIMEOUT_LINE)), kept.map((n) => n.text).join(' | '));
   assert.ok(kept.some((n) => n.source === 'angelia' && n.text === NO_ANSWER_LINE));
+});
+
+test('the old app-notes.json takes the new name at start, 0600; with both there the new one stays', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-oldnotes-'));
+  const old = join(dir, 'app-notes.json'), path = join(dir, 'posted-lines.json');
+  adoptOldNotes(dir); // neither: nothing made
+  assert.ok(!existsSync(path));
+  new ChatNotes(old).add('telegram:1', null, 'unseen line', 'owner');
+  chmodSync(old, 0o644);
+  adoptOldNotes(dir);
+  assert.ok(!existsSync(old));
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.deepEqual(new ChatNotes(path).takeUnseen('telegram:1').map((n) => n.text), ['unseen line']);
+  const kept = readFileSync(path, 'utf8');
+  writeFileSync(old, '{"version":1,"chats":{}}');
+  adoptOldNotes(dir);
+  assert.ok(!existsSync(old));
+  assert.equal(readFileSync(path, 'utf8'), kept);
 });
 
 test('cli: --source is a flag of send-media; send takes it as free text', () => {

@@ -28,7 +28,8 @@ export const INSTANCE_DIR = process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.a
  *  (the launch guard checks a profile against it). The deny floor (compile.ts) and the media check
  *  (media.ts) both read this list. */
 export const STATE_PRIVATE = {
-  files: ['env', 'api.token', 'sessions.json', 'posted-lines.json'],
+  // app-notes.json: the posted lines' name before 0.4.6, closed for one more version.
+  files: ['env', 'api.token', 'sessions.json', 'posted-lines.json', 'app-notes.json'],
   dirs: ['wa', 'tui', 'compiled'],
 };
 

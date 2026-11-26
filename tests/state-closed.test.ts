@@ -11,7 +11,7 @@ import { prepareAgyStart } from '../src/brain/agy-config.js';
 
 const scratch = () => realpathSync(mkdtempSync(join(tmpdir(), 'angelia-stc-')));
 const put = (f: string, text = 'SECRET') => { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, text); };
-const CLOSED = ['passkeys.json', 'pay-ledger.json', 'secrets/x.env', 'posted-lines.json', 'canary.json', 'looks.json', 'routing.yaml.bak-1', 'sessions.json.bak-1', 'keys/other/k.pem', 'unknown-new.json'];
+const CLOSED = ['passkeys.json', 'pay-ledger.json', 'secrets/x.env', 'posted-lines.json', 'app-notes.json', 'canary.json', 'looks.json', 'routing.yaml.bak-1', 'sessions.json.bak-1', 'keys/other/k.pem', 'unknown-new.json'];
 
 function rig(backend: 'claude-code' | 'codex' | 'pi' | 'grok' | 'agy') {
   const home = scratch(), state = join(home, '.angelia');
@@ -30,7 +30,7 @@ test('state folder closed by default: every entry not open or reached is in ever
     const r = rig(backend);
     const floor = profileFloor(r.cfg, 'a', r.state, r.home).join('\n');
     const has = (rel: string) => floor.includes(`/${rel}`) && (floor.includes(join(r.state, rel)) || floor.includes(`~/.angelia/${rel}`));
-    for (const f of ['passkeys.json', 'pay-ledger.json', 'secrets/**', 'posted-lines.json', 'canary.json', 'looks.json', 'routing.yaml.bak-1', 'sessions.json.bak-1', 'keys/other/**', 'unknown-new.json']) assert.ok(has(f), `${backend}: ${f}`);
+    for (const f of ['passkeys.json', 'pay-ledger.json', 'secrets/**', 'posted-lines.json', 'app-notes.json', 'canary.json', 'looks.json', 'routing.yaml.bak-1', 'sessions.json.bak-1', 'keys/other/**', 'unknown-new.json']) assert.ok(has(f), `${backend}: ${f}`);
     const rules = profileFloor(r.cfg, 'a', r.state, r.home);
     for (const f of ['workspace', 'daemon.log', 'data/sensor', 'keys/mine', 'data', 'keys']) assert.ok(!rules.some((x) => x.endsWith(`.angelia/${f})`) || x.endsWith(`.angelia/${f}/**)`)), `${backend}: ${f} stays open`);
   }

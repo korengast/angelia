@@ -13,6 +13,7 @@ import { trustFolder } from '../brain/grok.js';
 import { locateBin, profileBin } from '../brain/locate.js';
 import { profileEnv, readEnvFile, SESSION_ENV, tableSecrets } from '../core/env.js';
 import { Orchestrator, type Sender } from '../core/orchestrator.js';
+import { adoptOldNotes } from '../core/session/notes.js';
 import { TelegramAdapter } from '../adapters/telegram/adapter.js';
 import { WhatsAppAdapter } from '../adapters/whatsapp/adapter.js';
 import { matchRoute } from '../core/router/match.js';
@@ -90,6 +91,7 @@ export async function runDaemon(configPath: string): Promise<void> {
     if (old) logLine(`daemon.pid named pid ${old}, which is not a running angelia daemon (left by a crash?); replaced`);
   }
   writeFileSync(pidFile, String(process.pid));
+  adoptOldNotes(STATE_DIR, logLine);
   // A warning, not a refusal: refusing would take every chat down, and the fix is the owner's to install.
   const started = nodeStart(), open = nodeFixProblem(process.versions.node, process.execPath);
   if (open) logLine(`WARNING: ${open}. This process decodes what Telegram and WhatsApp send: ${nodeAdvice(started, started !== undefined)}.`);

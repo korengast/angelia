@@ -1,5 +1,5 @@
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 /** A line posted into a chat past the chat's own agent (a job, another profile, the owner's
  *  `angelia send`, Angelia's own): when, the text as the chat saw it, and who posted it
@@ -18,6 +18,19 @@ export const SENT_PER_CHAT = 200;
 export const SENT_TEXT_MAX = 2000;
 /** A chat's lines together: past this many characters the oldest go, whatever their count. */
 export const SENT_CHARS_PER_CHAT = 64_000;
+
+/** At the daemon's start: the file kept as app-notes.json before 0.4.6 takes the new name (0600). When
+ *  both are there the new one stays and the old one is removed. */
+export function adoptOldNotes(stateDir: string, log: (line: string) => void = () => {}): void {
+  const old = join(stateDir, 'app-notes.json'), path = join(stateDir, 'posted-lines.json');
+  try {
+    if (!existsSync(old)) return;
+    if (existsSync(path)) { unlinkSync(old); log('posted lines: removed the old app-notes.json; posted-lines.json is kept'); return; }
+    renameSync(old, path);
+    chmodSync(path, 0o600);
+    log('posted lines: app-notes.json renamed to posted-lines.json');
+  } catch (e) { log(`posted lines: app-notes.json not moved: ${(e as Error).message}`); }
+}
 
 /**
  * The chats' posted lines, in one small file under the state folder (0600). The CLI's transcript
