@@ -244,13 +244,13 @@ describe('a key miss: the line says what differs, and the net keeps an answer th
     const s = rig({ after: () => {} });
     const b = s.brain as any;
     const sentAt = Date.now();
-    b.typedBy = 'turn'; b.typedForm = cleanText(QUOTE_DOT).replace(/\s+/g, ' ').trim(); b.from = 0;
+    const typed = { key: promptKey(QUOTE_DOT), by: 'turn', form: cleanText(QUOTE_DOT).replace(/\s+/g, ' ').trim() };
+    b.from = 0;
     s.rows(ROW.prompt(`${QUOTE_DOT} and mine`, sentAt - 500));
     const m = { at: Date.now(), origin: 'prompt', prompts: 1, prompt_key: hookKey(`${QUOTE_DOT} and mine`), prompt_at: sentAt - 500 };
-    assert.equal(b.keptOnMiss(m, sentAt), false, 'written before the Enter');
-    assert.equal(b.keptOnMiss({ ...m, prompt_at: sentAt + 100 }, sentAt), true, 'the same, after it');
-    b.typedBy = 'follow';
-    assert.equal(b.keptOnMiss({ ...m, prompt_at: sentAt + 100 }, sentAt), false, 'never for a follow');
+    assert.equal(b.keptOnMiss(m, sentAt, typed), false, 'written before the Enter');
+    assert.equal(b.keptOnMiss({ ...m, prompt_at: sentAt + 100 }, sentAt, typed), true, 'the same, after it');
+    assert.equal(b.keptOnMiss({ ...m, prompt_at: sentAt + 100 }, sentAt, { ...typed, by: 'follow' }), false, 'never for a follow');
     await b.stop();
   });
 });
