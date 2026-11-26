@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readlink } from 'node:fs/promises';
 import { versionAtLeast } from './argv.js';
 import { listsTeammates, paneIdle, tmux } from './tmux.js';
 
@@ -72,11 +73,19 @@ export async function paneBuild(pid: number, table?: Promise<string>): Promise<s
   // The pane's own process first (the CLI, exec'd by env), then what it started.
   const mine = [...procs.filter((m) => Number(m[1]) === pid), ...procs.filter((m) => Number(m[2]) === pid)];
   for (const m of mine) {
-    const exe = buildIn(m[3]) ? '' : (await run('lsof', ['-a', '-p', m[1], '-d', 'txt', '-Fn'])).split('\n').find((l) => l.startsWith('n'))?.slice(1) ?? '';
+    const exe = buildIn(m[3]) ? '' : await exeOf(m[1]);
     const v = buildIn(m[3]) ?? buildIn(exe);
     if (v) return v;
   }
   return null;
+}
+
+/** The file a process runs. Linux: /proc/<pid>/exe (lsof there may not list a txt row for it); else lsof. */
+async function exeOf(pid: string): Promise<string> {
+  if (process.platform === 'linux') {
+    try { return await readlink(`/proc/${pid}/exe`); } catch { return ''; }
+  }
+  return (await run('lsof', ['-a', '-p', pid, '-d', 'txt', '-Fn'])).split('\n').find((l) => l.startsWith('n'))?.slice(1) ?? '';
 }
 
 /** The build `bin --version` reports, or null. */
