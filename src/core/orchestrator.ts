@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, basename } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { permissionPolicy, type Config, type Profile, type Route } from '../instance/config/schema.js';
@@ -60,6 +60,9 @@ export interface Sender {
   typing?(chat: string, on: boolean): Promise<void>;
   /** The chat's own name (a group's subject), for naming a new profile. */
   chatName?(chat: string): Promise<string | undefined>;
+  /** A text about to go out as a file, with the rewrite the platform gives its messages (a phone a
+   *  WhatsApp group hides). Absent where there is none. */
+  hidePhones?(chat: string, text: string): string;
   /** The request a line was sent for with `ask` is over (answered anywhere, timed out, its turn ended):
    *  the controls under that line go. Absent on an adapter that shows none; never throws. */
   askDone?(chat: string, id: string): void;
@@ -1324,7 +1327,8 @@ export class Orchestrator {
             } else {
               // tmux mode: the hook stepped aside before the answer landed, so Claude asks in its own dialog.
               this.log(`permission auto-deny failed key=${key} tool=${e.tool}: no hook waits for it`);
-              if (!app) await this.reply(i, AUTO_DENY_FAILED_LINE).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
+              // An app turn's line goes to the client only (reply), which would else hear nothing.
+              await this.reply(i, AUTO_DENY_FAILED_LINE).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
             }
             continue;
           }
@@ -2188,9 +2192,9 @@ export class Orchestrator {
       const dir = mkdtempSync(join(tmpdir(), 'angelia-answer-'));
       const path = join(dir, 'answer.md');
       try {
-        writeFileSync(path, whole, { mode: 0o600 });
+        writeFileSync(path, sender.hidePhones?.(i.chat, whole) ?? whole, { mode: 0o600 });
         await this.rateFor(i.platform).acquire(true);
-        await this.retrySend(() => sender.sendMedia!(i.chat, { path, kind: 'document', mime: 'text/markdown', bytes: Buffer.byteLength(whole), fileName: 'answer.md' }, i.thread));
+        await this.retrySend(() => sender.sendMedia!(i.chat, { path, kind: 'document', mime: 'text/markdown', bytes: statSync(path).size, fileName: 'answer.md' }, i.thread));
       } finally { rmSync(dir, { recursive: true, force: true }); }
     }
     // Delivered: an answer this chat could not get earlier goes out now, once, as the agent's words

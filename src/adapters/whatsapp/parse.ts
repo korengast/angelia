@@ -131,7 +131,7 @@ export const MAX_MENTIONS = 5;
  *  digit (an email address, `a@1555…`), nor inside a URL (`x.com/@1555…`, `?u=@1555…`, `#@1555…`) or a
  *  domain (`@1555….example.com`). A non-Latin letter may come right before it, as a Hebrew prefix
  *  does (`ל@1555…`), and `_` on either side (WhatsApp italics). */
-const TOKEN = /(?<![\p{Script=Latin}\p{N}/.@=?#])@\+?(\d{5,20})(?![\p{L}\p{N}]|\.[\p{L}\p{N}_])/gu;
+const TOKEN = /(?<![\p{Script=Latin}\p{N}/.@=?#&;])@\+?(\d{5,20})(?![\p{L}\p{N}]|\.[\p{L}\p{N}_])/gu;
 /** Code is shown as written: a fenced block (an unclosed one runs to the end) or an inline span. */
 const CODE = /```[\s\S]*?(?:```|$)|`[^`\n]+`/g;
 
@@ -149,7 +149,7 @@ export interface MentionOptions {
  *   token past the cap). It needs no member list and no network.
  * - The tag, only with `members` (the caller wants tags and has the list): a phone or lid of a member
  *   becomes a mention, written as the member's `id`, the form WhatsApp renders as their name. At most
- *   `max` distinct members; the others are named as written (or by lid), untagged, and `capped`
+ *   `max` distinct members; the others are named as written (or by their lid), untagged, and `capped`
  *   counts those members.
  * A number that is no member is left as written. Text inside backticks is never touched.
  */
@@ -163,7 +163,10 @@ export function withMentions(text: string, members: Participant[] | undefined, o
     const jid = byNum.get(n) ?? (lid ? byNum.get(lid) : undefined);
     if (jid && (mentions.has(jid) || mentions.size < max)) { mentions.add(jid); return `@${bareId(jid)}`; }
     if (jid) capped.add(jid);
-    return lid ? `@${lid}` : tok;
+    if (lid) return `@${lid}`;
+    // A capped member written as a phone whose id is another (a lid), with no mapping known: by the id,
+    // since the group may hide the phone.
+    return jid && bareId(jid) !== n ? `@${bareId(jid)}` : tok;
   });
   let out = '', at = 0;
   for (const c of text.matchAll(CODE)) {

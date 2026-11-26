@@ -25,6 +25,8 @@ const BEARER = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
  *  The key may start only after a character outside its own class: \b would try again at every `-` of
  *  a long dashed value, which took 98 ms on an 18 kB line. */
 const PAIR = /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key|authorization|auth[_-]?token|cookie)[A-Za-z0-9_-]*["']?\s*[=:]\s*["']?)([^\s"']{8,})/gi;
+/** A key that names where a secret is kept (`api_key_file=/etc/key`), not the secret: its path stays. */
+const FILE_KEY = /[_-](?:file|path|dir)["']?\s*[=:]\s*["']?$/i;
 /** Past this a line is cut before the regexes run: a log line is short, and a dump that is not stays
  *  cheap to mask. */
 const MAX_LINE = 2000;
@@ -35,6 +37,6 @@ export function redactLog(line: string): string {
   let out = line.length > MAX_LINE ? `${line.slice(0, MAX_LINE)} … (line cut at ${MAX_LINE} characters)` : line;
   for (const re of SHAPES) out = out.replace(re, MASK);
   out = out.replace(BEARER, `$1${MASK}`);
-  out = out.replace(PAIR, `$1${MASK}`);
+  out = out.replace(PAIR, (all, key: string, value: string) => (FILE_KEY.test(key) && /^[~.]?\//.test(value) ? all : `${key}${MASK}`));
   return out;
 }
