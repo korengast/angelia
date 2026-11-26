@@ -20,7 +20,7 @@ import { askedBy } from '../core/screen-asks.js';
 import { tuiBlockedConnectors } from './connectors-check.js';
 
 export { transcriptPath } from './transcripts.js';
-export { buildIn, paneBuild, paneEndReason, reapPanes, sweepPanes, type IdlePane } from './tui-panes.js';
+export { buildIn, paneActivity, paneBuild, paneEndReason, reapPanes, sweepPanes, type IdlePane } from './tui-panes.js';
 
 const HOOK = fileURLToPath(new URL('../../scripts/tui-stop-hook.mjs', import.meta.url));
 const PERMISSION_HOOK = fileURLToPath(new URL('../../scripts/tui-permission-hook.mjs', import.meta.url));

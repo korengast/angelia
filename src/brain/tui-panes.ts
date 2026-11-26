@@ -33,7 +33,19 @@ export function buildIn(s: string): string | null {
   return /\bclaude\/versions\/(\d+\.\d+\.\d+)(?=$|[/\s])/.exec(s)?.[1] ?? null;
 }
 
-/** Why an idle pane is ended, or null to keep it. `activity`: tmux's `session_activity`, in epoch
+/**
+ * Each session on Angelia's tmux server: when its window last saw input or output, in epoch seconds,
+ * and its pane's process. `window_activity`, not `session_activity`: on tmux 3.7c the session's stays
+ * at the time it was made, through send-keys, paste-buffer and pane output, so "idle 12h" would mean
+ * "made 12h ago" (measured 2026-11-26). Undefined when tmux could not be read.
+ */
+export async function paneActivity(env: NodeJS.ProcessEnv): Promise<Map<string, { activity: number; pid: number }> | undefined> {
+  const list = await tmux(['list-sessions', '-F', '#{session_name}\t#{window_activity}\t#{pane_pid}'], { env });
+  if (list.code !== 0) return undefined;
+  return new Map(list.out.split('\n').filter(Boolean).map((l) => { const [n, a, p] = l.split('\t'); return [n, { activity: Number(a) || 0, pid: Number(p) || 0 }] as const; }));
+}
+
+/** Why an idle pane is ended, or null to keep it. `activity`: tmux's `window_activity`, in epoch
  *  seconds. `running` / `installed`: the builds, when both could be read; compared by number, so
  *  2.1.310 is newer than 2.1.287. */
 export function paneEndReason(o: { activity: number; now: number; idleHours: number; running: string | null; installed: string | null }): string | null {
@@ -80,9 +92,8 @@ export async function reapPanes(panes: IdlePane[], env: NodeJS.ProcessEnv, o: {
   build?: (pid: number) => Promise<string | null>; installed?: (bin: string) => Promise<string | null>;
 }): Promise<{ name: string; key: string; why: string }[]> {
   if (!panes.length) return [];
-  const list = await tmux(['list-sessions', '-F', '#{session_name}\t#{session_activity}\t#{pane_pid}'], { env });
-  if (list.code !== 0) return [];
-  const live = new Map(list.out.split('\n').filter(Boolean).map((l) => { const [n, a, p] = l.split('\t'); return [n, { activity: Number(a) || 0, pid: Number(p) || 0 }] as const; }));
+  const live = await paneActivity(env);
+  if (!live) return [];
   const builds = new Map<string, Promise<string | null>>(); // one --version per CLI per sweep
   const installed = (bin: string) => { let v = builds.get(bin); if (!v) builds.set(bin, v = (o.installed ?? ((b) => installedBuild(b, env)))(bin)); return v; };
   let table: Promise<string> | undefined; // one process list per sweep, read only when a build is asked

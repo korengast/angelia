@@ -60,8 +60,9 @@ warm between turns, background tasks outlive a turn, and slash commands behave a
 - **Panes that never end.** The idle reap (`idle_exit_minutes`) only parks a pane, and the orphan
   sweep spares every parked pane and every chat's active session, so panes piled up: 19 of them on
   9 Claude Code builds, some idle three weeks, whose MCP servers filled swap (2026-10-24). Mitigation:
-  a parked or active pane that no brain holds is ended once tmux saw no activity in it for
-  `pane_idle_hours` (default 12), or at once when it runs an older Claude Code than the one
+  a parked or active pane that no brain holds is ended once its tmux window saw no input or output
+  for `pane_idle_hours` (default 12; tmux's `window_activity`, since `session_activity` stays at the
+  time the session was made, measured on tmux 3.7c), or at once when it runs an older Claude Code than the one
   installed (the build read from its process, `…/claude/versions/<x.y.z>`; not read, only the hours
   count). Only a pane idle on screen goes, never mid-turn, with a dialog open or with a background
   task or teammate listed or open, and the next message starts it again with `--resume`, so the conversation stays.

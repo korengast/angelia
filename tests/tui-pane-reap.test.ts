@@ -58,6 +58,23 @@ test('the build a process runs is read through the link it was started by (a nat
   assert.equal(await paneBuild(plain.pid!), null, 'nothing from a versions folder');
 });
 
+test('idle time is the window\'s last input or output as tmux reports it, not the session\'s creation', { skip: !hasTmux && 'no tmux', timeout: 20_000 }, async (t) => {
+  const { paneActivity } = await import('../src/brain/tui.js');
+  t.after(() => { try { tmux('kill-server'); } catch { /* already gone */ } });
+  // Output two seconds in, then typed keys a second later; neither moves session_activity on tmux 3.7c.
+  tmux('new-session', '-d', '-s', 'angelia-x-actv0001', 'sh', '-c', 'sleep 2; echo out; cat');
+  const made = Number(tmux('list-sessions', '-F', '#{session_created}'));
+  await new Promise((r) => setTimeout(r, 2600));
+  const out = (await paneActivity(process.env))!.get('angelia-x-actv0001')!;
+  assert.ok(out.activity >= made + 2, `pane output counts: made ${made}, activity ${out.activity}`);
+  assert.ok(out.pid > 0);
+  await new Promise((r) => setTimeout(r, 1100));
+  tmux('send-keys', '-t', 'angelia-x-actv0001', 'x');
+  await new Promise((r) => setTimeout(r, 300));
+  const typed = (await paneActivity(process.env))!.get('angelia-x-actv0001')!;
+  assert.ok(typed.activity > out.activity, `typed keys count: ${out.activity} -> ${typed.activity}`);
+});
+
 test('the pane reap ends a pane idle for hours or on an older build, never a busy one, one with a dialog, or one a chat took meanwhile', { skip: !hasTmux && 'no tmux', timeout: 30_000 }, async (t) => {
   const { reapPanes } = await import('../src/brain/tui.js');
   t.after(() => { try { tmux('kill-server'); } catch { /* already gone */ } });
