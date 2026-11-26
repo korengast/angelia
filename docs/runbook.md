@@ -230,7 +230,7 @@ Angelia typed`.
 **A message from the agent that nobody asked for (tui profiles).** A background task or a subagent
 that a turn of the chat started ended, or a teammate such a turn spawned (the Agent tool with a
 name) sent the agent a message; Claude Code woke the agent, and Angelia sent what the agent said: `self-started answer delivered key=<chat> chars=<n>`. At most 6 an hour per chat for tasks' ends, and
-30 an hour for teammates' messages (counted apart; a teammate's idle note counts in neither); then the
+30 an hour for teammates' messages (counted apart; a teammate's idle note is among them); then the
 chat hears once that more are held back (`reason=hourly-limit`), and those are not kept. To stop a
 loop, `/stop` or `/new` in the chat ends the session and its tasks. The count is kept in the
 daemon's memory, so a restart starts it again; a Stop marker on disk when the daemon restarts is

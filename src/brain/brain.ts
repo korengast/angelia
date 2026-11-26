@@ -42,6 +42,12 @@ export interface BrainOptions {
   settingsHome?: string;
   /** tmux mode: how often the Stop marker is looked for between turns (tui.ts: IDLE_POLL_MS). Tests shorten it. */
   idlePollMs?: number;
+  /** Print-mode Claude: how long after the spawn the blocked connectors are counted (claude.ts:
+   *  BLOCKED_CHECK_MS). Tests shorten it. */
+  blockedCheckMs?: number;
+  /** tmux-mode Claude: how long one `claude mcp list` of the connector check may take
+   *  (connectors-check.ts: MCP_LIST_TIMEOUT_MS). Tests shorten it. */
+  mcpListTimeoutMs?: number;
   /** The agent's environment: no secret except the ones its profile was given (core/env.ts). */
   env?: NodeJS.ProcessEnv;
   /** tmux mode: the environment of Angelia's tmux server, which every profile's panes share. No
@@ -155,7 +161,10 @@ export interface Brain extends EventEmitter {
   /** tmux mode: the key of what was typed for the turn read now, carried through a restart so that
    *  turn's permission requests are still held to it (TuiBrain.ofThisTurn). */
   turnKey?(): string | undefined;
-  restoreTurnKey?(key: unknown): void;
+  turnKeys?(): string[] | undefined;
+  restoreTurnKey?(key: unknown, keys?: unknown): void;
+  /** tmux mode: the named teammates spawned in this session and still open: its pane is not reaped. */
+  openTeammateCount?(): number;
   /** A restarted daemon takes back a session it had sent to the background, or whose turn the restart
    *  cut off from its reader (then `follow` reads it for the chat). False: it is gone. */
   adopt?(turnSentAt: number): Promise<boolean>;
@@ -302,9 +311,42 @@ process.on('exit', () => { for (const g of groups) try { process.kill(-g, 'SIGKI
 /**
  * stderr lines a healthy CLI prints, never a reason it died. Claude Code 2.1.332 prints the first at
  * every start of a profile given a connector (the allow list leaves the account's other connectors
- * out): "Warning: claude.ai MCP servers blocked by enterprise policy: claude.ai Google Drive, ...".
+ * out): "Warning: claude.ai MCP servers blocked by enterprise policy: claude.ai Google Drive, ...", and
+ * with one connector left out (a deny list of one, connectors: all) "MCP server blocked" (measured).
  */
-export const BENIGN_STDERR = [/^Warning: claude\.ai MCP servers blocked by enterprise policy:/];
+export const BENIGN_STDERR = [/^Warning: claude\.ai MCP servers? blocked by enterprise policy:/];
+
+/**
+ * The connectors one such line names as blocked, as Claude Code 2.1.332 prints it (its template, read
+ * in the binary: "Warning: " + "claude.ai MCP server" or "servers" + " blocked by enterprise policy: "
+ * + the names, joined by ", "): ["claude.ai Gmail", ...]. None for any other line.
+ */
+export function blockedConnectorNames(line: string): string[] {
+  const m = /^Warning: claude\.ai MCP servers? blocked by enterprise policy:\s*(.*)$/.exec(line.trim());
+  return m ? m[1].split(/,\s*/).map((n) => n.trim()).filter(Boolean) : [];
+}
+
+/**
+ * The connectors a launch blocks in `connectors: all` (allLaunch): the serverUrl entries of its deny
+ * list, when it has no allow list. Zero for any other launch: a granted profile's allow list blocks
+ * every other connector of the account, so its warning names more than Angelia dropped.
+ */
+export function deniedConnectorCount(settings: Record<string, unknown>): number {
+  if ('allowedMcpServers' in settings || !Array.isArray(settings.deniedMcpServers)) return 0;
+  return new Set((settings.deniedMcpServers as unknown[]).flatMap((e) => (e && typeof e === 'object' && typeof (e as { serverUrl?: unknown }).serverUrl === 'string' ? [(e as { serverUrl: string }).serverUrl] : []))).size;
+}
+
+/**
+ * The daemon's check of a deny list by address (connectors: all), which matches nothing when a pattern
+ * is wrong or a connector moved, and so fails open. Undefined when the start blocked at least as many
+ * connectors as it drops; else the log's warning. Not proof either way: a dropped connector the
+ * account does not have (never connected, or disconnected in the Claude app) is no line either, and
+ * one pattern that matches two connectors gives two names.
+ */
+export function blockedShort(denied: number, blocked: string[]): string | undefined {
+  if (!denied || blocked.length >= denied) return undefined;
+  return `connectors: all: this start dropped ${denied} connector${denied === 1 ? '' : 's'} by address, but Claude Code named ${blocked.length} as blocked${blocked.length ? ` (${blocked.join(', ')})` : ''}: a dropped connector may be loading (a wrong address in the table, or one the Claude app changed), or the account does not have it, or its connector list did not load`;
+}
 
 /**
  * Why the child died, for the log and for the retry decision. Always starts with `exit`, because
@@ -359,15 +401,23 @@ export function wireChild(child: import('node:child_process').ChildProcessWithou
   exit(code: number | null, signal: NodeJS.Signals | null): void;
   failure(text: string, from: 'error' | 'stderr'): void;
   line(obj: any): void;
+  /** Each benign stderr line (BENIGN_STDERR), trimmed: the connectors it names as blocked are counted. */
+  benign?(line: string): void;
 }): void {
   trackGroup(child);
   let failure = '';
   child.on('exit', w.exit);
   child.on('error', (err) => { failure = err.message; w.failure(failure, 'error'); w.exit(null, null); });
   child.stdin.on('error', () => {});
+  // Whole lines for `benign`: a chunk may end inside one.
+  let part = '';
+  const benign = (l: string) => { if (BENIGN_STDERR.some((re) => re.test(l.trim()))) w.benign?.(l.trim()); };
+  child.stderr.on('end', () => { if (part) benign(part); part = ''; });
   child.stderr.on('data', (b: Buffer) => {
+    const chunk = b.toString('utf8');
+    if (w.benign) { const lines = (part + chunk).split('\n'); part = lines.pop() ?? ''; lines.forEach(benign); }
     // A line a healthy CLI prints (BENIGN_STDERR) is no failure text: kept, it could be the reason given.
-    const text = b.toString('utf8').split('\n').filter((l) => !BENIGN_STDERR.some((re) => re.test(l.trim()))).join('\n');
+    const text = chunk.split('\n').filter((l) => !BENIGN_STDERR.some((re) => re.test(l.trim()))).join('\n');
     if (!text) return;
     failure = (failure + text).slice(-400); w.failure(failure, 'stderr');
   });

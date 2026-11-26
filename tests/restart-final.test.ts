@@ -17,7 +17,7 @@ process.env.ANGELIA_TMUX_SOCKET = `angelia-test-restart-final-${process.pid}`;
 
 const { Config } = await import('../src/instance/config/schema.js');
 const { Orchestrator } = await import('../src/core/orchestrator.js');
-const { ADOPT_TURNS, writeAdoptTurns } = await import('../src/core/cut-turns.js');
+const { ADOPT_TURNS, CUT_TURNS, writeAdoptTurns } = await import('../src/core/cut-turns.js');
 const { DeferredRestart } = await import('../src/daemon/deferred-restart.js');
 const { tmux } = await import('../src/brain/tmux.js');
 const { TMUX_STALLED_LINE } = await import('../src/core/deliver/text.js');
@@ -143,6 +143,7 @@ test('a permission answer that comes as the daemon stops is not carried as a cha
   assert.deepEqual(await o.restoreTurns(() => {}), []);
   // The chat has a request open: a yes or no answered it, and the next daemon asks again.
   o.asks.set(KEY, new Map([['1a2b3c4d-0000', { id: '1a2b3c4d-0000', tool: 'Bash', preview: 'ls', at: new Date().toISOString() }]]));
+  (b as any).hasPendingPermission = (id: string) => id === '1a2b3c4d-0000';
   o.cutTurns();
   await o.handle(msg('yes 1a2b3c4d'));
   await o.handle(msg('no'));
@@ -176,7 +177,8 @@ test('a message for an idle chat while the stop settles: held until the cut, the
   await late;
   o.brains.delete('telegram:2');
   assert.equal(one.pane().enters, 1, 'not typed after the cut either');
-  assert.ok(one.log.some((l) => l === `shutdown: a message that came as the daemon stops is not run key=${one.key}`), one.log.join('\n'));
+  assert.ok(one.log.some((l) => l === `shutdown: a message that came as the daemon stops is not run; its chat is told by the next daemon key=${one.key}`), one.log.join('\n'));
+  assert.ok(JSON.parse(readFileSync(join(one.stateDir, CUT_TURNS), 'utf8')).keys.includes(one.key), 'the next daemon tells the chat');
   assert.deepEqual(one.sent, ['Hi.']);
   await one.o.shutdown();
 });
@@ -244,6 +246,20 @@ test('tmux calls have a time limit: a client that hangs is killed and the call f
   const quick = join(dirname(bin), 'quick');
   writeFileSync(quick, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   assert.equal((await tmux(['has-session', '-t', 'x'], { bin: quick })).timedOut, undefined);
+});
+
+test('a request that is over does not swallow a bare yes at the stop', async () => {
+  const { o } = rig();
+  const b = fakeBrain();
+  stubAdopt(o, async () => { o.brains.set(KEY, b); return b; });
+  writeAdoptTurns(state, [{ key: KEY, session: o.map.getActive(KEY).id, since: 1, inbound: msg('the turn') }]);
+  assert.deepEqual(await o.restoreTurns(() => {}), []);
+  o.asks.set(KEY, new Map([['1a2b3c4d-0000', { id: '1a2b3c4d-0000', tool: 'Bash', preview: 'ls', at: new Date().toISOString() }]]));
+  (b as any).hasPendingPermission = () => false;
+  o.cutTurns();
+  await o.handle(msg('yes'));
+  assert.deepEqual(JSON.parse(readFileSync(join(state, ADOPT_TURNS), 'utf8')).turns[0].waiting.map((w: { inbound: Inbound }) => w.inbound.text), ['yes']);
+  await o.shutdown();
 });
 
 test('a second stop before the adopted turn started: it is written back, with what waited and what came after, and nothing that is not a chat message', async () => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { effectiveTable } from '../instance/accepted.js';
-import { loadConfig, ConfigError, configWarnings } from '../instance/config/load.js';
+import { loadConfig, ConfigError, configWarnings, configNotes } from '../instance/config/load.js';
 import { runDaemon, readStatus, STATE_DIR } from '../daemon/daemon.js';
 import { configPath, describeInstance, workspaceDir } from '../instance/instance.js';
 import { join, resolve } from 'node:path';
@@ -62,6 +62,7 @@ try {
         const { pending } = effectiveTable(cfg, STATE_DIR);
         if (pending.length) warnings.push(`${pending.length} change(s) to the table not accepted yet: the daemon runs on the accepted table until /restart confirm or angelia accept (angelia accept --check lists them)`);
       } catch (e) { warnings.push(`the accepted table cannot be read: ${(e as Error).message}`); }
+      for (const n of configNotes(cfg)) console.log(`note: ${n}`);
       for (const w of warnings) console.log(`warning: ${w}`);
       console.log(`ok: ${Object.keys(cfg.profiles).length} profiles, ${cfg.routes.length} routes${warnings.length ? `, ${warnings.length} warning(s)` : ''}`);
       break;

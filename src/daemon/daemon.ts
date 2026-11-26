@@ -309,7 +309,7 @@ export async function runDaemon(configPath: string): Promise<void> {
   if (note) whenUp(note.key, () => void orch.notify(note.key, `Angelia is back up (pid ${process.pid}).`).catch((e) => logLine(`restart note: ${(e as Error).message}`)));
   // Chats whose turn the last shutdown cut (core/cut-turns.ts): one line each, so nobody waits on an answer that is not coming.
   for (const key of new Set([...cutBefore, ...lost])) {
-    if (key === note?.key) continue; // that chat asked for the restart and is told it is done
+    if (key === note?.key) { toldCut.add(key); continue; } // that chat asked for the restart and is told it is done
     whenUp(key, () => { toldCut.add(key); void orch.notify(key, CUT_LINE).catch((e) => logLine(`cut turn note: ${(e as Error).message}`)); });
   }
   const deferTimer = setInterval(() => deferred.tick(), 2000);
@@ -330,7 +330,7 @@ export async function runDaemon(configPath: string): Promise<void> {
     clearInterval(statusTimer); clearInterval(reapTimer); clearInterval(deferTimer); clearInterval(dialogTimer);
     try {
       // The chats with a turn running, for the next daemon to tell: before anything that can hang.
-      await orch.beforeStop();
+      await orch.beforeStop(owedCut());
       await Promise.allSettled(adapters.map((a) => a.stop()));
       await orch.shutdown();
       try { unlinkSync(pidFile); } catch {}

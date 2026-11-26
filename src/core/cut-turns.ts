@@ -48,8 +48,9 @@ export interface AdoptWaiting { inbound: Inbound; bare: boolean }
  *  the brain's own record of them (TuiBrain.midturnState). The next daemon types nothing more into an
  *  adopted turn (its reader is a follow, which takes no messages): what the chat sends meanwhile runs as
  *  turns of their own, after it. `typedKey`: the key of what the turn typed (TuiBrain.turnKey), so its
- *  permission requests are still held to it. */
-export interface AdoptTurn { key: string; session: string; since: number; inbound: Inbound; waiting?: AdoptWaiting[]; joined?: { i: Inbound; turn: string }[]; absorbed?: unknown[]; typedKey?: string }
+ *  permission requests are still held to it. `typedKeys`: every key, for a turn Claude Code ran for
+ *  several messages (TuiBrain.turnKeys). */
+export interface AdoptTurn { key: string; session: string; since: number; inbound: Inbound; waiting?: AdoptWaiting[]; joined?: { i: Inbound; turn: string }[]; absorbed?: unknown[]; typedKey?: string; typedKeys?: string[] }
 
 export function writeAdoptTurns(stateDir: string, turns: AdoptTurn[]): void {
   const path = join(stateDir, ADOPT_TURNS);

@@ -72,8 +72,8 @@ warm between turns, background tasks outlive a turn, and slash commands behave a
   it names was started in a turn Angelia typed, at most 6 an hour per chat; the same for a named
   teammate's message (2.1.332: a user row with no origin, `rowSource: recorded`, the line "Another
   Claude session sent a message:", then `<teammate-message teammate_id="<name>">`) when that teammate
-  was spawned in such a turn, or in a turn such a message started; 30 an hour, counted apart, and a
-  teammate's idle note not counted. A turn a person typed or typed into, a prompt the
+  was spawned in such a turn, or in a turn such a message started; 30 an hour, counted apart, a
+  teammate's idle note among them. A turn a person typed or typed into, a prompt the
   session scheduled, a teammate the owner spawned, or a turn the hook cannot place, is not.
 
 - **A message that comes while a turn runs.** It waited in Angelia's queue until the turn ended,

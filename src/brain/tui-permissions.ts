@@ -173,7 +173,7 @@ function joinedOf(v: unknown): JoinedRow {
  *  words, at most 20. Anything else is no list, and ties the request to nothing. */
 function words(v: unknown): string[] | undefined {
   if (!Array.isArray(v) || !v.length || v.length > 20) return undefined;
-  return v.every((x) => typeof x === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(x)) ? v as string[] : undefined;
+  return v.every((x) => typeof x === 'string' && /^[A-Za-z0-9_.-]{1,100}(@[^"\s]{0,128})?$/.test(x)) ? v as string[] : undefined;
 }
 
 /** What Claude Code writes as the result of a tool use a person refused in its dialog (No or Esc).

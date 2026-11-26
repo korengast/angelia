@@ -3,10 +3,14 @@ import { EventEmitter } from 'node:events';
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainEvent } from '../core/types.js';
 import { claudeArgv, childEnv, versionAtLeast, CLAUDE_ENV, MIN_CLAUDE_VERSION } from './argv.js';
-import { BrainExited, PermissionBook, exitReason, jsonLine, onJsonLines, permissionPreview, stopChild, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, CHILD_GROUP, signalGroup, trackGroup } from './brain.js';
+import { BrainExited, PermissionBook, blockedConnectorNames, blockedShort, deniedConnectorCount, exitReason, jsonLine, permissionPreview, stopChild, wireChild, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, CHILD_GROUP, signalGroup } from './brain.js';
 import { LOST_SESSION_LINE, placeTranscript } from './transcripts.js';
+import { mcpLaunch } from '../capabilities/compile.js';
 
 export { BrainExited, exitReason, type BrainOptions } from './brain.js';
+
+/** How long after the spawn the connectors Claude Code named as blocked are counted (checkBlocked). */
+export const BLOCKED_CHECK_MS = 30_000;
 
 type Line = Record<string, any>;
 
@@ -28,6 +32,11 @@ export class ClaudeBrain extends EventEmitter implements Brain {
   version = '';
   /** Claude Code accepts the id Angelia mints, so the backend id is the session id. */
   backendSessionId?: string;
+  /** connectors: all: how many connectors this launch drops by address, and the ones Claude Code's
+   *  stderr named as blocked (blockedShort, checked once, BLOCKED_CHECK_MS after the spawn). */
+  private deniedConnectors = 0;
+  private blocked: string[] = [];
+  private blockedTimer?: NodeJS.Timeout;
 
   constructor(
     readonly profile: Profile,
@@ -58,32 +67,41 @@ export class ClaudeBrain extends EventEmitter implements Brain {
       }
     }
     const [bin, ...args] = claudeArgv(this.profile, session, this.opts.bin ?? 'claude', this.opts.system, this.opts.mcp);
+    this.deniedConnectors = deniedConnectorCount((this.opts.mcp ?? mcpLaunch(this.profile.cwd)).settings);
     const child = spawn(bin, args, { cwd: this.profile.cwd, env: { ...childEnv(this.opts.env), ...CLAUDE_ENV }, stdio: ['pipe', 'pipe', 'pipe'], ...CHILD_GROUP });
     this.child = child;
-    trackGroup(child);
     const done = (code: number | null, signal: NodeJS.Signals | null) => {
       if (this.exited) return;
       this.exited = true;
+      clearTimeout(this.blockedTimer); // a child gone before the check says nothing about its connectors
       this.permissions.clear();
       this.lines.emit('exit', { code, signal });
       this.emit('exit', { code, signal });
     };
-    child.on('exit', done);
-    // A spawn that never happened at all - no such binary, no permission to execute it - raises
-    // `error` and never `exit`. Without this the turn waits for a line that can never come, and
-    // the queue behind it waits with it.
-    child.on('error', (err) => { this.failure = err.message; done(null, null); });
-    // Writing to a child that has already gone raises EPIPE on the socket, which is an unhandled
-    // error event on the process, which is the daemon.
-    child.stdin.on('error', () => {});
-    // Kept, never logged as it arrives: stderr can carry file paths and message text. Only the tail
-    // is reported, and only when the child dies without an answer, because otherwise a deterministic
-    // failure - not logged in, an unknown flag - is completely invisible.
-    child.stderr.on('data', (b: Buffer) => { this.failure = (this.failure + b.toString('utf8')).slice(-400); });
-    onJsonLines(child.stdout, (obj: Line) => { this.lastOutputAt = Date.now(); this.lines.emit('line', obj); });
+    wireChild(child, {
+      exit: done,
+      failure: (t) => { this.failure = t; },
+      line: (obj: Line) => { this.lastOutputAt = Date.now(); this.lines.emit('line', obj); },
+      benign: (line) => { this.blocked.push(...blockedConnectorNames(line)); },
+    });
+    // Claude Code does not wait for the account's connector list before the first turn (docs/reference.md,
+    // "The first turn of a new session"), so its warning may come after that turn's result: the count
+    // is read once, well after both tries of that request (5 s each) are over.
+    if (this.deniedConnectors) { this.blockedTimer = setTimeout(() => this.checkBlocked(), this.opts.blockedCheckMs ?? BLOCKED_CHECK_MS); this.blockedTimer.unref(); }
     // Without this handshake the CLI never sends can_use_tool over stdio: it silently denies the tool
     // and the model tends to invent a result. Verified against claude 2.1.272.
     this.send({ type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize', hooks: {} } });
+  }
+
+  /** Once per start, while the child runs: a start that named fewer connectors as blocked than it
+   *  drops says so in the log and as `connectors-short`, with the names it blocked. */
+  private checkBlocked(): void {
+    if (this.exited) return;
+    const blocked = [...new Set(this.blocked)];
+    const short = blockedShort(this.deniedConnectors, blocked);
+    if (!short) return;
+    this.emit('log', `warning: ${short}`);
+    this.emit('connectors-short', short, blocked);
   }
 
   /** Returns an error string when the init line proves the child unusable. */

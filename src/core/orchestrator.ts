@@ -94,6 +94,8 @@ export interface OrchestratorOptions {
   stateDir?: string;
   /** Executable per backend, when not the default on PATH (tests, odd installs). */
   bins?: Partial<Record<BackendName, string>>;
+  /** Print-mode Claude: when a start's blocked connectors are counted (BrainOptions.blockedCheckMs). Tests. */
+  blockedCheckMs?: number;
   /** Claude Code's projects folder, for placing transcripts before a resume (brain.ts). `true` means the
    *  real one; absent (tests) means no placement and no fresh start for a lost conversation. */
   transcripts?: true | string;
@@ -202,8 +204,8 @@ const LINES_MAX = 100;
  *  session must not flood a group. */
 const SELF_PER_HOUR = 6;
 /** The same for turns only teammates' messages started (each report a teammate sends the lead): their
- *  own count, as a team of several sends many in an hour. A turn only idle notes started counts in
- *  neither: a teammate sends one when it stops, so they come no faster than teammates are spawned. */
+ *  own count, as a team of several sends many in an hour. A turn only idle notes started counts here
+ *  too: nothing bounds how often a busy team sends them. */
 const TEAMMATE_PER_HOUR = 30;
 /** A sender who is not an owner went over max_in_per_hour: said at most once an hour. */
 export const SENDER_LIMIT_LINE = 'Too many messages. Wait up to one hour, then try again.';
@@ -258,6 +260,11 @@ export class Orchestrator {
   /** One outbound bucket per platform: a busy Telegram chat must not slow WhatsApp down. */
   private rates = new Map<Platform, RateLimiter>();
   private unmatchedNotified = new Map<string, number>();
+  /** The profiles, with the connectors their start named as blocked, whose owner heard that a start
+   *  blocked fewer connectors than it drops (connectorsShort): set once the notice was sent. And the
+   *  ones whose notice is on its way. */
+  private connectorsShortTold = new Set<string>();
+  private connectorsShortSending = new Set<string>();
   /** Drop lines per chat and reason: when the last one was written, and how many were held back since. */
   private drops = new Map<string, { at: number; held: number }>();
   /** Bumped every time a session is deliberately dropped (/stop, /new, /model, a resume). A turn
@@ -306,6 +313,9 @@ export class Orchestrator {
   /** What the last cutTurns wrote for the next daemon: a message that comes in before the adapters stop
    *  joins its chat's entry (atStop). */
   private cutAdopt: AdoptTurn[] = [];
+  /** The cut list this stop wrote, and the chats with a request open as it began (cutTurns, atStop). */
+  private cutKeys: string[] = [];
+  private askedAtStop = new Set<string>();
   /** Messages waiting for a moment in a running turn that a restart took along to the next daemon (cutTurns). */
   private carried = new WeakSet<Inbound>();
   /** Messages queued again because the turn they were typed into failed: never a second time. */
@@ -1009,8 +1019,10 @@ export class Orchestrator {
       ...(profile.backend === 'claude-code' ? { mcp: guardMcpLaunch(this.opts.stateDir ?? join(homedir(), '.angelia'), name, effective.cwd) } : {}),
       // Only a session that may take messages into a running turn gets the PreToolUse hook (intoTurnAllowed).
       midturn: profile.tui && profile.midturn !== false,
+      ...(this.opts.blockedCheckMs !== undefined ? { blockedCheckMs: this.opts.blockedCheckMs } : {}),
     });
     b.on('log', (line: string) => this.log(`${line} key=${key}`));
+    b.on('connectors-short', (text: string, blocked: string[] = []) => this.connectorsShort(name, text, blocked));
     // A prompt nobody answered is denied; the chat hears it, or the turn just seems to go wrong.
     b.on('permission-timeout', (id: string) => {
       this.log(`permission timed out key=${key} id=${id.slice(0, 8)}`);
@@ -1163,9 +1175,16 @@ export class Orchestrator {
     finally {
       if (this.running.get(key) === i) {
         this.running.delete(key);
-        // Requests the turn left open (a /stop, a crash) are gone with it.
-        for (const ask of this.asks.get(key)?.values() ?? []) { this.askOver(key, ask); if (this.posted.has(ask)) this.closed.set(key, Date.now()); }
-        this.asks.delete(key);
+        // Requests the turn left open (a /stop, a crash) are gone with it. One the brain still holds (asked
+        // between turns, its hook waiting) stays: the chat can still answer it.
+        const b = this.brains.get(key), open = this.asks.get(key);
+        for (const [id, ask] of open ?? []) {
+          if (b?.alive && b.hasPendingPermission(id)) continue;
+          open!.delete(id);
+          this.askOver(key, ask);
+          if (this.posted.has(ask)) this.closed.set(key, Date.now());
+        }
+        if (!open?.size) this.asks.delete(key);
       }
       this.lastTurn.set(key, i);
       this.emit(key, { type: 'turn-end', turn, ok: !failed, ...(failed ? { reason: failed } : {}), queued: this.queue.queued(key) });
@@ -1437,8 +1456,8 @@ export class Orchestrator {
    * markers are one, and logs the ones that are not). `late`: the turn was closed without it and the
    * chat was told so, or got only its last line; it goes where that turn's answer went. `self`: the
    * agent was woken by background work a turn of the chat started; it goes to the chat, at most
-   * SELF_PER_HOUR an hour (TEAMMATE_PER_HOUR for teammates' messages; a teammate's idle note counts in
-   * neither). Both are the agent's words, sent as an answer is. Never throws.
+   * SELF_PER_HOUR an hour (TEAMMATE_PER_HOUR for teammates' messages, a teammate's idle note among
+   * them). Both are the agent's words, sent as an answer is. Never throws.
    */
   private async unasked(key: string, a: UnaskedAnswer): Promise<void> {
     const what = a.answer === 'late' ? 'late answer' : a.answer === 'midturn' ? 'mid-turn answer' : 'self-started answer';
@@ -1455,7 +1474,7 @@ export class Orchestrator {
         // typed into a turn came from the chat that turn was for.
         const prev = this.lastTurn.get(key);
         if (prev) to = prev;
-      } else if (!a.idle) {
+      } else {
         const now = Date.now();
         const [book, max] = a.by === 'teammate' ? [this.teammateSent, TEAMMATE_PER_HOUR] : [this.selfSent, SELF_PER_HOUR];
         const sent = book.get(key) ?? { at: [], toldAt: 0 };
@@ -2152,6 +2171,36 @@ export class Orchestrator {
     await this.reply(i, UNMATCHED_LINE);
   }
 
+  /**
+   * A start of a profile in `connectors: all` named fewer connectors as blocked than it drops
+   * (ClaudeBrain.checkBlocked, TuiBrain.checkConnectors; logged there): the owner hears it in a direct
+   * chat of theirs with this profile (ownerDm), which no one else reaches, once per profile and blocked
+   * names while the daemon runs. The once-flag is set after the notice went out, so a notice that
+   * failed is given at the next short start. The line names connectors only, never an address. With no
+   * such chat, the log line is all.
+   */
+  private connectorsShort(name: string, text: string, blocked: string[]): void {
+    const id = `${name}\0${[...blocked].sort().join('\0')}`;
+    if (this.connectorsShortTold.has(id) || this.connectorsShortSending.has(id)) return;
+    const key = this.ownerDm(name);
+    if (!key) { this.log(`connectors note: profile ${name} has no direct chat with an owner to tell`); return; }
+    this.connectorsShortSending.add(id);
+    void this.notify(key, `${text}. Check the addresses with: angelia check-config. Said once until the daemon restarts.`)
+      .then(() => { this.connectorsShortTold.add(id); }, (e) => this.log(`connectors note: ${(e as Error).message}`))
+      .finally(() => this.connectorsShortSending.delete(id));
+  }
+
+  /** A direct chat with one of the instance's or the route's owners that reaches this profile, from the
+   *  chats that have a session. */
+  private ownerDm(name: string): string | undefined {
+    return this.map.keys().find((key) => {
+      const k = parseSessionKey(key);
+      if (isGroupChat(k.platform, k.chat)) return false;
+      const route = matchRoute(this.cfg, k);
+      return route?.profile === name && [...(this.cfg.onboard?.owners ?? []), ...route.owners].map(String).includes(k.chat.replace(/@.*$/, ''));
+    });
+  }
+
   /** `end: false` is "we are done with it for now": a backend that can survive on its own keeps
    *  the session running (and visible in the Claude app) and is reattached on the next message. */
   private async dropBrain(key: string, end = true, restart = false): Promise<void> {
@@ -2202,7 +2251,8 @@ export class Orchestrator {
     for (const [key, b] of this.brains) {
       // A request waiting for the owner (one asked between turns, tmux mode) is work too: reaping would
       // take it from the chat; it times out by itself.
-      if (b.alive && now - b.lastUsedAt > limit && this.queue.queued(key) === 0 && !b.pendingPermissionCount) { this.log(`reap key=${key}`); await this.dropBrain(key, false); }
+      // So is a teammate still at work: letting go of the pane forgets it, and its report stays unread.
+      if (b.alive && now - b.lastUsedAt > limit && this.queue.queued(key) === 0 && !b.pendingPermissionCount && !b.openTeammateCount?.()) { this.log(`reap key=${key}`); await this.dropBrain(key, false); }
     }
   }
 
@@ -2280,7 +2330,7 @@ export class Orchestrator {
    * so cutTurns sees it as typed into the turn, never as one still waiting (the next daemon would run
    * it twice). Then cutTurns.
    */
-  async beforeStop(): Promise<void> {
+  async beforeStop(owed: string[] = []): Promise<void> {
     this.closingDown = true;
     if (!this.stopping) {
       const settling = [...this.brains.values()].map((b) => b.stopAbsorbing?.()).filter((p): p is Promise<void> => !!p);
@@ -2288,7 +2338,7 @@ export class Orchestrator {
       if (settling.length) await Promise.race([Promise.all(settling), new Promise<void>((r) => { timer = setTimeout(r, this.opts.stopAbsorbMs ?? STOP_ABSORB_MS); })]);
       clearTimeout(timer);
     }
-    this.cutTurns();
+    this.cutTurns(owed);
   }
 
   /** `owed`: chats owed the cut line that this daemon has not told yet (daemon.ts, a stop while it
@@ -2303,6 +2353,8 @@ export class Orchestrator {
     this.cutMade();
     this.closingDown = true;
     const state = this.opts.stateDir ?? join(homedir(), '.angelia');
+    // Before any reader is let go of (release() forgets its requests): the chats with a request open now.
+    this.askedAtStop = new Set([...this.asks].filter(([k, m]) => { const b = this.brains.get(k); return [...m.keys()].some((id) => b?.hasPendingPermission(id)); }).map(([k]) => k));
     const told = [...this.running].filter(([, i]) => i.surface !== 'app');
     const isWaiting = (t: unknown): t is AdoptWaiting => !!t && typeof t === 'object' && 'inbound' in t;
     /** The chat messages waiting for `key`, held ones first (they came before what queued behind them);
@@ -2337,9 +2389,9 @@ export class Orchestrator {
       // From here on they are the next daemon's: this turn's end here settles none of them.
       this.intoTurnTaken.delete(key);
       const absorbed = b.midturnState?.();
-      const typedKey = b.turnKey?.();
+      const typedKey = b.turnKey?.(), typedKeys = b.turnKeys?.();
       adopt.push({ key, session: row.id, since: b.turnSentAt, inbound, waiting,
-        ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}), ...(typedKey ? { typedKey } : {}) });
+        ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}), ...(typedKey ? { typedKey } : {}), ...(typedKeys?.length ? { typedKeys } : {}) });
       // The turn's end is quiet here: the chat moved to the next daemon, as after a handoff.
       this.era.set(key, (this.era.get(key) ?? 0) + 1);
       dropRest(key, all);
@@ -2356,8 +2408,8 @@ export class Orchestrator {
       const joined = this.intoTurnTaken.get(key) ?? t.joined;
       this.intoTurnTaken.delete(key);
       const absorbed = b?.midturnState?.() ?? t.absorbed;
-      const typedKey = b?.turnKey?.() ?? t.typedKey;
-      adopt.push({ ...t, waiting, ...(typedKey ? { typedKey } : {}), ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}) });
+      const typedKey = b?.turnKey?.() ?? t.typedKey, typedKeys = b?.turnKeys?.() ?? t.typedKeys;
+      adopt.push({ ...t, waiting, ...(typedKey ? { typedKey } : {}), ...(typedKeys?.length ? { typedKeys } : {}), ...(joined?.length ? { joined } : {}), ...(absorbed?.length ? { absorbed } : {}) });
       this.era.set(key, (this.era.get(key) ?? 0) + 1);
       dropRest(key, all);
       if (b?.release) void b.release({ restart: true });
@@ -2377,7 +2429,8 @@ export class Orchestrator {
       if (typed) this.log(`shutdown: ${typed} message(s) typed into a turn that was not adopted are not carried key=${k}`);
     }
     this.cutAdopt = adopt;
-    try { writeCutTurns(state, [...new Set([...cut, ...owed])]); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
+    this.cutKeys = [...new Set([...cut, ...owed])];
+    try { writeCutTurns(state, this.cutKeys); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
     try { writeAdoptTurns(state, adopt); } catch (e) { this.log(`shutdown: turns to adopt not written: ${(e as Error).message}`); }
   }
 
@@ -2389,9 +2442,16 @@ export class Orchestrator {
     // this daemon, and the next one asks again. With none open it is a message like any other (an
     // answer to the agent's own question), carried.
     const answer = parsePermissionReply(i.text) !== null || parseBareAnswer(i.text, i.botMentions) !== null;
-    if (answer && (this.asks.get(key)?.size ?? 0) > 0) { this.log(`shutdown: a permission answer that came as the daemon stops is not carried key=${key}`); return; }
+    if (answer && this.askedAtStop.has(key) && this.asks.get(key)?.size) { this.log(`shutdown: a permission answer that came as the daemon stops is not carried key=${key}`); return; }
     const a = this.cutAdopt.find((x) => x.key === key);
-    if (!a || i.surface === 'app') { this.log(`shutdown: a message that came as the daemon stops is not run key=${key}`); return; }
+    if (i.surface === 'app') { this.log(`shutdown: a message that came as the daemon stops is not run key=${key}`); return; }
+    if (!a) {
+      // A chat with no turn to carry it: it hears the cut line from the next daemon, and sends again.
+      this.cutKeys = [...new Set([...this.cutKeys, key])];
+      try { writeCutTurns(this.opts.stateDir ?? join(homedir(), '.angelia'), this.cutKeys); } catch (e) { this.log(`shutdown: cut turns not written: ${(e as Error).message}`); }
+      this.log(`shutdown: a message that came as the daemon stops is not run; its chat is told by the next daemon key=${key}`);
+      return;
+    }
     a.waiting = [...(a.waiting ?? []), { inbound: i, bare }];
     try {
       writeAdoptTurns(this.opts.stateDir ?? join(homedir(), '.angelia'), this.cutAdopt);
@@ -2429,7 +2489,7 @@ export class Orchestrator {
       if (typeof n === 'string') kept.add(n);
       // Before its reader starts: what was typed into the turn, and whether it may take more.
       b.restoreMidturn?.(t.absorbed ?? []);
-      b.restoreTurnKey?.(t.typedKey);
+      b.restoreTurnKey?.(t.typedKey, t.typedKeys);
       if (t.joined?.length) this.intoTurnTaken.set(t.key, t.joined);
       const follow = b.follow();
       this.log(`restart: turn adopted key=${t.key} session=${t.session.slice(0, 8)}${t.waiting?.length ? ` with ${t.waiting.length} waiting` : ''}`);

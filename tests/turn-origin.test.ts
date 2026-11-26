@@ -88,7 +88,7 @@ test('a teammate\'s message starts a notification turn that names the teammate; 
     { origin: 'notification', origin_why: '<teammate-message> (idle)', origin_teammates: ['scout'], origin_idle: true });
   // Two teammates in one turn, one only idle: both named, and the turn is not idle only.
   assert.deepEqual(origin(...before, mate(MATE('scout', 'done') + '\n' + MATE('reviewer@session-1', IDLE_NOTE('reviewer'))), R.text('Both.')),
-    { origin: 'notification', origin_why: '<teammate-message>', origin_teammates: ['scout', 'reviewer'] });
+    { origin: 'notification', origin_why: '<teammate-message>', origin_teammates: ['scout', 'reviewer@session-1'] });
   // A teammate's message and a task's end in one turn: both tie it.
   assert.deepEqual(origin(...before, mate(MATE('scout', 'done')), R.call('t2'), R.result('t2'), R.note(70), R.text('Both.')),
     { origin: 'notification', origin_why: '<teammate-message>, <task-notification> (origin task-notification)', origin_ids: ['toolu_1'], origin_teammates: ['scout'] });

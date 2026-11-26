@@ -245,8 +245,9 @@ address) and have a path; `*` is allowed in the path only. `?`, `#`, quotes and 
   shell outside a sandbox can run plain `claude`, which loads every connector of your account. Keep
   the shell asking, or set `sandbox: true`, on a profile that should not reach them.
 - **The warning.** At each start of a profile given a connector, Claude Code prints "Warning:
-  claude.ai MCP servers blocked by enterprise policy: ..." with the connectors left out. That is the
-  allow list at work. Angelia never posts it to the chat or reads it as a failure.
+  claude.ai MCP servers blocked by enterprise policy: ..." with the connectors left out ("MCP server
+  blocked" when it is one). That is the allow list, or the deny list of `connectors: all`, at work.
+  Angelia never posts it to the chat or reads it as a failure.
 - **The first turn of a new session.** Claude Code gets the account's connector list when it starts,
   and does not wait for it before the first turn. In print mode the first message goes in at once,
   so that turn often has no connector tools. The next turn of the same session has them. Measured
@@ -259,6 +260,74 @@ address) and have a path; `*` is allowed in the path only. `?`, `#`, quotes and 
 
 Each granted connector gets a line in the profile's CLAUDE.md, for example
 `- gmail: Gmail through the Claude app connector (tools mcp__claude_ai_Gmail__*); needs a claude.ai login.`
+
+#### Every connector of the account (`connectors: all`)
+
+`connectors: all` gives a Claude Code profile every connector of your claude.ai account, and a
+profile drops one by its capability name. Set it for the whole instance under `defaults`, or per
+profile (the profile's own wins). `granted`, the default, is the deny-by-default mode above.
+
+```yaml
+capabilities:
+  gmail: { kind: connector, url: "https://gmailmcp.googleapis.com/*" }
+defaults:
+  connectors: all
+profiles:
+  money-saver: { cwd: ..., deny: [gmail] }   # every connector but Gmail
+```
+
+- **Later connectors too.** The table needs no list of the account's connectors: Claude Code gets
+  that list from claude.ai at each start. A connector you add in the Claude app reaches every profile
+  in this mode at its next start, with no compile. `check-config` names each such profile.
+- **Dropping one.** A connector capability the profile denies (its `deny:`, or `defaults.deny` it
+  does not lift) or lists under `except:` is dropped, unless its own `capabilities:` gives it back.
+  Only a connector that is a capability in the table can be dropped: add one for it first.
+- **How it loads.** No allow list. The launch passes `deniedMcpServers` in `--settings`, with each
+  dropped connector by its url. Measured with Claude Code 2.1.332: with that list and no allow list,
+  every connector of the account loads but the dropped ones, and the profile's own `.mcp.json`
+  servers (through `--mcp-config`) and user-level servers still load. A deny by a connector's name
+  ("claude.ai Gmail") does nothing, so the url is used.
+- **A wrong address fails open.** The url is the only thing that keeps a dropped connector out. A
+  typo, or a connector whose address the Claude app changed, matches nothing, and that connector
+  loads; granted mode fails closed instead. So the compile and `check-config` give a note for each
+  dropped connector, with the url it uses. And 30 seconds after each print-mode start, the daemon
+  counts the connectors Claude Code's stderr warning named as blocked (it does not wait for the
+  account's connector list before the first turn): when they are fewer than the ones dropped, the log
+  gets a warning, and you hear it once in a direct chat of yours with the profile (until the daemon restarts; with
+  no such chat, only the log has it). The
+  signal can be wrong: a dropped connector your account does not have (never connected, or
+  disconnected) is no line either, nor is any connector when the list did not load; and one url that
+  matches two connectors gives two names. A tmux pane has no stderr, and its screen shows no such
+  warning (measured with Claude Code 2.1.332). So after a tmux-mode start the daemon runs
+  `claude mcp list` twice in the profile's folder, with the profile's deny list and without it (no
+  model call, about 12 seconds; it health-checks each MCP server, as a start does): the connectors
+  only the second run lists are the blocked ones, and the same warning follows. This runs once per
+  profile and deny list while the daemon runs; a run that failed or fell short runs again at the next
+  pane start. You hear it once per profile and set of blocked connectors, after the notice was sent.
+- **What the agent cannot change.** The daemon builds the deny list from the copy in the state
+  folder, as for granted connectors, and refuses the start when the record in the profile's folder
+  differs from it. Measured with Claude Code 2.1.332: deny lists of all settings files are merged,
+  and a deny wins over every allow list. So a `deniedMcpServers: []` or an `allowedMcpServers` in the
+  profile's own `.claude/` settings takes nothing back. An `allowedMcpServers` there only narrows what
+  loads, so the compile names it and the launch does not refuse it.
+- **A strict profile.** `--strict-mcp-config` drops every connector, so a profile that denies an MCP
+  server does not use it in this mode. Its user-level servers (from `~/.claude.json`, or
+  `CLAUDE_CONFIG_DIR`, and that file's servers for this folder) are on the deny list by name, as the
+  compile found them. Measured with Claude Code 2.1.332: `claude mcp add --scope local` in a folder
+  inside a git repo writes under the repo root's real path (the main checkout's, from a worktree),
+  not under the folder. So Angelia reads the folder, its real path and its git roots. A user-level
+  server added after the compile stops the start until you compile again, since nothing else keeps it
+  out. The agent reads the config file of the daemon's `CLAUDE_CONFIG_DIR` (or `~/.claude.json`):
+  when that is not the file the compile read (kept in the state folder), the start is refused, so
+  compile in the daemon's environment. Measured with Claude Code 2.1.332: `claude mcp list` in a
+  folder also lists the servers of a `.mcp.json` in each folder above it ("Pending approval"). So
+  their servers go on the deny list by name too, and a server added there after the compile, or such
+  a file that cannot be read, stops the start. A server name with a character other than letters, digits,
+  `-` and `_` cannot be on the list, so it stops the compile. MCP servers from a plugin are not kept
+  out.
+- **The rest is as for granted connectors.** Claude Code only (other CLIs get nothing); `angelia ask` loads none; connectors need a claude.ai login; the list binds the
+  agent's own session only. The profile's CLAUDE.md gets one line: every connector of the account
+  loads, but the dropped ones.
 
 ### What every agent knows about Angelia
 

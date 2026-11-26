@@ -69,9 +69,9 @@ const WRAPPED = /^\s*(?:Another Claude session sent a message:\s*)?<(teammate-me
 const TEAMMATE = /^\s*Another Claude session sent a message:\s*<teammate-message\b/;
 /** Every opening tag of a teammate's message in a row, closed or not. */
 const TEAMMATE_OPEN = /<teammate-message\b/g;
-/** Each message in such a row: the teammate's name (its id up to `@`) and the body. */
+/** Each message in such a row: the teammate's id (its name, or `name@team`) and the body. */
 const TEAMMATE_MESSAGE = /<teammate-message\b([^>]*)>([\s\S]*?)<\/teammate-message>/g;
-const TEAMMATE_ID = /\bteammate_id="([A-Za-z0-9_.-]{1,64})(?:@[^"]*)?"/;
+const TEAMMATE_ID = /\bteammate_id="([A-Za-z0-9_.-]{1,64}(?:@[^"\s]{0,128})?)"/;
 /** A teammate's note that it stopped and waits (its body is JSON of this type). */
 const IDLE = /^\s*\{\s*"type"\s*:\s*"idle_notification"/;
 /** `origin.kind` of a queued row this file calls a notification. */
@@ -289,9 +289,10 @@ export function turnOrigin(raw) {
   // names of the teammates whose message did, only when each row that started it names one (a
   // scheduled prompt names none). The daemon sends the answer only when it started each of those
   // tasks and teammates in a turn of its own.
-  const tied = starters.every((s) => s.ids?.length || s.teammates?.length);
-  const ids = [...new Set(starters.flatMap((s) => s.ids ?? []))].slice(0, IDS_MAX);
-  const teammates = [...new Set(starters.flatMap((s) => s.teammates ?? []))].slice(0, IDS_MAX);
+  const ids = [...new Set(starters.flatMap((s) => s.ids ?? []))];
+  const teammates = [...new Set(starters.flatMap((s) => s.teammates ?? []))];
+  // More than IDS_MAX of either: not each one can be checked, so the turn is tied to nothing.
+  const tied = ids.length <= IDS_MAX && teammates.length <= IDS_MAX && starters.every((s) => s.ids?.length || s.teammates?.length);
   return {
     origin: 'notification', origin_why: why,
     ...(tied && ids.length ? { origin_ids: ids } : {}),

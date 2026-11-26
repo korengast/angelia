@@ -9,13 +9,14 @@ import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent, type SelfPermission, type SelfWork, type UnaskedAnswer } from '../core/types.js';
 import { isLimitText, TMUX_STALLED } from '../core/deliver/text.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
-import { PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
+import { blockedShort, deniedConnectorCount, PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
 import { addDirAccepted, addDirDialog, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { HOOK_GIVE_UP_MS, paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs, type RelayedRequest, type RequestOrigin } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { mcpLaunch, readRecord } from '../capabilities/compile.js';
 import { readPlainText } from '../core/paths.js';
 import { askedBy } from '../core/screen-asks.js';
+import { tuiBlockedConnectors } from './connectors-check.js';
 
 export { transcriptPath } from './transcripts.js';
 
@@ -28,9 +29,14 @@ export const PRETOOL_HOOK = fileURLToPath(new URL('../../scripts/tui-pretool-hoo
 /** Past the PreToolUse hook's own longest wait (15 s). */
 const PRETOOL_HOOK_TIMEOUT_S = 30;
 const POLL_MS = 700;
+/** What a message gets that Claude Code took late into the turn before (turn). */
+export const TAKEN_LATE_LINE = 'Claude Code took this message late, during the turn before it, so it was not sent a second time.';
 /** tmux calls in a row that timed out (TMUX_TIMEOUT_MS each) before a loop that waits on the screen
  *  gives up: one is a loaded machine, three (a minute and a half) is a server that does not answer. */
 const TMUX_STALLS = 3;
+/** The connector checks this daemon ran or runs (checkConnectors), by profile folder and MCP keys:
+ *  once per daemon start per profile and deny list, not once per pane. */
+const connectorChecks = new Set<string>();
 /** How long claude's add-dir dialog must stand before keys reach it (it drops them for ~1 s, 2.1.326). */
 const ADD_DIR_SETTLE_MS = 1500;
 const START_TIMEOUT_MS = 90_000;
@@ -176,6 +182,9 @@ function promptKeysOf(o: RequestOrigin): string[] {
   return o.promptKey && o.prompts === 1 ? [o.promptKey] : [];
 }
 
+/** A teammate's name, without the team of a full id (`name@team`). */
+const bareName = (id: string): string => id.split('@')[0];
+
 /** Add to a set of the chat's own work as the newest one, and keep it within OURS_MAX. */
 function addOurs(set: Set<string>, v: string): void {
   set.delete(v);
@@ -206,8 +215,8 @@ export function teammateName(res: { name?: unknown; teammate_id?: unknown }): st
  * of each, which the Stop hook reports as `origin_ids`. `calls`: the kind of each call whose result
  * has not come yet, kept by the caller across slices (a call and its result may be read apart).
  */
-export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent'> = new Map()): { starts: { id: string; teammate?: string }[]; ends: string[] } {
-  const starts: { id: string; teammate?: string }[] = [], ends: string[] = [];
+export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent'> = new Map()): { starts: { id: string; teammate?: string; team?: string }[]; ends: string[] } {
+  const starts: { id: string; teammate?: string; team?: string }[] = [], ends: string[] = [];
   type Block = { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown; text?: unknown };
   for (const l of chunk.split('\n')) {
     let r: { type?: unknown; operation?: unknown; content?: unknown; message?: { content?: unknown }; toolUseResult?: unknown } | null;
@@ -245,9 +254,18 @@ export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent
     // gives that id to shell commands alone).
     if (res.backgroundTaskId && (kind ?? 'bash') === 'bash') starts.push({ id });
     else if (res.status === 'async_launched') starts.push({ id });
-    else if (res.status === 'teammate_spawned') { const teammate = teammateName(res); starts.push(teammate ? { id, teammate } : { id }); }
+    else if (res.status === 'teammate_spawned') {
+      const teammate = teammateName(res), team = teammateTeam(res);
+      starts.push(teammate ? { id, teammate, ...(team ? { team } : {}) } : { id });
+    }
   }
   return { starts, ends };
+}
+
+/** The team of a spawned teammate (`teammate_id` as `<name>@<team>`), when its result says it. */
+export function teammateTeam(res: { teammate_id?: unknown }): string | undefined {
+  const team = typeof res.teammate_id === 'string' ? res.teammate_id.slice(res.teammate_id.indexOf('@') + 1 || res.teammate_id.length) : '';
+  return team ? team.slice(0, 128) : undefined;
 }
 
 /** The tool_use ids of the background tasks a slice of transcript rows starts (backgroundRows). */
@@ -483,12 +501,16 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  or in a turn tied to such work: a request of a turn they start is never approved by the levels. */
   private peerIds = new Set<string>();
   private peerTeammates = new Set<string>();
+  /** The team each spawned teammate's name was last spawned in, when its spawn said it (isOurs). */
+  private teams = new Map<string, string>();
+  /** The names whose teammate's end was read: dropped once its report is judged, or at the next Enter. */
+  private endedTeammates = new Set<string>();
   /** The turn typed here now is a peer's (TurnFlags.peer). */
   private turnPeer = false;
   /** Tasks and teammates started while no turn of Angelia's was read, since the last Stop marker taken
    *  between turns: when takeIdle finds that turn was the chat's (tied to its work, a late answer, a
    *  message typed into a turn), they are the chat's too; else they are not (settleSpawns). */
-  private pendingSpawns: { id: string; at: number; teammate?: string }[] = [];
+  private pendingSpawns: { id: string; at: number; teammate?: string; team?: string }[] = [];
   /** Where in the transcript the row being read starts: what a spawn read in it is stamped with. */
   private rowAt = 0;
   /** The rows read that began a turn of the session's (a prompt, a task's end, a teammate's message
@@ -498,6 +520,8 @@ export class TuiBrain extends EventEmitter implements Brain {
   private turnStarts: { at: number; time: number }[] = [];
   /** turnRows of the rows read so far, for turnStarts. */
   private startState: TurnRows = 'none';
+  /** The session's tool calls still owed a result, for noteStart. */
+  private startOwed = new Set<string>();
   /** Rows read now are of a turn Angelia typed here: set at its Enter (submit), cleared when that turn
    *  ends or its reader changes. Not turnSentAt: adopt() sets that with the transcript read from its
    *  start, and a released pane keeps it. */
@@ -510,6 +534,11 @@ export class TuiBrain extends EventEmitter implements Brain {
   /** The same key, for holding a request to the turn it was typed for (ofThisTurn): unlike typedKey it
    *  is kept when that turn is read again (follow: /resume, or a restart, which carries it: turnKey). */
   private tieKey = '';
+  /** Every key of an adopted turn that Claude Code ran for several messages (restoreTurnKey). */
+  private restoredKeys: string[] = [];
+  /** Messages an Enter was pressed for in a running turn that was not seen to take them: key, and the
+   *  transcript's size at that Enter. Looked at once more before each is typed as a turn of its own. */
+  private unsure = new Map<string, number>();
   /** The reader between turns (startIdle): it looks for a Stop marker no turn of Angelia's waits for. */
   private idle?: NodeJS.Timeout;
   /** Since when this object reads the session: its first turn. A marker from before is of a time when
@@ -602,7 +631,31 @@ export class TuiBrain extends EventEmitter implements Brain {
     return launchFingerprint(this.argv(resume), HOOK, [`granted=${(this.opts.granted ?? []).join(',')}`, `withheld=${(this.opts.withheld ?? []).join(',')}`, `compiled=${compiled}`, `env=${Object.entries(CLAUDE_ENV).map(([k, v]) => `${k}=${v}`).join(',')}`, `permission-hook=${PERMISSION_HOOK}`]);
   }
 
-  start(): void { this.ready = this.ensure(); }
+  start(): void { this.ready = this.ensure().then((r) => { if (r === null) void this.checkConnectors(); return r; }); }
+
+  /**
+   * connectors: all: the pane's version of the print-mode count (ClaudeBrain.checkBlocked), from two
+   * `claude mcp list` runs, no model call (connectors-check.ts). Once per daemon start per profile and
+   * deny list while all is well; a run that could not tell, or fell short, runs again at the next pane
+   * start. The checks of all panes run one profile at a time. A start that blocks fewer connectors
+   * than the launch drops says so in the log and as `connectors-short`, with the names it blocked.
+   */
+  async checkConnectors(): Promise<void> {
+    const settings = (this.opts.mcp ?? mcpLaunch(this.profile.cwd)).settings;
+    const denied = deniedConnectorCount(settings);
+    const key = `${this.profile.cwd}\0${JSON.stringify(settings)}`;
+    if (!denied || connectorChecks.has(key)) return;
+    connectorChecks.add(key);
+    const blocked = await tuiBlockedConnectors(this.opts.bin ?? 'claude', this.profile.cwd, { ...childEnv(this.opts.env), ...CLAUDE_ENV }, settings, this.opts.mcpListTimeoutMs);
+    if (!blocked) { connectorChecks.delete(key); this.emit('log', `connectors: all: pane ${this.name}: claude mcp list did not tell which connectors are blocked (it failed, or named none); checked again at the next pane start`); return; }
+    const short = blockedShort(denied, blocked);
+    if (!short) return;
+    // Counted again at the next pane start: the owner's notice may not have gone out (the orchestrator
+    // says it once per profile and names, after it was sent).
+    connectorChecks.delete(key);
+    this.emit('log', `warning: ${short}`);
+    this.emit('connectors-short', short, blocked);
+  }
 
   /** The start's outcome, for a caller that wants it apart from the first turn (canary.ts): null once
    *  the pane is at a prompt, else the line that says why it is not. */
@@ -879,6 +932,16 @@ export class TuiBrain extends EventEmitter implements Brain {
     const problem = await (this.ready ?? Promise.resolve('brain not started'));
     if (problem) { yield { kind: 'result', text: '', isError: true, reason: problem }; return; }
     if (this.notice) { yield { kind: 'notice', text: this.notice }; this.notice = null; }
+    // Typed into the turn before and not seen taken then: Claude Code may have taken it since.
+    const clean = cleanText(text), key = promptKey(clean), pressedAt = this.unsure.get(key);
+    this.unsure.delete(key);
+    if (pressedAt !== undefined && this.queuedSince(pressedAt, key)) {
+      this.emit('log', `tmux: a message typed into the last turn was taken late; it is not typed again pane=${this.name}`);
+      // A turn Claude Code still runs for it by itself is the chat's (followerOf).
+      this.absorbed.push({ key, text: clean, at: Date.now(), turn: 0, seen: false });
+      yield { kind: 'result', text: TAKEN_LATE_LINE, isError: false };
+      return;
+    }
     // The session may be busy with a turn typed in the Claude app: the message waits for it, and the
     // chat is told why nothing happens yet. Not when it is busy with a message of the chat's own that
     // was typed into the last turn and runs as a turn of its own now.
@@ -888,14 +951,19 @@ export class TuiBrain extends EventEmitter implements Brain {
     const gen = this.gen;
     const left: { over?: UnaskedAnswer } = {};
     const submit = () => {
-      if (this.openTeammates.size) this.readTranscript(); // a teammate's end written since the last look
+      // What was written since the last look (a teammate's end, the owner's spawn in the app), before
+      // the reader moves to the file's end.
+      if (this.heldSince !== undefined) this.readTranscript();
       // A Stop marker still here is of a turn that ended before this one: read as between turns, so a
       // late answer or a task's result is told before this turn's answer, never just deleted.
       left.over = this.takeIdle() ?? undefined;
+      this.dropEnded(this.endedTeammates);
       // Started between turns in a turn whose marker never came: nothing shows it was the chat's.
       this.settleSpawns(false);
       this.at = this.from = fileSize(this.transcript); // only rows written from here on are this turn's
       this.rows = this.startState = 'none';
+      this.startOwed.clear();
+      this.restoredKeys = [];
       this.openCalls.clear();
       // Messages typed into an earlier turn whose answer never came: none is waited for any more, so a
       // later turn with the same words is never taken for theirs.
@@ -1050,6 +1118,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       return confirmed;
     };
     const took = (): true => {
+      this.unsure.delete(promptKey(text));
       this.absorbed.push({ key: promptKey(text), text, at: Date.now(), turn: sentAt, seen: false });
       this.emit('log', `tmux: a chat message went into the running turn (${text.length} chars) pane=${this.name}`);
       return true;
@@ -1096,6 +1165,8 @@ export class TuiBrain extends EventEmitter implements Brain {
         this.pressed = true;
         await this.tm(['send-keys', '-t', this.name, 'Enter']);
         presses++;
+        this.unsure.set(promptKey(text), enterAt);
+        if (this.unsure.size > 20) this.unsure.delete(this.unsure.keys().next().value!);
         for (let p = 0; p < TAKEN_POLLS && !emptied; p++) {
           await sleep(300);
           const now = await this.capture(30);
@@ -1223,6 +1294,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     // The chat's own messages: none goes into a peer's turn (Orchestrator.intoTurnAllowed).
     this.turnPeer = false;
     this.followKeys = f.keys;
+    this.restoredKeys = [];
     this.typedKey = this.tieKey = f.keys[0];
     this.quietEnd = undefined;
     this.lastUsedAt = Date.now();
@@ -1723,7 +1795,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     // then says; else it is not.
     let ours = false, peer = false;
     try { return this.judgeIdle({ ...m, at: m.at }, inTurn, turnFailed, (p = false) => { ours = true; peer = p; }); }
-    finally { this.settleSpawns(ours, this.turnSpan(m.at), peer); }
+    finally {
+      this.settleSpawns(ours, this.turnSpan(m.at), peer);
+      // The report of a teammate that has ended is judged: its name ties nothing from here on.
+      const named = Array.isArray(m.origin_teammates) ? m.origin_teammates.map((n) => bareName(String(n))) : [];
+      this.dropEnded(named.filter((n) => this.endedTeammates.has(n)));
+    }
   }
 
   /** Where the turn a marker written at `at` ends began in the transcript, and where the next one began
@@ -1736,20 +1813,35 @@ export class TuiBrain extends EventEmitter implements Brain {
     return { from: this.turnStarts[i].at, to: this.turnStarts[i + 1]?.at ?? Infinity };
   }
 
-  /** One row read: when it begins a turn after a closed one (turnRows), its offset and time go to turnStarts. */
+  /** One row read: when it begins a turn, its offset and time go to turnStarts. A turn begins after a
+   *  closed one (turnRows), and also with a row that starts one (a task's end, a teammate's message, a
+   *  typed prompt) while the last reads open with no tool result owed: a turn cut with no interrupt row. */
   private noteStart(line: string, at: number): void {
     const before = this.startState;
     if (!line.includes('"user"') && !line.includes('"assistant"')) return;
     this.startState = turnRows(line, before);
-    if (before !== 'none' && before !== 'said' && before !== 'error') return;
-    if (this.startState !== 'open' && this.startState !== 'command') return;
-    let row: { type?: unknown; timestamp?: unknown; message?: { content?: unknown } } | null;
+    let row: { type?: unknown; timestamp?: unknown; isSidechain?: unknown; isMeta?: unknown; rowSource?: unknown; origin?: { kind?: unknown }; message?: { content?: unknown } } | null;
     try { row = JSON.parse(line); } catch { return; }
-    if (row?.type !== 'user') return;
-    // A Stop hook that sent the answer back (the language check) goes on with the same turn.
+    if (!row || row.isSidechain === true) return;
     const c = row.message?.content;
-    const text = typeof c === 'string' ? c : Array.isArray(c) ? c.map((b: { text?: unknown }) => String(b?.text ?? '')).join('\n') : '';
+    const blocks = (Array.isArray(c) ? c : []) as { type?: unknown; text?: unknown; id?: unknown; tool_use_id?: unknown }[];
+    for (const b of blocks) {
+      if (row.type === 'assistant' && b?.type === 'tool_use') this.startOwed.add(String(b.id));
+      else if (row.type === 'user' && b?.type === 'tool_result') this.startOwed.delete(String(b.tool_use_id));
+    }
+    if (row.type !== 'user') return;
+    const text = typeof c === 'string' ? c : blocks.map((b) => String(b?.text ?? '')).join('\n');
+    const kind = row.origin?.kind;
+    const starter = row.isMeta !== true && (kind === 'human' || kind === 'task-notification'
+      || (row.origin === undefined && row.rowSource === 'recorded' && /^\s*Another Claude session sent a message:\s*<teammate-message\b/.test(text)));
+    const cut = before === 'open' && !this.startOwed.size && starter;
+    if (!cut) {
+      if (before !== 'none' && before !== 'said' && before !== 'error') return;
+      if (this.startState !== 'open' && this.startState !== 'command') return;
+    }
+    // A Stop hook that sent the answer back (the language check) goes on with the same turn.
     if (text.trimStart().startsWith('Stop hook feedback:')) return;
+    this.startOwed.clear();
     const time = Date.parse(String(row.timestamp ?? ''));
     this.turnStarts.push({ at, time: Number.isNaN(time) ? 0 : time });
     if (this.turnStarts.length > TURN_STARTS_MAX) this.turnStarts.shift();
@@ -1826,10 +1918,10 @@ export class TuiBrain extends EventEmitter implements Brain {
     const mates = Array.isArray(m.origin_teammates) ? m.origin_teammates.filter((x): x is string => typeof x === 'string') : [];
     if (!ids.length && !mates.length) return no('nothing ties it to work a turn of this chat started');
     if (!ids.every((id) => this.ours.has(id))) return no('the work it reports was not started by a turn of this chat');
-    if (!mates.every((n) => this.oursTeammates.has(n))) return no('the teammate that sent it was not started by a turn of this chat');
+    if (!mates.every((n) => this.isOurs(n))) return no('the teammate that sent it was not started by a turn of this chat');
     // The turn is the chat's: a teammate it spawns, a task it starts, is the chat's work as well (a
     // peer's, when it is tied to a peer's).
-    ours(ids.some((id) => this.peerIds.has(id)) || mates.some((n) => this.peerTeammates.has(n)));
+    ours(ids.some((id) => this.peerIds.has(id)) || mates.some((n) => this.peerTeammates.has(bareName(n))));
     // A session woken by the end of the chat's own work is in use, whatever it then says (nothing,
     // [SILENT], an error): its idle time starts again, so long background work stays read while it is
     // active. Only tied ends count: the owner's own work in the app does not hold the pane.
@@ -1850,7 +1942,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (ours) {
       for (const s of this.pendingSpawns) {
         if (turn && (s.at < turn.from || s.at >= turn.to)) continue;
-        this.own(s.id, s.teammate, peer);
+        this.own(s.id, s.teammate, peer, s.team);
       }
     }
     this.pendingSpawns = turn && turn.to !== Infinity ? this.pendingSpawns.filter((s) => s.at >= turn.to) : [];
@@ -1858,9 +1950,33 @@ export class TuiBrain extends EventEmitter implements Brain {
 
   /** A task (`id`) or teammate (`teammate`) is the chat's work from now on; `peer`: a peer's turn started
    *  it, or a turn tied to a peer's work, and the levels never approve what it starts. */
-  private own(id: string | undefined, teammate: string | undefined, peer: boolean): void {
+  private own(id: string | undefined, teammate: string | undefined, peer: boolean, team?: string): void {
     if (id) { addOurs(this.ours, id); if (peer) addOurs(this.peerIds, id); else this.peerIds.delete(id); }
-    if (teammate) { addOurs(this.oursTeammates, teammate); if (peer) addOurs(this.peerTeammates, teammate); else this.peerTeammates.delete(teammate); }
+    if (!teammate) return;
+    addOurs(this.oursTeammates, teammate);
+    if (team) this.teams.set(teammate, team); else this.teams.delete(teammate);
+    // A peer's mark stays while that teammate may be alive, whoever spawns the name next (dropEnded).
+    if (peer) addOurs(this.peerTeammates, teammate);
+  }
+
+  /** A teammate's message names one of the chat's: by name, and by team when both it and the spawn say
+   *  one. A name kept open past TEAMMATE_MAX_MS is dropped. */
+  private isOurs(id: string): boolean {
+    const name = bareName(id), team = id.slice(name.length + 1);
+    if (this.openTeammates.has(name) && !this.teammateOpen(name)) { this.openTeammates.delete(name); this.dropEnded([name]); }
+    if (!this.oursTeammates.has(name)) return false;
+    const spawned = this.teams.get(name);
+    return !team || !spawned || team === spawned;
+  }
+
+  /** The teammates of these names are over: no message under such a name is the chat's any more. */
+  private dropEnded(names: Iterable<string>): void {
+    for (const n of names) {
+      this.endedTeammates.delete(n);
+      this.oursTeammates.delete(n);
+      this.peerTeammates.delete(n);
+      this.teams.delete(n);
+    }
   }
 
   /** What ties the turn a request between turns comes from to the chat (SelfWork), by what the hook
@@ -1878,15 +1994,22 @@ export class TuiBrain extends EventEmitter implements Brain {
       // A row nobody typed joined it (another session's message, a scheduled prompt, others' work).
       if (!this.joinedOurs(o)) return 'none';
       const q = this.quietEnd;
-      return q && keys.some((k) => q.key === k || q.taken.includes(k)) && q.peer ? 'peer' : 'chat';
+      const tied = !!q && keys.some((k) => q.key === k || q.taken.includes(k));
+      // Tied only by the turn closed on the quiet path, whose marker may never come: the same words typed
+      // in the app later are the owner's. Held to that turn's time and count, as its late answer is (judgeIdle).
+      if (q && keys.some((k) => !this.absorbed.some((a) => a.key === k))) {
+        const at = o.promptAt;
+        if (at === undefined || at < q.sentAt - 1000 || at > q.endedAt || (o.prompts ?? keys.length) > 1 + q.taken.length) return 'none';
+      }
+      return tied && q.peer ? 'peer' : 'chat';
     }
     if (o?.origin !== 'notification') return 'none';
     const ids = o.ids ?? [], mates = o.teammates ?? [];
     if (!ids.length && !mates.length) return 'none';
     // A teammate counts only while the book has it open: spawned in the chat's turn and not ended. Its
     // name alone, once it ended, is a word anyone can write.
-    if (!ids.every((id) => this.ours.has(id)) || !mates.every((n) => this.oursTeammates.has(n) && this.teammateOpen(n))) return 'none';
-    return ids.some((id) => this.peerIds.has(id)) || mates.some((n) => this.peerTeammates.has(n)) ? 'peer' : 'chat';
+    if (!ids.every((id) => this.ours.has(id)) || !mates.every((n) => this.isOurs(n) && this.teammateOpen(bareName(n)))) return 'none';
+    return ids.some((id) => this.peerIds.has(id)) || mates.some((n) => this.peerTeammates.has(bareName(n))) ? 'peer' : 'chat';
   }
 
   /** Read the Stop marker between turns, from the end of this session's first turn here until the
@@ -1969,7 +2092,9 @@ export class TuiBrain extends EventEmitter implements Brain {
     const own = inTurn ? this.ownKeys() : new Set<string>();
     const keys = o?.origin === 'prompt' ? (o.promptKeys?.length ? o.promptKeys : o.promptKey ? [o.promptKey] : []) : [];
     const where = inTurn ? 'a permission while a chat turn is read, not of that turn' : 'a permission between turns';
-    if (o?.origin === 'prompt' && !keys.some((k) => own.has(k) || this.typedByUs(k))) {
+    // A chat turn with no key to hold it to (adopted from a daemon that carried none): asked, never passed.
+    const noKey = inTurn && !own.size;
+    if (o?.origin === 'prompt' && !noKey && !keys.some((k) => own.has(k) || this.typedByUs(k))) {
       this.relay.pass(r.id);
       this.emit('log', `tmux: ${where}, in a turn a person typed (${o.why ?? 'a typed prompt'}): not relayed, Claude asks in its own dialog pane=${this.name}`);
       return;
@@ -1987,7 +2112,7 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  it, and those of the last turn that Claude Code runs as this one (followAbsorbed). */
   private ownKeys(): Set<string> {
     const sentAt = this.turnSentAt;
-    return new Set([this.tieKey, ...this.followKeys, ...this.absorbed.filter((a) => a.turn === sentAt).map((a) => a.key)].filter(Boolean));
+    return new Set([this.tieKey, ...this.followKeys, ...this.restoredKeys, ...this.absorbed.filter((a) => a.turn === sentAt).map((a) => a.key)].filter(Boolean));
   }
 
   /**
@@ -2026,7 +2151,23 @@ export class TuiBrain extends EventEmitter implements Brain {
   turnKey(): string | undefined { return this.tieKey || undefined; }
 
   /** After adopt, before the turn's reader starts: the key of what the last daemon typed for this turn. */
-  restoreTurnKey(key: unknown): void { if (typeof key === 'string' && /^[0-9a-f]{32}$/.test(key)) this.tieKey = key; }
+  restoreTurnKey(key: unknown, keys?: unknown): void {
+    const good = (k: unknown): k is string => typeof k === 'string' && /^[0-9a-f]{32}$/.test(k);
+    if (good(key)) this.tieKey = key;
+    this.restoredKeys = Array.isArray(keys) ? keys.filter(good).slice(0, 50) : [];
+  }
+
+  /** Every key of the turn read now when Claude Code ran it for several messages (followAbsorbed). */
+  turnKeys(): string[] | undefined {
+    const keys = this.followKeys.length > 1 ? this.followKeys : this.restoredKeys;
+    return keys.length ? keys : undefined;
+  }
+
+  /** The named teammates still open here, their ends read first when no turn is: the pane is not reaped. */
+  openTeammateCount(): number {
+    if (this.up && this.turnSentAt === undefined && this.openTeammates.size) this.readTranscript();
+    return [...this.openTeammates.keys()].filter((n) => this.teammateOpen(n)).length;
+  }
 
   /** A typed prompt's key is one of the chat's own: the turn closed on the quiet path, or a message
    *  typed into a turn that Claude Code runs as one of its own. */
@@ -2114,16 +2255,18 @@ export class TuiBrain extends EventEmitter implements Brain {
     const { starts, ends } = backgroundRows(line, this.calls);
     for (const s of starts) {
       if (s.teammate) {
+        // The one of that name before it is over: its marks go with it.
+        if (this.endedTeammates.has(s.teammate)) this.dropEnded([s.teammate]);
         this.openTeammates.delete(s.teammate);
         this.openTeammates.set(s.teammate, { id: s.id, at: Date.now() });
         if (this.openTeammates.size > OURS_MAX) this.openTeammates.delete(this.openTeammates.keys().next().value!);
       }
-      if (this.recording) { this.own(s.id, s.teammate, this.turnPeer); continue; }
+      if (this.recording) { this.own(s.id, s.teammate, this.turnPeer, s.team); continue; }
       if (s.teammate) { this.oursTeammates.delete(s.teammate); this.peerTeammates.delete(s.teammate); }
-      this.pendingSpawns.push({ id: s.id, at: this.rowAt, ...(s.teammate ? { teammate: s.teammate } : {}) });
+      this.pendingSpawns.push({ id: s.id, at: this.rowAt, ...(s.teammate ? { teammate: s.teammate } : {}), ...(s.team ? { team: s.team } : {}) });
       if (this.pendingSpawns.length > OURS_MAX) this.pendingSpawns.shift();
     }
-    for (const id of ends) for (const [name, t] of this.openTeammates) if (t.id === id) this.openTeammates.delete(name);
+    for (const id of ends) for (const [name, t] of this.openTeammates) if (t.id === id) { this.openTeammates.delete(name); this.endedTeammates.add(name); }
   }
 
   /** A named teammate of that name is open here: spawned, no end of it read, and not past TEAMMATE_MAX_MS. */
@@ -2138,6 +2281,9 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.openTeammates.clear();
     this.oursTeammates.clear();
     this.peerTeammates.clear();
+    this.teams.clear();
+    this.endedTeammates.clear();
+    this.startOwed.clear();
     this.pendingSpawns = [];
     this.turnStarts = [];
     this.startState = 'none';

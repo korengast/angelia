@@ -60,6 +60,9 @@ export function permissionPolicy(p: { permissions?: z.infer<typeof Permissions>;
   return { default: p.permission_prompts === 'deny' ? 'refuse' : 'ask', refuse: [], ask: [], approve: [] };
 }
 
+/** Which Claude app connectors a Claude Code profile loads (Profile.connectors, defaults.connectors). */
+export const ConnectorMode = z.enum(['granted', 'all']);
+
 export const BACKENDS = ['claude-code', 'grok', 'pi', 'codex', 'agy'] as const;
 // One word that cannot pass for a flag: it goes on the CLI's command line, and needs no confirm (accepted.ts).
 const Model = z.string().regex(/^[^\s-]\S*$/, 'a model name: one word, not starting with -');
@@ -70,8 +73,14 @@ export const Profile = z.object({
   cwd: z.string(),
   /** Capabilities this profile gets on top of defaults.capabilities; they also lift a default deny. */
   capabilities: z.array(z.string()).default([]),
-  /** Default capabilities this profile does not get. */
+  /** Default capabilities this profile does not get. With `connectors: all`, a connector named here
+   *  is dropped from the account's connectors for this profile, as one under `deny` is. */
   except: z.array(z.string()).default([]),
+  /** Claude Code only: which Claude app connectors of the account load. granted: only the `connector`
+   *  capabilities the profile is given (deny by default). all: every connector of the account, ones
+   *  added later in the Claude app included, but those it drops with except or deny (or defaults.deny).
+   *  Unset: defaults.connectors. */
+  connectors: ConnectorMode.optional(),
   /** Denied on top of defaults.deny. A profile's own deny beats everything. */
   deny: z.array(z.string()).default([]),
   permission_mode: PermissionMode.default('acceptEdits'),
@@ -223,6 +232,10 @@ export const Config = z.object({
       capabilities: z.array(z.string()).default([]),
       /** Denied to every profile, unless it lists them under its own capabilities. */
       deny: z.array(z.string()).default([]),
+      /** Claude Code: which Claude app connectors a profile that sets no `connectors` of its own loads.
+       *  granted (the default): only the connector capabilities it is given. all: every connector of
+       *  the account, but those it drops with except or deny. */
+      connectors: ConnectorMode.default('granted'),
       /** Where `/angelia-handoff` sends a terminal session from a folder no profile owns or reaches
        *  through add_dirs: a profile, or one chat (`whatsapp:<id>`), which then is also the pick when
        *  that profile has several chats. The chat gets a brief and the project's path. Unset: refused. */

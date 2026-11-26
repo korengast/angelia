@@ -147,7 +147,7 @@ describe('tmux mode: a turn a teammate\'s message started, between turns', { con
     assert.equal(b2.oursTeammates.size, 0);
   });
 
-  test('teammates\' reports have their own hourly count (30), and idle notes count in none', { timeout: 30_000 }, async (t) => {
+  test('teammates\' reports have their own hourly count (30), idle notes among them', { timeout: 30_000 }, async (t) => {
     const c = await stubChat(); t.after(() => c.o.shutdown());
     c.onEnter((n, p) => { if (n === 1) { p.rows(p.prompt(), ...ROW.teammate('toolu_s', 'scout'), ...ROW.background('toolu_1'), ROW.text('spawned')); p.stop('spawned'); } });
     await c.say('send a scout');
@@ -160,13 +160,13 @@ describe('tmux mode: a turn a teammate\'s message started, between turns', { con
     }
     assert.equal(c.sent.length, 11);
     const o = c.o as any;
-    assert.equal(o.teammateSent.get(c.key).at.length, 8, 'idle notes are not counted');
+    assert.equal(o.teammateSent.get(c.key).at.length, 10, 'idle notes are counted');
     assert.equal(o.selfSent.get(c.key), undefined, 'a task\'s ends keep their own count');
     // A task's end still has its six.
     for (let n = 1; n <= 7; n++) { p.mark({ text: `Task ${n}.`, origin: 'notification', origin_ids: ['toolu_1'] }); await taken(p); }
     assert.deepEqual(c.sent.slice(11), ['Task 1.', 'Task 2.', 'Task 3.', 'Task 4.', 'Task 5.', 'Task 6.', selfCapLine(6)]);
     // And the teammates' count stops at 30, with the line once.
-    o.teammateSent.get(c.key).at.push(...Array.from({ length: 21 }, () => Date.now()));
+    o.teammateSent.get(c.key).at.push(...Array.from({ length: 19 }, () => Date.now()));
     for (let n = 30; n <= 32; n++) { p.mark(report(n)); await taken(p); }
     assert.equal(c.sent.at(-2), 'Report 30.');
     assert.equal(c.sent.at(-1), selfCapLine(30));

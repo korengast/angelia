@@ -45,7 +45,8 @@ By hand:
    may send, e.g. [compact]), sandbox (claude-code: the CLI's own sandbox on, no escape; shell
    network only to sandbox.network.allowedDomains in settings.local.json; codex, pi and agy: on unless false),
    isolated (cut off from the other profiles and from _common/: for a profile other people talk
-   to), backends (written by /backend; keeps model, effort, bin, tui per CLI for a switch back),
+   to), connectors (claude-code: granted, the default, or all: every Claude app connector of the
+   account; also under defaults; \`angelia guide capabilities\`), backends (written by /backend; keeps model, effort, bin, tui per CLI for a switch back),
    and capabilities, except, deny (\`angelia guide capabilities\`).
    grok reads CLAUDE.md only in a folder it trusts: run \`grok --trust\` there once (init,
    onboarding and /backend grok do it); \`grok inspect\` then says "Project trusted: yes".
@@ -268,6 +269,14 @@ profile's chats; angelia ask loads none. Connectors need a claude.ai login: with
 CLAUDE_CODE_OAUTH_TOKEN they do not load. Keep
 allowedMcpServers out of the profile's own .claude/ settings: Claude Code adds it to Angelia's
 list, so compile and the launch refuse it.
+
+Every connector of the account: connectors: all, per profile or under defaults (the profile's own
+wins; granted, the default, is the deny by default above). Such a profile loads every connector of
+your claude.ai account, ones you add later in the Claude app included (at its next start, with no
+compile), and drops each connector capability it denies or lists under except:. Only a connector
+that is a capability in the table can be dropped. check-config names each such profile. A profile
+that denies an MCP server keeps its user-level servers out by name in this mode; after you add a
+user-level server, compile it again, or it does not start.
 
 defaults.capabilities goes to every profile, defaults.deny to none; a profile adds with
 capabilities:, drops a default with except:, and denies with deny:, which wins over everything.

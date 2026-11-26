@@ -2,6 +2,7 @@ import { readFileSync, statSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, resolve, join } from 'node:path';
 import { parse } from 'yaml';
+import { connectorMode, droppedConnectorNote, droppedConnectors } from '../../capabilities/resolve.js';
 import type { z } from 'zod';
 import { Config, Profile, permissionPolicy } from './schema.js';
 import { checkable } from '../../core/permission-rules.js';
@@ -55,6 +56,19 @@ export function configWarnings(cfg: Config, workspace?: string): string[] {
   for (const [name, p] of Object.entries(cfg.profiles)) for (const w of selfDenyWarnings(name, p.cwd)) out.push(w);
   for (const k of removed.get(cfg) ?? []) out.push(`${k}: ${REMOVED_NOTE}`);
   if (cfg.defaults.unmatched === 'reply') out.push('defaults.unmatched: reply answers strangers and confirms the bot is alive; drop is the quiet default');
+  return out;
+}
+
+/** What check-config says beside the warnings: `connectors: all` reaches further than the table says,
+ *  to what the owner connects in the Claude app later. Not a warning: it is what the owner chose. */
+export function configNotes(cfg: Config): string[] {
+  const out: string[] = [];
+  for (const [n, p] of Object.entries(cfg.profiles)) {
+    if (p.backend !== 'claude-code' || connectorMode(cfg, n) !== 'all') continue;
+    const dropped = droppedConnectors(cfg, n).map(([c]) => c);
+    out.push(`profiles.${n}: connectors: all: every Claude app connector of your claude.ai account, including ones you add later in the Claude app, reaches it at its next start${dropped.length ? `; it drops ${dropped.join(', ')}` : ''}`);
+    for (const [c, u] of droppedConnectors(cfg, n)) out.push(`profiles.${n}: ${droppedConnectorNote(c, u)}`);
+  }
   return out;
 }
 
