@@ -229,21 +229,26 @@ export function guardMcpLaunch(stateDir: string, name: string, cwd: string): Mcp
  * The allow-list pattern for a remote server's address: the scheme, host and path only, so a key in a
  * query (`?tavilyApiKey=...`) or a fragment never reaches the record, the command line or a settings
  * file; a `*` takes the cut part's place. Measured on claude 2.1.332 (a local http server at
- * `/mcp?key=...`): `.../mcp*` lets it in, `.../mcp` does not. A user and password before the host
- * (`user:key@`) become `*@`. An address with no path before its query gets `/*`, never a bare `*`
+ * `/mcp?key=...`): `.../mcp*` lets it in, `.../mcp` does not. An address with a user or password
+ * before the host (`user:key@`) has no pattern: `*@` would widen the list, since `*` also matches
+ * `/` (`https://evil.example/x@host/mcp`), so planProfile refuses it (userInfo) and this throws.
+ * An address with no path before its query gets `/*`, never a bare `*`
  * after the host, which would also let in every host whose name starts with it (`host.evil.example`);
  * not measured: if Claude Code matches such an address without the `/`, the server does not load
  * beside the connectors (planProfile notes it). A key in the path is copied as it is.
  */
 export function urlPattern(url: string): string {
+  if (userInfo(url)) throw new Error('an MCP server address with a user or password has no allow-list pattern');
   const cut = url.search(/[?#]/);
-  let base = cut < 0 ? url : url.slice(0, cut);
-  const auth = /^([a-z][a-z0-9+.-]*:\/\/)([^/]*@)/i.exec(base);
-  if (auth) base = `${auth[1]}*@${base.slice(auth[0].length)}`;
+  const base = cut < 0 ? url : url.slice(0, cut);
   if (cut < 0) return base;
   if (noPath(base)) return `${base}/*`;
   return base.endsWith('*') ? base : `${base}*`;
 }
+
+/** An address with a user or password before its host (`scheme://user:key@host`): an `@` before the
+ *  first `/`, `?` or `#` after the scheme. */
+export const userInfo = (url: string): boolean => /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(url);
 
 /** An address that is only a scheme and a host (and port): nothing after the host. */
 const noPath = (url: string): boolean => /^[a-z][a-z0-9+.-]*:\/\/[^/]*$/i.test(url);
@@ -1347,6 +1352,9 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
         const remote = new Map<string, string>();
         for (const n of Object.keys(user)) if (user[n].url) remote.set(n, user[n].url!);
         for (const n of mcpOwn) { const u = serverUrl(servers[n]); if (u) remote.set(n, u); }
+        // A user or password in the address: no pattern lets in just that server (urlPattern), so it
+        // stops the compile. Named by server, never by address: the address holds the password.
+        for (const [n, u] of remote) if (userInfo(u)) { remote.delete(n); conflicts.push(`the address of the MCP server ${n} holds a user or password before its host, which no allow-list pattern can match without letting in other addresses too; take them out of the address and send them in a header (headers in its MCP config) instead`); }
         mcpUrls = [...new Set([...remote.values()].map(urlPattern))].sort();
         for (const [n, u] of remote) if (/[?#]/.test(u) && noPath(u.slice(0, u.search(/[?#]/)))) notes.push(`the address of the MCP server ${n} has no path before its query, so it is on the allow list as its host and /*, which Claude Code may not match against it: this server may not load beside the connectors; give its address a path (such as /mcp)`);
         for (const [n, u] of remote) if (u.includes('${')) notes.push(`the address of the MCP server ${n} holds \${...}, and Claude Code matches the allow list against the address after it fills that in, so this server may not load beside the connectors`);
