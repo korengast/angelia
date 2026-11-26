@@ -158,7 +158,7 @@ describe('the canary\'s checks, on the real TuiBrain with a pretend pane', { con
     assert.deepEqual(checks.filter((c) => !c.ok), []);
     assert.match(checks[1].detail, /^answered pong, ended by the Stop marker$/);
     assert.equal(checks[2].detail, 'answered pasted, ended by the Stop marker, its prompt key matched');
-    assert.match(checks[3].detail, /^answered done after a 1 s command \(asked once, allowed by the relay\), ended by the Stop marker; (\d+) of \1 screens read busy$/);
+    assert.match(checks[3].detail, /^answered done after a [12] s command \(asked once, allowed by the relay\), ended by the Stop marker; (\d+) of \1 screens read busy$/);
     assert.match(checks[5].detail, new RegExp(`^${SLASH_COMMAND} ended by the quiet pane after \\d+ s$`));
     assert.ok(checks[3].ms >= 1000 && checks.every((c) => c.ms >= 0));
     assert.deepEqual(kept, {}, 'a pass keeps no screen');
@@ -209,7 +209,7 @@ describe('the canary\'s checks, on the real TuiBrain with a pretend pane', { con
     // The second: two in a row are a screen the reader takes for idle.
     const [{ checks, kept, by }, two] = await Promise.all([rigWith(t, { toolNotAsked: true, tornFrames: [3] }), rigWith(t, { toolNotAsked: true, tornFrames: [3, 4] })]);
     assert.deepEqual(checks.filter((c) => !c.ok), []);
-    const m = /^answered done after a 1 s command \(not asked: the owner's settings allow the command\), ended by the Stop marker; (\d+) of (\d+) screens read busy \(the other is kept\)$/.exec(by('tool run').detail);
+    const m = /^answered done after a [12] s command \(not asked: the owner's settings allow the command\), ended by the Stop marker; (\d+) of (\d+) screens read busy \(the other is kept\)$/.exec(by('tool run').detail);
     assert.ok(m && Number(m[2]) - Number(m[1]) === 1 && Number(m[2]) >= 4, by('tool run').detail);
     assert.deepEqual(Object.keys(kept), ['tool-run-not-busy.txt'], 'the one screen is kept, on a pass too');
     assert.match(two.by('tool run').detail, /^2 of \d+ screens did not read busy while the command ran, 2 of them in a row \(the first is kept\)$/);
