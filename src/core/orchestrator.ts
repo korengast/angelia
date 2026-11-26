@@ -11,10 +11,10 @@ import { gate, isOwner, OWNER_COMMANDS } from './router/gate.js';
 import { SessionMap } from './session/map.js';
 import { KeyedQueue } from './session/queue.js';
 import { createBrain, locateBin, profileBin, type Brain, type BackendName } from '../brain/index.js';
-import { projectsDir } from '../brain/transcripts.js';
+import { projectFolder, projectsDir } from '../brain/transcripts.js';
 import { isApiErrorReason, loginLost } from '../brain/api-error.js';
 import { ChatNotes, sentPreface } from './session/notes.js';
-import { type IdlePane, START_EXIT, TEAMMATE_MAX_MS } from '../brain/tui.js';
+import { type IdlePane, openTasksInTranscript, START_EXIT, TEAMMATE_MAX_MS } from '../brain/tui.js';
 import { claudeHistory, claudeTranscriptFor, piHistory, type HistoryItem, type HistoryPage } from '../brain/history.js';
 import { grokPage, grokReplay } from '../brain/grok-history.js';
 import { agyReplay } from '../brain/agy-history.js';
@@ -255,6 +255,8 @@ export class Orchestrator {
   /** Panes let go of while a background task or teammate was open (name, and when): the pane reap
    *  keeps them, since a parked brain reads no more of them (TuiBrain.release). */
   private busyPanes = new Map<string, number>();
+  /** A restart's pane the reap kept for its open tasks, and why: logged once (mayEndPane). */
+  private keptPanes = new Map<string, string>();
   /** Sessions a handoff moved a chat away from while their turn ran, by session id. Their panes go on
    *  with nobody reading them until the turn is over, or `/resume` takes one back (handoff). */
   private background = new Map<string, { key: string; brain: Brain }>();
@@ -2319,32 +2321,44 @@ export class Orchestrator {
   /** The panes the pane reap may end (brain/tui-panes.ts, reapPanes): each parked one, and each chat's
    *  active session on a tui profile that no brain holds, as a restart leaves them. Never one a brain
    *  holds, for a turn or between turns, nor one read in the background (the idle reap parks those
-   *  first), nor one let go of with a task or teammate open, until it is past TEAMMATE_MAX_MS. */
+   *  first), nor one let go of with a task or teammate open, until it is past TEAMMATE_MAX_MS. A pane
+   *  no brain of this daemon knows (a restart's) carries its transcript: no tracker saw its work, so
+   *  mayEndPane reads the open tasks there. */
   idlePanes(now = Date.now()): IdlePane[] {
     const nameOf = (b: Brain): string | undefined => { const n = (b as { name?: unknown }).name; return typeof n === 'string' ? n : undefined; };
     const held = new Set([...this.brains.values(), ...[...this.background.values()].map((e) => e.brain)].map(nameOf));
     const out = new Map<string, IdlePane>();
-    const add = (key: string, name: string | undefined) => {
+    const add = (key: string, name: string | undefined, transcript?: string) => {
       const p = this.profileFor(key);
       if (!name || held.has(name) || out.has(name) || !p?.tui || p.backend !== 'claude-code') return;
       if (now - (this.busyPanes.get(name) ?? -Infinity) < TEAMMATE_MAX_MS) return;
       const bin = this.binFor(p);
-      out.set(name, { name, key, ...(bin ? { bin } : {}) });
+      out.set(name, { name, key, ...(bin ? { bin } : {}), ...(transcript ? { transcript } : {}) });
     };
     for (const [key, b] of this.parked) add(key, nameOf(b));
+    const root = typeof this.opts.transcripts === 'string' ? this.opts.transcripts : projectsDir();
     for (const key of this.map.keys()) {
       const p = this.profileFor(key);
       const row = this.map.getActive(key);
-      if (p && row) add(key, remoteControlName(p, { id: row.id, started: row.started }));
+      if (p && row) add(key, remoteControlName(p, { id: row.id, started: row.started }), join(root, projectFolder(p.cwd), `${row.id}.jsonl`));
     }
     return [...out.values()];
   }
 
   /** Asked right before the pane reap ends a pane: no brain took its chat since the list was made, and
-   *  nothing runs or waits there. */
+   *  nothing runs or waits there. A restart's pane: its transcript shows no background shell, subagent
+   *  or teammate open; a transcript that cannot be read keeps it. */
   mayEndPane(p: IdlePane): boolean {
-    return !this.brains.has(p.key) && !this.running.has(p.key) && this.queue.queued(p.key) === 0
-      && ![...this.background.values()].some((e) => (e.brain as { name?: unknown }).name === p.name);
+    if (this.brains.has(p.key) || this.running.has(p.key) || this.queue.queued(p.key) !== 0
+      || [...this.background.values()].some((e) => (e.brain as { name?: unknown }).name === p.name)) return false;
+    if (p.transcript === undefined) return true;
+    const open = openTasksInTranscript(p.transcript);
+    if (open === 0) { this.keptPanes.delete(p.name); return true; }
+    // Once per pane and reason: the reap asks each minute.
+    const why = open === null ? 'its transcript could not be read' : `${open} background task(s) open in its transcript`;
+    if (this.keptPanes.get(p.name) !== why) { this.keptPanes.set(p.name, why); this.log(`tmux: pane ${p.name} key=${p.key} kept: ${why}`); }
+    if (this.keptPanes.size > 200) this.keptPanes.delete(this.keptPanes.keys().next().value!);
+    return false;
   }
 
   /** The pane reap ended this pane: its parked brain goes too, so the next message starts a new one,

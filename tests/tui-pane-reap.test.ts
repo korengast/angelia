@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -174,4 +174,64 @@ test('a pane let go of with a teammate open is not the pane reap\'s', async () =
   oo.brains.set('telegram:1', stub(0));
   await oo.dropBrain('telegram:1', false);
   assert.equal(o.idlePanes().length, 1);
+});
+
+test('the open tasks a transcript leaves: a background shell or subagent with no end read, younger than the longest a teammate is kept', async () => {
+  const { openTasksInTranscript } = await import('../src/brain/tui.js');
+  const { ROW, jsonl } = await import('./tui-stub.js');
+  const dir = mkdtempSync(join(tmpdir(), 'angelia-opentasks-'));
+  const file = join(dir, 's.jsonl');
+  assert.equal(openTasksInTranscript(file), null, 'no file: nobody can tell');
+  const end = (id: string) => ({ type: 'queue-operation', operation: 'enqueue', content: `<task-notification><tool-use-id>${id}</tool-use-id></task-notification>` });
+  const agent = (id: string) => [
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Agent', input: { prompt: 'p', run_in_background: true } }] } },
+    { type: 'user', message: { role: 'user', content: [{ tool_use_id: id, type: 'tool_result', content: 'launched' }] }, toolUseResult: { status: 'async_launched' } },
+  ];
+  writeFileSync(file, jsonl([ROW.prompt('hi'), ...ROW.background('toolu_sh'), ...agent('toolu_ag'), ROW.call('toolu_fg'), ROW.result('toolu_fg')]));
+  assert.equal(openTasksInTranscript(file), 2, 'a shell and a subagent open; a foreground call is no task');
+  appendFileSync(file, jsonl([end('toolu_sh')]));
+  assert.equal(openTasksInTranscript(file), 1, 'the file grew: read again');
+  appendFileSync(file, jsonl([end('toolu_ag')]));
+  assert.equal(openTasksInTranscript(file), 0);
+  // A start older than the longest time holds nothing, by its row's own time.
+  const old = new Date(Date.now() - 13 * HOUR).toISOString();
+  writeFileSync(join(dir, 'old.jsonl'), jsonl(ROW.background('toolu_old').map((r) => ({ ...r, timestamp: old }))));
+  assert.equal(openTasksInTranscript(join(dir, 'old.jsonl')), 0);
+});
+
+test('after a restart, a pane whose transcript shows a task open is kept, and one whose transcript cannot be read; with every task over it ends', { skip: !hasTmux && 'no tmux', timeout: 30_000 }, async (t) => {
+  const { reapPanes } = await import('../src/brain/tui.js');
+  const { remoteControlName } = await import('../src/brain/argv.js');
+  const { Orchestrator } = await import('../src/core/orchestrator.js');
+  const { projectFolder } = await import('../src/brain/transcripts.js');
+  const { ROW, jsonl } = await import('./tui-stub.js');
+  t.after(() => { try { tmux('kill-server'); } catch { /* already gone */ } });
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'angelia-panereap-cwd-')));
+  const root = mkdtempSync(join(tmpdir(), 'angelia-panereap-projects-'));
+  const cfg = Config.parse({ profiles: { a: { cwd, tui: true } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000 } });
+  const logs: string[] = [];
+  // A new daemon: the chat's active session has a pane, and no brain of this daemon knows it.
+  const o = new Orchestrator(cfg, { telegram: { send: async () => {} } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-panereap-orch-')), bins: { 'claude-code': FAKE }, transcripts: root, log: (l: string) => logs.push(l) });
+  t.after(() => o.shutdown());
+  const key = 'telegram:1';
+  const row = o.map.ensureActive(key, 'hello', 'claude-code');
+  o.map.recordTurn(key, row.id, 'hello', 'claude-code');
+  const name = remoteControlName(cfg.profiles.a, { id: row.id, started: row.started });
+  tmux('new-session', '-d', '-s', name, '-x', '220', '-y', '50', 'env', 'FAKE_TUI_FRAME=pane-idle.txt', FAKE);
+  await new Promise((r) => setTimeout(r, 500));
+  const file = join(root, projectFolder(cwd), `${row.id}.jsonl`);
+  const listed = o.idlePanes();
+  assert.deepEqual(listed.map((p) => [p.name, p.transcript]), [[name, file]]);
+  const sweep = () => reapPanes(o.idlePanes(), process.env, { idleHours: 12, now: Date.now() + 13 * HOUR, mayEnd: (p) => o.mayEndPane(p) });
+
+  assert.deepEqual(await sweep(), [], 'no transcript: kept');
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, jsonl([ROW.prompt('hello'), ...ROW.background('toolu_sh')]));
+  assert.deepEqual(await sweep(), [], 'a background shell open: kept');
+  assert.deepEqual(await sweep(), []);
+  assert.equal(logs.filter((l) => l.includes(`pane ${name}`) && l.includes('1 background task(s) open')).length, 1, 'logged once');
+  assert.ok(names().includes(name));
+  appendFileSync(file, jsonl([{ type: 'queue-operation', operation: 'enqueue', content: '<task-notification><tool-use-id>toolu_sh</tool-use-id></task-notification>' }]));
+  assert.deepEqual((await sweep()).map((p) => p.why), ['idle 13h'], 'its task over: ended');
+  assert.ok(!names().includes(name));
 });

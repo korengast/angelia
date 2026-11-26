@@ -25,7 +25,12 @@ export async function sweepPanes(keep: Set<string>, prefixes: string[], env: Nod
 /** A pane the reap may end once it sat idle too long or runs an older Claude Code: a parked one, or a
  *  chat's active session that no brain holds (Orchestrator.idlePanes). `bin`: the profile's CLI, whose
  *  `--version` is the build installed now; without it only the idle rule applies. */
-export interface IdlePane { name: string; key: string; bin?: string }
+export interface IdlePane {
+  name: string; key: string; bin?: string;
+  /** The session's transcript, for a pane no brain of this daemon tracked (a restart's): its open
+   *  tasks are read there before the kill. */
+  transcript?: string;
+}
 
 /** The x.y.z of a native Claude Code install in a path or command line (`…/claude/versions/2.1.310`).
  *  `claude/` is part of it: an MCP server under `~/.pyenv/versions/1.2.3` is no build of Claude's. */

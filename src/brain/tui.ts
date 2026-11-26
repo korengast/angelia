@@ -264,6 +264,38 @@ export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent
   return { starts, ends };
 }
 
+/** What a transcript read last said: by path, with the size and time it had then. */
+const openTasksRead = new Map<string, { size: number; mtime: number; open: Map<string, number> }>();
+
+/**
+ * The background shells, subagents and teammates a session's transcript leaves open: started (by
+ * backgroundRows), no end read, and started less than TEAMMATE_MAX_MS ago by the row's own time.
+ * Null when the file cannot be read: nobody can tell, so a caller keeps the pane. It is how the pane
+ * reap knows a pane's work after a restart, when no brain of this daemon tracked it (Orchestrator.
+ * mayEndPane). A file that did not change since the last read is not read again.
+ */
+export function openTasksInTranscript(path: string, now = Date.now()): number | null {
+  let st;
+  try { st = statSync(path); } catch { return null; }
+  let seen = openTasksRead.get(path);
+  if (!seen || seen.size !== st.size || seen.mtime !== st.mtimeMs) {
+    let text: string;
+    try { text = readFileSync(path, 'utf8'); } catch { return null; }
+    const calls = new Map<string, 'bash' | 'agent'>(), open = new Map<string, number>();
+    for (const line of text.split('\n')) {
+      if (!line.includes('tool_result') && !line.includes('tool_use') && !line.includes('task-notification')) continue;
+      const { starts, ends } = backgroundRows(line, calls);
+      // A row with no time of its own counts as started now: kept, rather than guessed old.
+      const at = Date.parse(/"timestamp"\s*:\s*"([^"]+)"/.exec(line)?.[1] ?? '');
+      for (const t of starts) open.set(t.id, Number.isNaN(at) ? now : at);
+      for (const id of ends) open.delete(id);
+    }
+    openTasksRead.set(path, seen = { size: st.size, mtime: st.mtimeMs, open });
+    if (openTasksRead.size > 200) openTasksRead.delete(openTasksRead.keys().next().value!);
+  }
+  return [...seen.open.values()].filter((at) => now - at < TEAMMATE_MAX_MS).length;
+}
+
 /** The team of a spawned teammate (`teammate_id` as `<name>@<team>`), when its result says it. */
 export function teammateTeam(res: { teammate_id?: unknown }): string | undefined {
   const team = typeof res.teammate_id === 'string' ? res.teammate_id.slice(res.teammate_id.indexOf('@') + 1 || res.teammate_id.length) : '';

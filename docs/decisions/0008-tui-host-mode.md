@@ -65,7 +65,8 @@ warm between turns, background tasks outlive a turn, and slash commands behave a
   time the session was made, measured on tmux 3.7c), or at once when it runs an older Claude Code than the one
   installed (the build read from its process, `…/claude/versions/<x.y.z>`; not read, only the hours
   count). Only a pane idle on screen goes, never mid-turn, with a dialog open or with a background
-  task or teammate listed or open, and the next message starts it again with `--resume`, so the conversation stays.
+  task or teammate listed or open (after a restart, when no brain tracked the pane, the open tasks
+  are read from the session's transcript, and a transcript that cannot be read keeps the pane), and the next message starts it again with `--resume`, so the conversation stays.
   The daemon log names each one and why.
 - **tmux becomes a dependency** for profiles that opt in. Print mode still needs nothing.
 
