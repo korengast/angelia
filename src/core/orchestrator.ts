@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, basename } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { permissionPolicy, type Config, type Profile, type Route } from '../instance/config/schema.js';
@@ -12,7 +12,7 @@ import { SessionMap } from './session/map.js';
 import { KeyedQueue } from './session/queue.js';
 import { createBrain, locateBin, profileBin, type Brain, type BackendName } from '../brain/index.js';
 import { projectFolder, projectsDir } from '../brain/transcripts.js';
-import { isApiErrorReason, loginLost } from '../brain/api-error.js';
+import { isApiErrorReason, loginLost, retryableApiError } from '../brain/api-error.js';
 import { ChatNotes, sentPreface } from './session/notes.js';
 import { type IdlePane, openTasksInTranscript, START_EXIT, TEAMMATE_MAX_MS } from '../brain/tui.js';
 import { claudeHistory, claudeTranscriptFor, piHistory, type HistoryItem, type HistoryPage } from '../brain/history.js';
@@ -35,7 +35,7 @@ import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
 import { agentDenyRules, placedPermissions } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
-import { guardMcpLaunch, mcpSettingsFile, stateOpenPaths, type McpLaunch } from '../capabilities/compile.js';
+import { guardMcpLaunch, launchSettingsFile, stateOpenPaths, type McpLaunch } from '../capabilities/compile.js';
 import { MAX_INBOUND, SenderQuota, saveInbound } from '../adapters/inbox.js';
 import type { ChatEventBody, ChatListener } from './events.js';
 import { takeAdoptTurns, writeAdoptTurns, writeCutTurns, type AdoptTurn, type AdoptWaiting } from './cut-turns.js';
@@ -60,6 +60,9 @@ export interface Sender {
   typing?(chat: string, on: boolean): Promise<void>;
   /** The chat's own name (a group's subject), for naming a new profile. */
   chatName?(chat: string): Promise<string | undefined>;
+  /** A text about to go out as a file, with the rewrite the platform gives its messages (a phone a
+   *  WhatsApp group hides). Absent where there is none. */
+  hidePhones?(chat: string, text: string): string;
   /** The request a line was sent for with `ask` is over (answered anywhere, timed out, its turn ended):
    *  the controls under that line go. Absent on an adapter that shows none; never throws. */
   askDone?(chat: string, id: string): void;
@@ -149,7 +152,7 @@ export interface OrchestratorOptions {
 /** `midturnFollow`: the turn is the one Claude Code runs by itself for chat messages typed into the turn
  *  before it, which that turn did not take (followAbsorbed): no no-answer line, nothing said when none ran. */
 /** `apiRetried`: this is the one retry after an API error (API_RETRY_MS); `retried`: the one under a fresh id. */
-type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; apiRetried?: boolean; follow?: AsyncGenerator<BrainEvent>; midturnFollow?: boolean; sent?: string };
+type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; apiRetried?: boolean; follow?: AsyncGenerator<BrainEvent>; midturnFollow?: boolean; sent?: string; given?: () => void };
 
 /** The backends /backend offers. */
 const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex', 'pi', 'agy'];
@@ -257,6 +260,8 @@ export class Orchestrator {
   private busyPanes = new Map<string, number>();
   /** A restart's pane the reap kept for its open tasks, and why: logged once (mayEndPane). */
   private keptPanes = new Map<string, string>();
+  /** When each pane's transcript was first found unreadable (mayEndPane). */
+  private unreadSince = new Map<string, number>();
   /** Sessions a handoff moved a chat away from while their turn ran, by session id. Their panes go on
    *  with nobody reading them until the turn is over, or `/resume` takes one back (handoff). */
   private background = new Map<string, { key: string; brain: Brain }>();
@@ -1015,7 +1020,7 @@ export class Orchestrator {
   private terminalMcp(name: string, cwd: string): { mcp?: McpLaunch; settingsFile?: string } {
     const state = this.opts.stateDir ?? join(homedir(), '.angelia');
     const mcp = guardMcpLaunch(state, name, cwd);
-    return mcp ? { mcp, settingsFile: mcpSettingsFile(state, name) } : {};
+    return mcp ? { mcp, settingsFile: launchSettingsFile(state, name, mcp.settings) } : {};
   }
 
   /** A brain for one session of a chat, with its listeners, not started. */
@@ -1026,6 +1031,10 @@ export class Orchestrator {
     // The chat's own API token is a secret like the capability ones: in tmux mode it reaches the
     // pane through the private file, never a command line.
     const api = this.opts.sessionToken?.(key);
+    const state = this.opts.stateDir ?? join(homedir(), '.angelia');
+    // The MCP launch from the guard, never from the record in the agent's own folder (connectors fix2 N1),
+    // and its keys by a file in the state folder, so print mode's command line names no address.
+    const mcp = profile.backend === 'claude-code' ? guardMcpLaunch(state, name, effective.cwd) : undefined;
     const b = createBrain(effective, { id: row.id, started: row.started }, {
       bin: this.binFor(profile), env: { ...env.env, ANGELIA_SESSION_KEY: key, ...(api ? { ANGELIA_API_TOKEN: api } : {}) },
       hostEnv: this.childEnv().env, granted: api ? [...env.granted, 'ANGELIA_API_TOKEN'].sort() : env.granted, withheld: env.withheld,
@@ -1035,8 +1044,7 @@ export class Orchestrator {
       apiSocket: join(this.opts.stateDir ?? join(homedir(), '.angelia'), API_SOCKET),
       profileName: name,
       stateOpen: stateOpenPaths(this.cfg, name, this.opts.stateDir ?? join(homedir(), '.angelia')),
-      // The MCP launch from the guard, never from the record in the agent's own folder (connectors fix2 N1).
-      ...(profile.backend === 'claude-code' ? { mcp: guardMcpLaunch(this.opts.stateDir ?? join(homedir(), '.angelia'), name, effective.cwd), mcpSettingsFile: mcpSettingsFile(this.opts.stateDir ?? join(homedir(), '.angelia'), name) } : {}),
+      ...(profile.backend === 'claude-code' ? { mcp, mcpSettingsFile: mcp ? launchSettingsFile(state, name, mcp.settings) : undefined } : {}),
       // Only a session that may take messages into a running turn gets the PreToolUse hook (intoTurnAllowed).
       midturn: profile.tui && profile.midturn !== false,
       ...(this.opts.blockedCheckMs !== undefined ? { blockedCheckMs: this.opts.blockedCheckMs } : {}),
@@ -1248,18 +1256,22 @@ export class Orchestrator {
     }
     const b = await this.brainFor(key, name);
     // What was posted into the chat past its agent since its last turn: told before the envelope, as
-    // data. Taken at the turn's start: a turn the restart cuts loses them, and the cut line in the chat
-    // covers that. A bare CLI command goes as typed and leaves them, and so does a prompt Angelia wrote
+    // data. They count as told once the turn reached the agent (given, below): a turn that never did
+    // leaves them for the next one. A bare CLI command goes as typed and leaves them, and so does a prompt Angelia wrote
     // itself (a handoff brief). Another profile's line only when this profile takes its tasks
     // (accept_from): a line is no back door past that list. The chat still saw it.
-    const sent = o.sent ?? (!bare && !follow ? sentPreface(this.notes.takeUnseen(key).filter((n) => this.peerLineShown(name, n.source)), quoteLookalikes) : '');
-    o = { ...o, sent };
+    const lines = o.sent === undefined && !bare && !follow ? this.notes.unseen(key) : undefined;
+    const sent = o.sent ?? (lines ? sentPreface(lines.notes.filter((n) => this.peerLineShown(name, n.source)), quoteLookalikes) : '');
+    const given = o.given ?? lines?.given;
+    o = { ...o, sent, given };
     const before = [preface, sent].filter(Boolean).join('\n\n');
     const text = before ? `${before}\n\n${agentText(i, bare)}` : agentText(i, bare);
     // A turn another profile asked for (sender `profile`): what it starts is a peer's work (TurnFlags.peer).
     const events = follow ?? b.turn(text, { app, msg: this.msgId(i), ...(i.sender === 'profile' ? { peer: true } : {}) });
     if (!app) await sender?.typing?.(i.chat, true);
     let result: Extract<BrainEvent, { kind: 'result' }> | undefined;
+    // The agent showed it has the message: it said something, or asked for a permission.
+    let reached = false;
     // Progress lines never hold the turn: they queue, merge while the bucket is full, and give way
     // to the answer and to permission prompts (deliver/rate.ts).
     const progress = new ProgressOutbox(this.rateFor(i.platform), (t) => this.replyFromAgent(i, t, profile, true),
@@ -1289,6 +1301,7 @@ export class Orchestrator {
     try {
       for await (const e of events) {
         lastEvent = Date.now();
+        if (e.kind === 'progress' || e.kind === 'permission') reached = true;
         if (e.kind === 'progress') {
           // A client sees each line at once; the chat gets them through the rate limit. An app turn's
           // lines go to the client only, so they never reach the outbox.
@@ -1317,7 +1330,8 @@ export class Orchestrator {
             } else {
               // tmux mode: the hook stepped aside before the answer landed, so Claude asks in its own dialog.
               this.log(`permission auto-deny failed key=${key} tool=${e.tool}: no hook waits for it`);
-              if (!app) await this.reply(i, AUTO_DENY_FAILED_LINE).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
+              // An app turn's line goes to the client only (reply), which would else hear nothing.
+              await this.reply(i, AUTO_DENY_FAILED_LINE).catch((err) => this.log(`notice failed key=${key} ${(err as Error).message}`));
             }
             continue;
           }
@@ -1369,6 +1383,7 @@ export class Orchestrator {
       if (watch) clearInterval(watch);
       if (!app) await sender?.typing?.(i.chat, false);
     }
+    if (reached || (result && !result.isError) || result?.reason === TMUX_STALLED) given?.();
     // What the agent said along the way and the rate limit held back goes in front of the answer.
     const unsent = await progress.close();
     if (stalled) {
@@ -1417,9 +1432,10 @@ export class Orchestrator {
         await this.told(i, notDeliveredLine(result.reason));
         return result.reason ?? 'not delivered';
       }
-      if (!o.apiRetried && isApiErrorReason(result?.reason)) {
+      if (!o.apiRetried && retryableApiError(result?.reason)) {
         // The CLI wrote a failed API call as its answer (not logged in, a 5xx): never post it as the
-        // agent's words. Once more in the same session after a minute, which a refreshed token or a
+        // agent's words. Only one a wait may answer is tried again (retryableApiError).
+        // Once more in the same session after a minute, which a refreshed token or a
         // passing outage answers; the session keeps the conversation, a fresh one would lose it.
         if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
         const wait = this.opts.apiRetryMs ?? API_RETRY_MS;
@@ -2179,9 +2195,9 @@ export class Orchestrator {
       const dir = mkdtempSync(join(tmpdir(), 'angelia-answer-'));
       const path = join(dir, 'answer.md');
       try {
-        writeFileSync(path, whole, { mode: 0o600 });
+        writeFileSync(path, sender.hidePhones?.(i.chat, whole) ?? whole, { mode: 0o600 });
         await this.rateFor(i.platform).acquire(true);
-        await this.retrySend(() => sender.sendMedia!(i.chat, { path, kind: 'document', mime: 'text/markdown', bytes: Buffer.byteLength(whole), fileName: 'answer.md' }, i.thread));
+        await this.retrySend(() => sender.sendMedia!(i.chat, { path, kind: 'document', mime: 'text/markdown', bytes: statSync(path).size, fileName: 'answer.md' }, i.thread));
       } finally { rmSync(dir, { recursive: true, force: true }); }
     }
     // Delivered: an answer this chat could not get earlier goes out now, once, as the agent's words
@@ -2358,13 +2374,21 @@ export class Orchestrator {
 
   /** Asked right before the pane reap ends a pane: no brain took its chat since the list was made, and
    *  nothing runs or waits there. Its transcript shows no background shell, subagent or teammate open;
-   *  a transcript that cannot be read keeps it. */
-  mayEndPane(p: IdlePane): boolean {
+   *  a transcript that cannot be read keeps it, for TEAMMATE_MAX_MS at the most. */
+  mayEndPane(p: IdlePane, now = Date.now()): boolean {
     if (this.brains.has(p.key) || this.running.has(p.key) || this.queue.queued(p.key) !== 0
       || [...this.background.values()].some((e) => (e.brain as { name?: unknown }).name === p.name)) return false;
     if (p.transcript === undefined) return true;
     const open = openTasksInTranscript(p.transcript);
+    if (open !== null) this.unreadSince.delete(p.name);
     if (open === 0) { this.keptPanes.delete(p.name); return true; }
+    // A transcript that stays unreadable (never written, removed) must not keep the pane for good:
+    // past TEAMMATE_MAX_MS from the first failed read, no task there could still be held.
+    if (open === null) {
+      let since = this.unreadSince.get(p.name);
+      if (since === undefined) this.unreadSince.set(p.name, since = now);
+      if (now - since >= TEAMMATE_MAX_MS) return true;
+    }
     // Once per pane and reason: the reap asks each minute.
     const why = open === null ? 'its transcript could not be read' : `${open} background task(s) open in its transcript`;
     if (this.keptPanes.get(p.name) !== why) { this.keptPanes.set(p.name, why); this.log(`tmux: pane ${p.name} key=${p.key} kept: ${why}`); }
@@ -2378,6 +2402,7 @@ export class Orchestrator {
     const b = this.parked.get(p.key);
     if (b && (b as { name?: unknown }).name === p.name) this.parked.delete(p.key);
     this.busyPanes.delete(p.name);
+    this.unreadSince.delete(p.name);
   }
 
   /** Reap brains idle longer than the configured window. Call from a timer. */

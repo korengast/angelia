@@ -213,6 +213,10 @@ test('the open tasks a transcript leaves: a background shell or subagent with no
   assert.equal(openTasksInTranscript(file), 1, 'the file grew: read again');
   appendFileSync(file, jsonl([end('toolu_ag')]));
   assert.equal(openTasksInTranscript(file), 0);
+  // Only the file's end is read: a start before it is not seen.
+  const big = join(dir, 'big.jsonl');
+  writeFileSync(big, jsonl(ROW.background('toolu_early')) + `${JSON.stringify({ pad: 'x'.repeat(9 * 1024 * 1024) })}\n` + jsonl(ROW.background('toolu_late')));
+  assert.equal(openTasksInTranscript(big), 1);
   // A start older than the longest time holds nothing, by its row's own time.
   const old = new Date(Date.now() - 13 * HOUR).toISOString();
   writeFileSync(join(dir, 'old.jsonl'), jsonl(ROW.background('toolu_old').map((r) => ({ ...r, timestamp: old }))));
@@ -245,6 +249,7 @@ test('after a restart, a pane whose transcript shows a task open is kept, and on
   const sweep = () => reapPanes(o.idlePanes(), process.env, { idleHours: 12, now: Date.now() + 13 * HOUR, mayEnd: (p) => o.mayEndPane(p) });
 
   assert.deepEqual(await sweep(), [], 'no transcript: kept');
+  assert.equal(o.mayEndPane(o.idlePanes()[0], Date.now() + 13 * HOUR), true, 'unreadable past the longest a task is held: ended');
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, jsonl([ROW.prompt('hello'), ...ROW.background('toolu_sh')]));
   assert.deepEqual(await sweep(), [], 'a background shell open: kept');

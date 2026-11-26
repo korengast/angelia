@@ -436,11 +436,23 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
         this.log(`whatsapp: group members not fetched, sent without tags chat=${chat.slice(0, 8)}…: ${String((e as Error).message ?? e).slice(0, 120)}`);
         return undefined;
       }) : undefined;
-      const m = withMentions(text, meta?.participants, { lidFor: (n) => this.lids.lidFor(n) });
+      const m = withMentions(text, meta?.participants, { lidFor: this.lidRewrite(chat) });
       if (m.capped) this.log(`whatsapp: ${m.mentions.length + m.capped} members named in one message, ${m.capped} not tagged (at most ${MAX_MENTIONS}) chat=${chat.slice(0, 8)}…`);
       return this.post(chat, m.mentions.length ? { text: m.text, mentions: m.mentions } : { text: m.text });
     }
     return this.post(chat, { text });
+  }
+
+  /** The rewrite of a text with no tags (a caption, the file of a long answer): in a group, a phone
+   *  the group hides goes out as its lid. */
+  hidePhones(chat: string, text: string): string {
+    return chat.endsWith('@g.us') ? withMentions(text, undefined, { lidFor: this.lidRewrite(chat) }).text : text;
+  }
+
+  /** The lid of a phone, for a group that may address members by lid. None in a group the cache knows
+   *  addresses them by phone number: nothing is hidden there, and a lid would name nobody. */
+  private lidRewrite(chat: string): ((phone: string) => string | undefined) | undefined {
+    return this.groups.get(chat)?.addressingMode === 'pn' ? undefined : (n) => this.lids.lidFor(n);
   }
 
   /** A group's metadata, from the cache or the server (which then fills the cache). */
@@ -472,7 +484,7 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
     if (!this.sock || !this.connected) throw new Error('whatsapp: not connected');
     // A caption in a group gets the same rewrite as a text: a phone the group hides goes out as its
     // lid. No tags on a caption: it needs no member fetch, and a file is rarely where a tag belongs.
-    const caption = (m.caption && chat.endsWith('@g.us') ? withMentions(m.caption, undefined, { lidFor: (n) => this.lids.lidFor(n) }).text : m.caption) || undefined;
+    const caption = (m.caption && this.hidePhones(chat, m.caption)) || undefined;
     if (m.kind === 'image') { await this.post(chat, { image: { url: m.path }, caption, mimetype: m.mime }); return; }
     if (m.kind === 'video') { await this.post(chat, { video: { url: m.path }, caption, mimetype: m.mime }); return; }
     if (m.kind === 'audio' && m.voice !== false) {

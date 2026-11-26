@@ -62,3 +62,9 @@ test('redact: a long line is cut before the regexes run, and a dashed value does
   assert.ok(out.length < 2100 && out.endsWith('(line cut at 2000 characters)'), out.slice(-60));
   assert.equal(redactLog('x'.repeat(2000)), 'x'.repeat(2000), 'at the limit nothing is cut');
 });
+
+test('a key that names a file keeps its path; the same key with a value is masked', () => {
+  assert.equal(redactLog('api_key_file=/etc/keys/openai.key'), 'api_key_file=/etc/keys/openai.key');
+  assert.equal(redactLog('api_key_file=abcdefgh12345678'), 'api_key_file=<redacted>');
+  assert.equal(redactLog('api_key=/abcdefgh12345678'), 'api_key=<redacted>');
+});

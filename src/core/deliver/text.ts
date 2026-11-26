@@ -46,6 +46,7 @@ export const UNMATCHED_LINE = '[Angelia] This chat is not routed to a profile.';
 export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
 /** A chat answer to a request no hook waits for any more (it stepped aside when the chat stopped
  *  being read): Claude asks in its own dialog instead. */
+export const LATE_ANSWER_LINE = 'Too late: that request is no longer waiting for the chat. If Claude still asks, answer it in the Claude app or in its pane.';
 /** What the agent hears when a `permission_prompts: deny` profile refuses a request without asking.
  *  A chat "no", the app and a timeout keep the CLI's plain "Denied from chat": after those the owner
  *  may well say "run it again", and a tool result that says "do not retry" would stand in the way. */
@@ -56,7 +57,6 @@ export function autoDenyCapLine(max: number): string {
 }
 /** permission_prompts: deny, but no hook waited for the refusal (tmux mode): Claude asks in its own dialog. */
 export const AUTO_DENY_FAILED_LINE = 'Claude asked for a permission this profile refuses, but the refusal could not reach it. Answer it in the Claude app or in its pane.';
-export const LATE_ANSWER_LINE = 'Too late: that request is no longer waiting for the chat. If Claude still asks, answer it in the Claude app or in its pane.';
 
 /** The request as the chat sees it. A bare "yes" or "no" answers it where that cannot land on another
  *  request (orchestrator.ts, bareAnswer); "yes <id>" names it outright and works in every case. */

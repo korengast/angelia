@@ -620,12 +620,25 @@ test('a print-mode CLI that gives no output is reported at half the stall time a
 });
 
 test('a CLI that keeps writing lines with no text is working, not stalled', async (t) => {
+  // The clock is the test's: it moves 240 ms (40% of the 0.6 s stall time) only once the CLI wrote a line
+  // at the current time, so the CLI is never silent for half the stall time, on a slow machine as on a fast
+  // one, and the turn lasts longer than all of it. Real time, the fake's start alone could pass half the
+  // stall time on a cold or loaded machine (seen in a release check, and on a first run here).
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const go = join(mkdtempSync(join(tmpdir(), 'angelia-quiet-')), 'go');
   const cfg = Config.parse({ profiles: { a: { cwd: here } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000, turn_stall_minutes: 0.01 } });
   const sent: string[] = [];
-  const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, stallTickMs: 50 });
+  const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-orch-')), bins: { 'claude-code': FAKE }, stallTickMs: 20, env: { ...process.env, FAKE_CLAUDE_QUIET_GO: go } });
   t.after(() => o.shutdown());
-  await o.handle(dm('1', 'QUIETWORK please'));
-  assert.deepEqual(sent, ['worked quietly']);
+  const brains = (o as unknown as { brains: Map<string, { lastOutputAt?: number }> }).brains;
+  // A line since the clock last moved. Not a Date deadline: that clock stands still.
+  const line = async () => { for (let i = 0; i < 3000 && brains.get('telegram:1')?.lastOutputAt !== Date.now(); i++) await new Promise((r) => setTimeout(r, 10)); };
+  const turn = o.handle(dm('1', 'QUIETWORK please'));
+  for (let i = 0; i < 4; i++) { await line(); t.mock.timers.tick(240); }
+  await line();
+  writeFileSync(go, '');
+  await turn;
+  assert.deepEqual(sent, ['worked quietly'], '960 ms of work with no text: no stall line, and the answer');
 });
 
 function limited(opts: { def?: number; a?: number } = {}) {

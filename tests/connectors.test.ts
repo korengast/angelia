@@ -429,7 +429,7 @@ test('a server added to .mcp.json by hand after the compile refuses a connector 
   editJson(join(r.cwd, '.mcp.json'), (j) => { j.mcpServers.handmade = { command: 'y' }; });
   assert.deepEqual(launchCheck(r.cfg(), 'home', r.state, r.home), ['.mcp.json names "handmade", which the last compile did not (a server added by hand would hold the session on an approval dialog); compile again']);
   writeFileSync(join(r.cwd, '.mcp.json'), '{ broken');
-  assert.ok(launchCheck(r.cfg(), 'home', r.state, r.home).includes('.mcp.json cannot be read; compile again'));
+  assert.ok(launchCheck(r.cfg(), 'home', r.state, r.home).includes('.mcp.json cannot be read (not valid JSON, or not a plain file); fix the file'));
   // A strict profile with no connector never loads .mcp.json as the project's: not held to it.
   const s = rig((t) => { t.profiles.home.capabilities = ['fx-rates']; });
   s.plan().apply();

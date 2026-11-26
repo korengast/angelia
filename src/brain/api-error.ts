@@ -41,3 +41,20 @@ const LOGIN = /not logged in|please run \/login|invalid api key|oauth token (has
 export function loginLost(text: string): boolean {
   return LOGIN.test(text);
 }
+
+/** What a minute's wait may answer: a 5xx or an overload, a 408 (timeout), 409 (conflict) or 429 (rate
+ *  limit), a network failure, a lost login (a refreshed token). Anything else, "Prompt is too long" for
+ *  one, fails the same way again. The status code decides when there is one: a 400 whose message holds
+ *  "network" or "timeout" is no network failure. The words count only for an error with no code. */
+const STATUS = /\bAPI Error:?\s*\(?\s*([1-5]\d\d)\b|"status"\s*:\s*([1-5]\d\d)\b|\bstatus(?: code)?\s+([1-5]\d\d)\b/i;
+const RETRY_STATUS = /^(?:5\d\d|408|409|429)$/;
+const TRANSIENT = /overloaded|internal server error|bad gateway|service unavailable|gateway time-?out|rate[ _-]?limit|too many requests|connection error|\bnetwork (?:error|failure|is unreachable)\b|fetch failed|socket hang up|\btimed out\b|\btimeout\b|ECONN[A-Z]+|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|EPIPE|EHOSTUNREACH|ENETUNREACH/i;
+
+export function retryableApiError(reason: string | undefined): boolean {
+  const r = String(reason ?? '');
+  if (!isApiErrorReason(r)) return false;
+  if (loginLost(r)) return true;
+  const m = STATUS.exec(r);
+  const code = m?.[1] ?? m?.[2] ?? m?.[3];
+  return code ? RETRY_STATUS.test(code) : TRANSIENT.test(r);
+}

@@ -98,11 +98,14 @@ export function installTimers(cfg: Config, table: string, profiles: string[], at
   return out;
 }
 
+/** How long a one-time timer waits for a daemon that is down, and how often it tries. */
+const DOWN_WAIT_MS = 2 * 60_000, DOWN_TRY_MS = 5000;
+
 /** `angelia jobs run`: one run, logged, and from a timer said in the chat when it did not run. A
  *  one-time job's timer (`hash` and `once`, its date, given) is removed after it fires, whatever
  *  happened, except when it fired before that date. The date comes from the timer, not the file: a
  *  file that broke or changed since must not keep a timer that would fire again every year. */
-export async function runAndReport(cfg: Config, profile: string, job: string, hash: string | undefined, d: { stateDir: string; deliver: Deliver; unload: (label: string) => void; once?: string; print?: (line: string) => void; now?: Date; secrets?: Record<string, string>; chatToken?: (key: string) => string }): Promise<string> {
+export async function runAndReport(cfg: Config, profile: string, job: string, hash: string | undefined, d: { stateDir: string; deliver: Deliver; unload: (label: string) => void; once?: string; print?: (line: string) => void; now?: Date; secrets?: Record<string, string>; chatToken?: (key: string) => string; downWaitMs?: number }): Promise<string> {
   // Read before the run, so a file edited during it cannot turn a run that happened into a failure.
   let def: Job | undefined;
   try { def = readJobs(cfg, profile).jobs[job]; } catch { /* runJob says what is wrong */ }
@@ -117,6 +120,17 @@ export async function runAndReport(cfg: Config, profile: string, job: string, ha
     const mine = cfg.routes.filter((r) => r.profile === profile).map((r) => sessionKey(r));
     return mine.length === 1 ? mine[0] : undefined;
   };
+  // A one-time timer has no next time: a daemon that is down for a moment (a restart, an update) is
+  // waited for, per message, so the run itself is never repeated.
+  const deliver: Deliver = !once ? d.deliver : async (...args) => {
+    const until = Date.now() + (d.downWaitMs ?? DOWN_WAIT_MS);
+    for (;;) {
+      try { return await d.deliver(...args); } catch (e) {
+        if (!/the daemon is not running/.test((e as Error).message) || Date.now() >= until) throw e;
+        await new Promise((r) => setTimeout(r, Math.min(DOWN_TRY_MS, Math.max(1, until - Date.now()))));
+      }
+    }
+  };
   let late = 0;
   try { if (once) late = (d.now ?? new Date()).getTime() - atDate(once).getTime(); } catch { /* not a date: the run below says what is wrong */ }
   let line: string;
@@ -125,7 +139,7 @@ export async function runAndReport(cfg: Config, profile: string, job: string, ha
     // keeps its timer even when the file changed since.
     if (late < -AT_EARLY_MS) throw new JobEarly(`job ${profile}/${job} is due at ${once}, not before`);
     if (late > AT_GRACE_MS) throw new JobMissed(`job ${profile}/${job} was due at ${once}; its timer fired more than ${AT_GRACE_MS / 3600_000} h after that, so it does not run`);
-    line = await runJob(cfg, profile, job, d.deliver, { hash, secrets: d.secrets, stateDir: d.stateDir, chatToken: d.chatToken, now: d.now });
+    line = await runJob(cfg, profile, job, deliver, { hash, secrets: d.secrets, stateDir: d.stateDir, chatToken: d.chatToken, now: d.now });
   } catch (e) {
     const msg = (e as Error).message;
     // A year-early fire is launchd's, not news: logged, and the timer kept for the real date.
@@ -138,7 +152,7 @@ export async function runAndReport(cfg: Config, profile: string, job: string, ha
       const text = e instanceof JobMissed
         ? `Scheduled job ${job} missed its time, ${once ?? def?.at}: the Mac was asleep, off or logged out then, so it does not run.`
         : `Scheduled job ${job} did not run: ${msg}`;
-      try { const to = chat(); if (to) await d.deliver('send', to, text, true, `job ${job}`); } catch { /* the log line is all we can do */ }
+      try { const to = chat(); if (to) await deliver('send', to, text, true, `job ${job}`); } catch { /* the log line is all we can do */ }
     }
     done();
     throw e;

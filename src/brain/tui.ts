@@ -11,7 +11,7 @@ import { isLimitText, NOT_RUN, TMUX_STALLED } from '../core/deliver/text.js';
 import { apiErrorReason, apiErrorText, isApiErrorRow } from './api-error.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { blockedShort, deniedConnectorCount, PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
-import { addDirAccepted, addDirDialog, boxHoldsOnly, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, resumeDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { addDirAccepted, addDirDialog, boxHoldsOnly, boxText, exact, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, resumeDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { HOOK_GIVE_UP_MS, paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs, type RelayedRequest, type RequestOrigin } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { mcpLaunch, readRecord } from '../capabilities/compile.js';
@@ -252,11 +252,19 @@ export function teammateName(res: { name?: unknown; teammate_id?: unknown }): st
  * has not come yet, kept by the caller across slices (a call and its result may be read apart).
  */
 export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent'> = new Map()): { starts: { id: string; teammate?: string; team?: string }[]; ends: string[] } {
+  const rows: unknown[] = [];
+  for (const l of chunk.split('\n')) {
+    try { rows.push(JSON.parse(l)); } catch { /* a part line */ }
+  }
+  return backgroundOfRows(rows, calls);
+}
+
+/** backgroundRows for rows already parsed. */
+export function backgroundOfRows(rows: unknown[], calls: Map<string, 'bash' | 'agent'> = new Map()): { starts: { id: string; teammate?: string; team?: string }[]; ends: string[] } {
   const starts: { id: string; teammate?: string; team?: string }[] = [], ends: string[] = [];
   type Block = { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown; text?: unknown };
-  for (const l of chunk.split('\n')) {
-    let r: { type?: unknown; operation?: unknown; content?: unknown; message?: { content?: unknown }; toolUseResult?: unknown } | null;
-    try { r = JSON.parse(l); } catch { continue; }
+  for (const row of rows) {
+    const r = row as { type?: unknown; operation?: unknown; content?: unknown; message?: { content?: unknown }; toolUseResult?: unknown } | null;
     if (r?.type === 'queue-operation' && r.operation === 'enqueue') {
       const c = r.content;
       const text = typeof c === 'string' ? c : Array.isArray(c) ? (c as Block[]).map((b) => (typeof b?.text === 'string' ? b.text : '')).join('\n') : '';
@@ -298,6 +306,22 @@ export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent
   return { starts, ends };
 }
 
+/** How much of a transcript's end is read for open tasks: a long conversation's file is tens of MB,
+ *  and the read holds the daemon. A task started before it, with no end after, is not seen. */
+export const OPEN_TASKS_BYTES = 8 * 1024 * 1024;
+
+/** The last \`max\` bytes of a file, from the first whole line in them. */
+function tailOf(path: string, size: number, max: number): string {
+  if (size <= max) return readFileSync(path, 'utf8');
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(max);
+    const n = readSync(fd, buf, 0, max, size - max);
+    const text = buf.subarray(0, n).toString('utf8');
+    return text.slice(text.indexOf('\n') + 1);
+  } finally { closeSync(fd); }
+}
+
 /** What a transcript read last said: by path, with the size and time it had then. */
 const openTasksRead = new Map<string, { size: number; mtime: number; open: Map<string, number> }>();
 
@@ -314,7 +338,7 @@ export function openTasksInTranscript(path: string, now = Date.now()): number | 
   let seen = openTasksRead.get(path);
   if (!seen || seen.size !== st.size || seen.mtime !== st.mtimeMs) {
     let text: string;
-    try { text = readFileSync(path, 'utf8'); } catch { return null; }
+    try { text = tailOf(path, st.size, OPEN_TASKS_BYTES); } catch { return null; }
     const calls = new Map<string, 'bash' | 'agent'>(), open = new Map<string, number>();
     for (const line of text.split('\n')) {
       if (!line.includes('tool_result') && !line.includes('tool_use') && !line.includes('task-notification')) continue;
@@ -765,7 +789,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       while ((await this.resumeStep(await this.capture(40), tries)) === 'wait') await sleep(250);
       if (this.launchedWith() === this.fingerprint(true)) return null;
       if (!paneIdle(await this.capture(40))) return null;
-      await this.tm(['kill-session', '-t', this.name]);
+      await this.tm(['kill-session', '-t', exact(this.name)]);
       this.up = false;
       resume = true;
     }
@@ -812,7 +836,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const argv = this.argv(resume);
     // remain-on-exit off in the same call: the server reads the user's ~/.tmux.conf, and a dead pane
     // left on screen would pass for a live session, so a turn would wait on it for ever.
-    const r = await this.tm(['new-session', '-d', '-s', this.name, '-c', this.profile.cwd, '-x', '220', '-y', '50', ...pinned, ...wrap, 'env', ...unset, ...argv, ';', 'set-option', '-w', '-t', this.name, 'remain-on-exit', 'off'], { scope: true });
+    const r = await this.tm(['new-session', '-d', '-s', this.name, '-c', this.profile.cwd, '-x', '220', '-y', '50', ...pinned, ...wrap, 'env', ...unset, ...argv, ';', 'set-option', '-w', '-t', exact(this.name), 'remain-on-exit', 'off'], { scope: true });
     if (r.code !== 0) { rmSync(this.envPath, { force: true }); return `tmux could not start the session: ${r.err.trim() || 'new-session failed'}`; }
     writeFileSync(this.launchPath, this.fingerprint(resume));
     this.up = true;
@@ -897,8 +921,8 @@ export class TuiBrain extends EventEmitter implements Brain {
     for (let i = 0; i < 8; i++) {
       const pane = await this.capture(40);
       if (!open(pane)) return false;
-      if (accepted(pane)) { await this.tm(['send-keys', '-t', this.name, 'Enter']); return true; }
-      await this.tm(['send-keys', '-t', this.name, 'Down']);
+      if (accepted(pane)) { await this.tm(['send-keys', '-t', exact(this.name), 'Enter']); return true; }
+      await this.tm(['send-keys', '-t', exact(this.name), 'Down']);
       await sleep(300);
     }
     return false;
@@ -929,26 +953,26 @@ export class TuiBrain extends EventEmitter implements Brain {
   private async answerResume(): Promise<'Esc' | 'Enter' | 'refused' | null> {
     let d = resumeDialog(await this.capture(40));
     if (!d) return null;
-    if (d.esc) { await this.tm(['send-keys', '-t', this.name, 'Escape']); return 'Esc'; }
+    if (d.esc) { await this.tm(['send-keys', '-t', exact(this.name), 'Escape']); return 'Esc'; }
     if (!d.onResume) {
-      await this.tm(['send-keys', '-t', this.name, 'Up']);
+      await this.tm(['send-keys', '-t', exact(this.name), 'Up']);
       await sleep(300);
       d = resumeDialog(await this.capture(40));
       if (!d) return null;
       if (!d.onResume) return 'refused';
     }
-    await this.tm(['send-keys', '-t', this.name, 'Enter']);
+    await this.tm(['send-keys', '-t', exact(this.name), 'Enter']);
     return 'Enter';
   }
 
   private async sessionAlive(): Promise<boolean> {
-    const r = await this.tm(['has-session', '-t', this.name]);
+    const r = await this.tm(['has-session', '-t', exact(this.name)]);
     this.up = r.code === 0;
     return this.up;
   }
 
   private async capture(lines = 30): Promise<string> {
-    const r = await this.tm(['capture-pane', '-p', '-t', this.name, '-S', `-${lines}`]);
+    const r = await this.tm(['capture-pane', '-p', '-t', exact(this.name), '-S', `-${lines}`]);
     // A call killed at its time limit says nothing of the pane: the next poll reads it again.
     this.captureTimedOut = r.timedOut === true;
     return r.code === 0 ? r.out : '';
@@ -986,13 +1010,13 @@ export class TuiBrain extends EventEmitter implements Brain {
       // back from the history. Cleared from any cursor (clearBox), and what it was is said; what the
       // clear could not reach keeps the paste from its Enter (boxHoldsOnly, below).
       const box = await this.clearBox();
-      if (box.held) this.emit('log', `tmux: the input box held text before a paste; ${box.left ? `${box.left === box.held ? 'it did not change' : 'not all of it went'}, the paste goes in only if the box then holds it alone` : 'cleared'}: ${JSON.stringify(box.held.slice(0, 120))} pane=${this.name}`);
+      if (box.held) this.emit('log', `tmux: the input box held text before a paste; ${box.left ? `${box.left === box.held ? 'it did not change' : 'not all of it went'}, the paste goes in only if the box then holds it alone` : 'cleared'}: ${box.held.length} chars pane=${this.name}`);
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       if ((await loadBuffer(this.name, text, this.dir, (a) => this.tm(a))).code !== 0) {
         this.emit('log', `tmux: the message could not be loaded into a paste buffer pane=${this.name}`);
         return { ok: false, why: 'tmux could not load the message into the session', keep: true };
       }
-      await this.tm(['paste-buffer', '-p', '-d', '-b', this.name, '-t', this.name]);
+      await this.tm(['paste-buffer', '-p', '-d', '-b', this.name, '-t', exact(this.name)]);
       const landBy = Date.now() + (this.opts.landMs ?? LAND_MS);
       let why = 'the pasted message never showed in the box';
       // Nothing was submitted, so the paste may be tried again from the wait for the prompt.
@@ -1009,7 +1033,7 @@ export class TuiBrain extends EventEmitter implements Brain {
         // after it, and its answer would look like ours. Clear the box and say no.
         if (gen !== this.gen || paneBusy(now)) { why = 'the pane became busy before Enter'; break; }
         submit();
-        if (await submitPasted(text, () => this.capture(20), () => this.tm(['send-keys', '-t', this.name, 'Enter']))) return { ok: true };
+        if (await submitPasted(text, () => this.capture(20), () => this.tm(['send-keys', '-t', exact(this.name), 'Enter']))) return { ok: true };
         // Enter was pressed: Claude may yet take it, and a second paste would send it twice.
         why = 'the pasted message was not taken after three Enters';
         again = false;
@@ -1246,7 +1270,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     if ((await loadBuffer(`${this.name}-turn`, text, this.dir, (a) => this.tm(a))).code !== 0) return false;
     // Checked once more: the screen may have changed while the buffer was loaded.
     if (blocked() || !paneMidTurn(await this.capture(30))) { this.emit('log', `tmux: a message for the running turn was not typed: the moment passed pane=${this.name}`); return false; }
-    await this.tm(['paste-buffer', '-p', '-d', '-b', `${this.name}-turn`, '-t', this.name]);
+    await this.tm(['paste-buffer', '-p', '-d', '-b', `${this.name}-turn`, '-t', exact(this.name)]);
     const landBy = Date.now() + (this.opts.landMs ?? LAND_MS);
     const lock = join(this.dir, 'absorb.lock');
     let presses = 0, landed = false, enterAt = 0;
@@ -1309,7 +1333,7 @@ export class TuiBrain extends EventEmitter implements Brain {
         if (!presses) enterAt = fileSize(this.transcript);
         // Set before the key: stopAbsorbing, which waits on it, may run while send-keys does.
         this.pressed = true;
-        await this.tm(['send-keys', '-t', this.name, 'Enter']);
+        await this.tm(['send-keys', '-t', exact(this.name), 'Enter']);
         presses++;
         if (!this.unsure.has(id)) this.unsure.set(id, { key: promptKey(text), text, transcript: this.transcript, offset: enterAt, at: Date.now(), turn: sentAt, answered: false });
         if (this.unsure.size > 20) this.unsure.delete(this.unsure.keys().next().value!);
@@ -1350,7 +1374,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const first = boxText(await this.capture(20));
     let last = first;
     for (let i = 0; last && i < CLEAR_ROUNDS; i++) {
-      await this.tm(['send-keys', '-t', this.name, 'C-k', 'C-u']);
+      await this.tm(['send-keys', '-t', exact(this.name), 'C-k', 'C-u']);
       await sleep(400);
       const now = boxText(await this.capture(20));
       if (now === last) { await sleep(1200); const again = boxText(await this.capture(20)); if (again === last) break; last = again; continue; }
@@ -1623,7 +1647,7 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  sent to the background. False when nothing runs under this name any more. */
   async adopt(turnSentAt: number): Promise<boolean> {
     this.turnSentAt = turnSentAt;
-    if ((await this.tm(['has-session', '-t', this.name])).code !== 0) return false;
+    if ((await this.tm(['has-session', '-t', exact(this.name)])).code !== 0) return false;
     this.ready = Promise.resolve(null);
     // No launch here: the check a launch makes for another PreToolUse hook is made now.
     this.checkOtherHooks();
@@ -1815,7 +1839,7 @@ export class TuiBrain extends EventEmitter implements Brain {
         // to TMUX_STALLS calls in a row. Then the reader gives up with a clear line; the pane is kept,
         // and the turn's Stop marker, if it comes, is its answer, late (takeIdle).
         const stalled = !pane && this.captureTimedOut;
-        const gone = !pane && !stalled ? await this.tm(['has-session', '-t', this.name]) : undefined;
+        const gone = !pane && !stalled ? await this.tm(['has-session', '-t', exact(this.name)]) : undefined;
         if (stalled || gone?.timedOut) {
           const what = stalled ? 'a capture' : 'has-session';
           if (++stalls < TMUX_STALLS) { this.emit('log', `tmux: ${what} timed out (${stalls} in a row); the reader polls again pane=${this.name}`); continue; }
@@ -2565,7 +2589,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.absorbed = [];
     this.unsure.clear();
     this.forgetTeammates();
-    await this.tm(['kill-session', '-t', this.name]);
+    await this.tm(['kill-session', '-t', exact(this.name)]);
     this.up = false;
     this.emit('exit', { code: 0, signal: null });
   }

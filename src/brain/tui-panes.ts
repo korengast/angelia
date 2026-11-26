@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readlink } from 'node:fs/promises';
 import { versionAtLeast } from './argv.js';
-import { listsTeammates, paneIdle, tmux } from './tmux.js';
+import { exact, listsTeammates, paneIdle, tmux } from './tmux.js';
 
 /**
  * End the panes on Angelia's tmux server that no chat will reach again: a name with one of this
@@ -16,9 +16,9 @@ export async function sweepPanes(keep: Set<string>, prefixes: string[], env: Nod
   const gone: string[] = [];
   for (const name of list.out.split('\n').filter(Boolean)) {
     if (keep.has(name) || !prefixes.some((p) => name.startsWith(p))) continue;
-    const pane = await tmux(['capture-pane', '-p', '-t', name, '-S', '-30'], { env });
+    const pane = await tmux(['capture-pane', '-p', '-t', exact(name), '-S', '-30'], { env });
     if (pane.code !== 0 || !paneIdle(pane.out)) continue;
-    if ((await tmux(['kill-session', '-t', name], { env })).code === 0) gone.push(name);
+    if ((await tmux(['kill-session', '-t', exact(name)], { env })).code === 0) gone.push(name);
   }
   return gone;
 }
@@ -116,7 +116,7 @@ export async function reapPanes(panes: IdlePane[], env: NodeJS.ProcessEnv, o: {
   for (const p of panes) {
     const t = live.get(p.name);
     if (!t) continue;
-    const pane = await tmux(['capture-pane', '-p', '-t', p.name, '-S', '-30'], { env });
+    const pane = await tmux(['capture-pane', '-p', '-t', exact(p.name), '-S', '-30'], { env });
     // Never one that still lists a teammate: ending it would end the teammate and lose its report.
     if (pane.code !== 0 || !paneIdle(pane.out) || listsTeammates(pane.out)) continue;
     const now = o.now ?? Date.now();
@@ -126,7 +126,7 @@ export async function reapPanes(panes: IdlePane[], env: NodeJS.ProcessEnv, o: {
       why = running ? paneEndReason({ activity: t.activity, now, idleHours: o.idleHours, running, installed: await installed(p.bin) }) : null;
     }
     if (!why || !o.mayEnd(p)) continue;
-    if ((await tmux(['kill-session', '-t', p.name], { env })).code === 0) gone.push({ name: p.name, key: p.key, why });
+    if ((await tmux(['kill-session', '-t', exact(p.name)], { env })).code === 0) gone.push({ name: p.name, key: p.key, why });
   }
   return gone;
 }

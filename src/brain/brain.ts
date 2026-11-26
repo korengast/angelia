@@ -407,6 +407,9 @@ export function onJsonLines(stdout: NodeJS.ReadableStream & { setEncoding(e: Buf
  * spawn's error, are the failure text, the reason given when the child dies without an answer, so a
  * deterministic failure (not logged in, an unknown flag) is not invisible. stdout is read as JSON lines.
  */
+/** How much of a child's stderr is kept to filter (wireChild): far more than the 400 characters given. */
+const STDERR_TAIL = 16_384;
+
 export function wireChild(child: import('node:child_process').ChildProcessWithoutNullStreams, w: {
   exit(code: number | null, signal: NodeJS.Signals | null): void;
   failure(text: string, from: 'error' | 'stderr'): void;
@@ -415,21 +418,28 @@ export function wireChild(child: import('node:child_process').ChildProcessWithou
   benign?(line: string): void;
 }): void {
   trackGroup(child);
-  let failure = '';
+  let failure = '', lead = '';
   child.on('exit', w.exit);
-  child.on('error', (err) => { failure = err.message; w.failure(failure, 'error'); w.exit(null, null); });
+  child.on('error', (err) => { failure = lead = err.message; w.failure(failure, 'error'); w.exit(null, null); });
   child.stdin.on('error', () => {});
   // Whole lines for `benign`: a chunk may end inside one.
   let part = '';
-  const benign = (l: string) => { if (BENIGN_STDERR.some((re) => re.test(l.trim()))) w.benign?.(l.trim()); };
+  const isBenign = (l: string) => BENIGN_STDERR.some((re) => re.test(l.trim()));
+  const benign = (l: string) => { if (isBenign(l)) w.benign?.(l.trim()); };
   child.stderr.on('end', () => { if (part) benign(part); part = ''; });
+  // The tail of stderr, filtered by whole lines each time: a benign line that a chunk cut in two is
+  // left out as a whole, not as two pieces neither of which matches.
+  let raw = '', shown = '';
   child.stderr.on('data', (b: Buffer) => {
     const chunk = b.toString('utf8');
     if (w.benign) { const lines = (part + chunk).split('\n'); part = lines.pop() ?? ''; lines.forEach(benign); }
     // A line a healthy CLI prints (BENIGN_STDERR) is no failure text: kept, it could be the reason given.
-    const text = chunk.split('\n').filter((l) => !BENIGN_STDERR.some((re) => re.test(l.trim()))).join('\n');
-    if (!text) return;
-    failure = (failure + text).slice(-400); w.failure(failure, 'stderr');
+    raw = (raw + chunk).slice(-STDERR_TAIL);
+    const text = raw.split('\n').filter((l) => !isBenign(l)).join('\n');
+    if (text === shown) return;
+    // Set back too when the text is gone: the start of a benign line was shown until its line ended.
+    shown = text;
+    failure = (lead + text).slice(-400); w.failure(failure, 'stderr');
   });
   onJsonLines(child.stdout, w.line);
 }

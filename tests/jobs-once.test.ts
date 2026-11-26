@@ -88,6 +88,20 @@ test('after its moment the timer goes in every outcome: a failure, a refusal, a 
   assert.equal(await run(r).go('once', hash, plus(11 * H), AT), 'sent to whatsapp:g@g.us', 'within the grace a late fire (a wake) runs');
 });
 
+test('a one-time timer waits for a daemon that is down for a moment, and runs once', async () => {
+  const r = rig(`jobs:\n  once: {at: "${AT}", send: hi}\n`);
+  let tries = 0;
+  const go = (downWaitMs: number, up: number) => runAndReport(r.cfg, 'p', 'once', hashOf(r, 'once'), {
+    stateDir: r.state, now: plus(1_000), once: AT, downWaitMs,
+    deliver: async () => { if (++tries < up) throw new Error('the daemon is not running (no answer on api.sock)'); },
+    unload: () => {},
+  });
+  assert.equal(await go(500, 2), 'sent to whatsapp:g@g.us');
+  assert.equal(tries, 2);
+  tries = 0;
+  await assert.rejects(go(0, 100), /the daemon is not running/);
+});
+
 test('a job file edited during a run that worked posts no failure line', async () => {
   const r = rig(`jobs:\n  once: {at: "${AT}", send: hi}\n`);
   const events: string[] = [];

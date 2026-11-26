@@ -194,6 +194,12 @@ test('withMentions: a phone the lid map knows goes out as the lid even with no t
   assert.equal(withMentions('`@15550005555`', undefined, { lidFor }).text, '`@15550005555`');
 });
 
+test('withMentions: a capped member with a phone and no lid mapping goes by their id; & and ; end no tag', () => {
+  const members = [{ id: '15550001111@s.whatsapp.net' }, { id: '44444444444444@lid', phoneNumber: '15550005555@s.whatsapp.net' }];
+  assert.equal(withMentions('@15550001111 @15550005555', members, { max: 1 }).text, '@15550001111 @44444444444444');
+  for (const t of ['a&@15550001111', 'x;@15550001111']) assert.deepEqual(withMentions(t, members), { text: t, mentions: [], capped: 0 }, t);
+});
+
 test('withMentions: URL queries and fragments are left; italics and a Hebrew prefix still tag', () => {
   const members = [{ id: '15550001111@s.whatsapp.net' }];
   for (const t of ['https://x.com/a?u=@15550001111', 'https://x.com/a?@15550001111', 'https://x.com/a#@15550001111', 'x=@15550001111', 'é@15550001111'])

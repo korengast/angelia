@@ -383,7 +383,7 @@ test('a paste into a box that still holds text clears it first', { timeout: 30_0
   // A box of two lines: one Ctrl-U clears one line, so it takes two, and the paste goes into an empty box.
   one.pane().show('draft2');
   await one.say('third');
-  assert.ok(one.pane().logs.some((l) => l.includes('the input box held text before a paste; cleared: "half of an old message\\nand its second line"')), one.pane().logs.join('\n'));
+  assert.ok(one.pane().logs.some((l) => /the input box held text before a paste; cleared: \d+ chars pane=/.test(l) && !/old message|sha256/.test(l)), one.pane().logs.join('\n'));
   assert.match(one.pane().typed, /\n\nthird$/, 'nothing of the old text went with it');
   assert.deepEqual(one.sent, ['Hi.', 'Again.', 'Again.']);
   await one.o.shutdown();

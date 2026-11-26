@@ -26,7 +26,8 @@ const READS = new Set(['chatName']);
 function recorder() {
   const calls: { method: string; chat: unknown; text: unknown }[] = [];
   const sender = new Proxy({}, {
-    get: (_, name) => (typeof name === 'string' && name !== 'then'
+    // hidePhones is optional and answers at once: this sender has none.
+    get: (_, name) => (typeof name === 'string' && name !== 'then' && name !== 'hidePhones'
       ? async (chat: unknown, text: unknown) => { if (!READS.has(name)) calls.push({ method: name, chat, text }); }
       : undefined),
   }) as Sender;
