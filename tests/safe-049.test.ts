@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify } from 'yaml';
@@ -26,25 +26,51 @@ test('urlPattern: no query, fragment or user:key@ is copied; an address with no 
   assert.ok(userInfo('https://u:p@h.example/mcp') && userInfo('http://u@h.example') && !userInfo('https://h.example/a@b') && !userInfo('https://h.example?a@b') && !userInfo('https://h.example#a@b'));
 });
 
-test('compile: an MCP server address with a user or password is a conflict that names the server, never the password', () => {
+/** A list-mode profile with a connector and no strict MCP, its user config and routing capabilities. */
+function userInfoPlan(user: object, caps: Record<string, object> = {}, own?: object) {
   const root = mkdtempSync(join(tmpdir(), 'angelia-userinfo-'));
   const cwd = join(root, 'profile'), home = join(root, 'home'), state = join(root, 'state');
   for (const d of [cwd, home, state]) mkdirSync(d);
-  writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { tav: { type: 'http', url: 'https://bob:S3CRET@mcp.example.com/mcp' }, plain: { type: 'http', url: 'https://other.example.com/mcp' } } }));
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: user }));
+  if (own) writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: own }));
   const path = join(root, 'routing.yaml');
   writeFileSync(path, stringify({
-    capabilities: { gmail: { kind: 'connector', url: 'https://gmailmcp.googleapis.com/*' } },
+    capabilities: { gmail: { kind: 'connector', url: 'https://gmailmcp.googleapis.com/*' }, ...caps },
     defaults: { capabilities: [], deny: [] },
-    profiles: { home: { cwd, permission_mode: 'acceptEdits', capabilities: ['gmail'] } },
+    profiles: { home: { cwd, permission_mode: 'acceptEdits', capabilities: ['gmail', ...Object.keys(caps)] } },
     routes: [{ platform: 'telegram', chat: 1, profile: 'home' }],
     telegram: {},
   }));
-  const pl = planProfile(loadConfig(path), 'home', { home, stateDir: state, env: {} });
-  const c = pl.conflicts.find((x) => x.includes('MCP server tav'));
-  assert.ok(c && /user or password/.test(c) && /header/.test(c), pl.conflicts.join(' | '));
-  assert.ok(!JSON.stringify([pl.changes, pl.conflicts, pl.notes]).includes('S3CRET'), 'the password is nowhere in the plan');
-  assert.throws(() => pl.apply(), /conflict/);
+  return { cwd, plan: planProfile(loadConfig(path), 'home', { home, stateDir: state, env: {} }) };
+}
+const secretUrl = 'https://bob:S3CRET@mcp.example.com/mcp';
+
+test('compile: a user-level MCP server with a password in its address is left out with a note, not a conflict', () => {
+  const { cwd, plan } = userInfoPlan({ tav: { type: 'http', url: secretUrl }, plain: { type: 'http', url: 'https://other.example.com/mcp' } });
+  assert.deepEqual(plan.conflicts, []);
+  const note = plan.notes.find((x) => x.includes('MCP server tav'));
+  assert.ok(note && /user or password/.test(note) && /does not load/.test(note), plan.notes.join(' | '));
+  assert.ok(!JSON.stringify([plan.changes, plan.notes]).includes('S3CRET'), 'the password is nowhere in the plan');
+  plan.apply();
+  const rec = JSON.parse(readFileSync(join(cwd, RECORD), 'utf8'));
+  assert.deepEqual(rec.mcpAllow, ['plain']);
+  assert.deepEqual(rec.mcpUrls, ['https://other.example.com/mcp']);
+});
+
+test('compile: a password in an address of the profile\'s own .mcp.json is a conflict that names the server, never the password', () => {
+  const { cwd, plan } = userInfoPlan({}, {}, { tav: { type: 'http', url: secretUrl } });
+  const c = plan.conflicts.find((x) => x.includes('MCP server tav'));
+  assert.ok(c && /user or password/.test(c) && /headers in its MCP config/.test(c), plan.conflicts.join(' | '));
+  assert.ok(!JSON.stringify([plan.changes, plan.conflicts, plan.notes]).includes('S3CRET'), 'the password is nowhere in the plan');
+  assert.throws(() => plan.apply(), /conflict/);
   assert.ok(!existsSync(join(cwd, RECORD)), 'no record written');
+});
+
+test('compile: a password in a capability\'s url is a conflict that names the routing table', () => {
+  const { plan } = userInfoPlan({}, { tav: { kind: 'mcp', url: secretUrl } });
+  const c = plan.conflicts.find((x) => x.includes('MCP server tav'));
+  assert.ok(c && c.includes('routing table (capabilities.tav)') && !c.includes('MCP config'), plan.conflicts.join(' | '));
+  assert.ok(!c.includes('S3CRET'));
 });
 
 test('stderr: a blocked-connector warning cut between two chunks is no failure text, and is counted once', () => {

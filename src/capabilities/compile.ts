@@ -1353,14 +1353,26 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
         // the compile, since its server would silently not load (fix2 L-b).
         const user = Object.fromEntries(Object.entries(userAll).filter(([n]) => SERVER_NAME.test(n)));
         for (const n of Object.keys(userAll)) if (!(n in user) && !mcpOwn.includes(n)) notes.push(`the user-level MCP server "${n}" has a character other than letters, digits, - and _, which Claude Code drops from its allow list, so it does not load beside the connectors; rename it in your Claude config to have it`);
+        // A user or password in the address: no pattern lets in just that server (urlPattern). A
+        // user-level one is left off the list, with a note, so it does not load here.
+        for (const [n, s] of Object.entries(user)) {
+          if (!s.url || !userInfo(s.url)) continue;
+          delete user[n];
+          if (!mcpOwn.includes(n)) notes.push(`the address of the user-level MCP server ${n} holds a user or password before its host, which no allow-list pattern can match without letting in other addresses too, so it does not load beside the connectors; take them out of the address in your Claude config and send them in a header to have it`);
+        }
         mcpAllow = [...new Set([...mcpOwn, ...Object.keys(user)])].sort();
         // A remote server passes the list by its address only, once a connector's url is on it (mcpUrls).
         const remote = new Map<string, string>();
         for (const n of Object.keys(user)) if (user[n].url) remote.set(n, user[n].url!);
         for (const n of mcpOwn) { const u = serverUrl(servers[n]); if (u) remote.set(n, u); }
-        // A user or password in the address: no pattern lets in just that server (urlPattern), so it
-        // stops the compile. Named by server, never by address: the address holds the password.
-        for (const [n, u] of remote) if (userInfo(u)) { remote.delete(n); conflicts.push(`the address of the MCP server ${n} holds a user or password before its host, which no allow-list pattern can match without letting in other addresses too; take them out of the address and send them in a header (headers in its MCP config) instead`); }
+        // The same in this folder's .mcp.json stops the compile. Named by server, never by address:
+        // the address holds the password. A capability takes no headers, so its fix is another one.
+        for (const [n, u] of remote) {
+          if (!userInfo(u)) continue;
+          remote.delete(n);
+          const fix = n in wantMcp ? `take them out of its url in the routing table (capabilities.${n}); a capability takes no headers, so for a server that needs a header, remove the capability and write the server into ${mcpPath} by hand, with its headers` : 'take them out of the address and send them in a header (headers in its MCP config) instead';
+          conflicts.push(`the address of the MCP server ${n} holds a user or password before its host, which no allow-list pattern can match without letting in other addresses too; ${fix}`);
+        }
         mcpUrls = [...new Set([...remote.values()].map(urlPattern))].sort();
         for (const [n, u] of remote) if (/[?#]/.test(u) && noPath(u.slice(0, u.search(/[?#]/)))) notes.push(`the address of the MCP server ${n} has no path before its query, so it is on the allow list as its host and /*, which Claude Code may not match against it: this server may not load beside the connectors; give its address a path (such as /mcp)`);
         for (const [n, u] of remote) if (u.includes('${')) notes.push(`the address of the MCP server ${n} holds \${...}, and Claude Code matches the allow list against the address after it fills that in, so this server may not load beside the connectors`);
