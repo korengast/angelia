@@ -95,9 +95,9 @@ function rig(t: { after(fn: () => unknown): void }, opts: Record<string, unknown
     /** What the session does at Enter, with the prompt as stored. */
     turn: (prompt: string) => { rows(ROW.prompt(prompt), ROW.text('The answer.')); stop('The answer.'); },
     get enters() { return enters; },
-    async say(text: string) {
+    async say(text: string, flags?: { peer?: boolean }) {
       let result: any;
-      for await (const e of brain.turn(text)) if (e.kind === 'result') result = e;
+      for await (const e of brain.turn(text, flags)) if (e.kind === 'result') result = e;
       return result;
     },
   };
@@ -173,7 +173,7 @@ describe('the input box held text before a paste: what Enter sends is the messag
 });
 
 describe('a key miss: the line says what differs, and the net keeps an answer that is the message\'s', { concurrency: true }, () => {
-  test('the stored prompt holds the typed message whole and more: the answer is delivered, with a line', { timeout: 15_000 }, async (t) => {
+  test('the stored prompt starts with the typed message and holds more: the answer is delivered, with a line', { timeout: 15_000 }, async (t) => {
     const s = rig(t);
     // Something added to the prompt after it left the box (no case known now; the shape the old leftover made).
     s.turn = (p) => { s.rows(ROW.prompt(`${p}\n\nhalf typed words`), ROW.text('The answer.')); s.stop('The answer.'); };
@@ -186,6 +186,44 @@ describe('a key miss: the line says what differs, and the net keeps an answer th
     assert.ok(!s.logs.some((l) => l.startsWith(KEY_MISS_LINE)));
     assert.ok(!line!.includes('half'), 'no words in the line');
   });
+
+  /** The turn's prompt is stored as `other` makes it, with an answer not to be delivered; once its
+   *  marker is dropped, the prompt as typed runs and answers. */
+  const swapped = (s: ReturnType<typeof rig>, other: (p: string) => string) => (p: string) => {
+    s.rows(ROW.prompt(other(p)), ROW.text('Not for the chat.'));
+    s.stop('Not for the chat.');
+    const b = s.brain as any;
+    void until(() => { try { readFileSync(b.markerPath); return false; } catch { return true; } }, 10_000).then(() => { s.rows(ROW.prompt(p), ROW.text('The answer.')); s.stop('The answer.'); });
+  };
+
+  for (const [name, other] of [['before', (p: string) => `half typed words\n\n${p}`], ['after', (p: string) => `${p}\n\nhalf typed words`]] as const) {
+    test(`a long message with leftover text ${name} it: delivered`, { timeout: 15_000 }, async (t) => {
+      const s = rig(t);
+      s.turn = (p) => { s.rows(ROW.prompt(other(p)), ROW.text('The answer.')); s.stop('The answer.'); };
+      const r = await s.say(QUOTE_DOT);
+      assert.equal(r?.text, 'The answer.', s.logs.join('\n'));
+      assert.ok(s.logs.some((l) => l.startsWith(KEY_KEPT_LINE)), s.logs.join('\n'));
+    });
+  }
+
+  const long = 'please read the report and tell me what it says';
+  const dropped: [string, string, (p: string) => string, { peer?: boolean }?][] = [
+    ['"ok" inside "look at the logs"', 'ok', () => 'look at the logs'],
+    ['a short message at the start of another prompt', 'ok', () => 'ok, now look at the logs'],
+    ['a peer\'s turn', long, (p) => `${p}\n\nhalf typed words`, { peer: true }],
+    ['leftover text on both sides, the message in the middle', long, (p) => `half typed\n\n${p}\n\nwords`],
+    ['leftover text inside the message', long, (p) => p.replace('report', 'report half typed words')],
+  ];
+  for (const [name, text, other, flags] of dropped) {
+    test(`not delivered: ${name}`, { timeout: 15_000 }, async (t) => {
+      const s = rig(t);
+      s.turn = swapped(s, other);
+      const r = await s.say(text, flags);
+      assert.equal(r?.text, 'The answer.', s.logs.join('\n'));
+      assert.ok(s.logs.some((l) => l.startsWith(KEY_MISS_LINE)), s.logs.join('\n'));
+      assert.ok(!s.logs.some((l) => l.startsWith(KEY_KEPT_LINE)), s.logs.join('\n'));
+    });
+  }
 
   test('another prompt, written after the Enter (a person\'s): dropped as before, the line with both keys and lengths, and the turn waits for its own', { timeout: 15_000 }, async (t) => {
     const s = rig(t);

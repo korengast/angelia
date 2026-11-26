@@ -84,8 +84,9 @@ answer; when a new Claude Code stores a prompt another way, every turn of severa
 and the length of both keys (`typed=` and `hook=`) and which path typed (`by=turn`, or `by=follow`
 for messages Claude Code ran after the turn they were typed into), never the words. Text left in the
 input box before a paste is cleared from any cursor position, and the message is sent only when the
-box holds it alone. When the stored prompt still holds the whole message typed, after Angelia's
-Enter, the answer is delivered with the `answer kept` line instead of being dropped.
+box holds it alone. When the prompt stored after Angelia's Enter still starts or ends with the whole
+message typed, the answer is delivered with the `answer kept` line instead of being dropped. Not for
+a message shorter than 24 characters, and not for a peer's turn.
 
 **`angelia canary [--if-new-build] [--json]`** tries tmux mode for real on the Claude Code build
 installed now. tmux mode reads Claude Code's screen and transcript, and a new build can change

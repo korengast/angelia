@@ -152,6 +152,8 @@ const TAKEN_POLLS = 10;
 const CLEAR_ROUNDS = 40;
 /** How long after a turn's Enter its prompt row may be written for keptOnMiss to take the turn as its own. */
 const KEPT_WINDOW_MS = 30_000;
+/** The shortest typed message (promptForm) keptOnMiss takes: a shorter one is part of many prompts. */
+const KEPT_MIN_CHARS = 24;
 
 /** The Stop hook's file (scripts/tui-stop-hook.mjs). `origin`, `origin_why`, `prompt_at`, `prompt_key`,
  *  `prompts`, `origin_ids`, `origin_teammates`, `origin_idle`: what started the turn, as the hook read it from the transcript
@@ -186,7 +188,7 @@ export function sameAnswer(a: string, b: string): boolean {
  *  typed (daemon/health.ts counts it, brain/canary.ts fails on it). */
 export const KEY_MISS_LINE = 'tmux: marker dropped, prompt key miss:';
 /** The start of the line a turn writes when its marker's key is not the one it typed, but the prompt
- *  Claude Code ran holds the typed message whole (keptOnMiss): the answer is delivered. Counted and
+ *  Claude Code ran starts or ends with the typed message (keptOnMiss): the answer is delivered. Counted and
  *  failed on as KEY_MISS_LINE is: the prompt was not what was typed. */
 export const KEY_KEPT_LINE = 'tmux: prompt key miss, answer kept:';
 
@@ -1417,18 +1419,18 @@ export class TuiBrain extends EventEmitter implements Brain {
 
   /**
    * The net under a key miss: the marker's turn is this one's after all, and its answer is delivered,
-   * when all of these hold. The message was typed by turn() (its words are known), the hook says the
-   * turn was started by one typed prompt, written (`prompt_at`) after this turn's Enter (within
-   * KEPT_WINDOW_MS), and the transcript, from this turn's Enter on, has that prompt (the row whose key
-   * is the marker's), and it holds the whole message typed, in promptForm. A person's own prompt never
-   * holds the chat's message whole: one typed in the app before Angelia's Enter (the gap the miss check
-   * is for) is written before it and is not read here, and one typed into the box with ours cannot get
-   * past the check before Enter (boxHoldsOnly), so what else the prompt holds came from no person's
-   * Enter. Never for a turn Claude Code ran for several untaken messages (follow): its keys are the
-   * check there.
+   * when all of these hold. The message was typed by turn() (its words are known) and has at least
+   * KEPT_MIN_CHARS in promptForm, the turn is not a peer's (an answer to another prompt would go to
+   * the peer), the hook says the turn was started by one typed prompt, written (`prompt_at`) after this
+   * turn's Enter (within KEPT_WINDOW_MS), and the transcript, from this turn's Enter on, has that
+   * prompt (the row whose key is the marker's), and it starts or ends with the whole message typed, in
+   * promptForm: leftover text went before or after the paste. A prompt typed in the app before
+   * Angelia's Enter (the gap the miss check is for) is written before it and is not read here, and
+   * text typed into the box with ours does not get past the check before Enter (boxHoldsOnly). Never
+   * for a turn Claude Code ran for several untaken messages (follow): its keys are the check there.
    */
   private keptOnMiss(m: Marker, sentAt: number): boolean {
-    if (this.typedBy !== 'turn' || !this.typedForm || typeof m.prompt_key !== 'string') return false;
+    if (this.typedBy !== 'turn' || this.turnPeer || this.typedForm.length < KEPT_MIN_CHARS || typeof m.prompt_key !== 'string') return false;
     // Written at the Enter (measured on 2.1.332); submitPasted may press it three times.
     if (typeof m.prompt_at !== 'number' || m.prompt_at < sentAt || m.prompt_at > sentAt + KEPT_WINDOW_MS) return false;
     for (const line of readSlice(this.transcript, this.from).split('\n')) {
@@ -1437,7 +1439,10 @@ export class TuiBrain extends EventEmitter implements Brain {
       try { row = JSON.parse(line); } catch { continue; }
       if (!row || row.type !== 'user' || row.isSidechain === true || row.isMeta === true) continue;
       const text = promptText(row.message?.content);
-      if (text && promptKey(text) === m.prompt_key) return promptForm(text).includes(this.typedForm);
+      if (text && promptKey(text) === m.prompt_key) {
+        const form = promptForm(text);
+        return form.startsWith(this.typedForm) || form.endsWith(this.typedForm);
+      }
     }
     return false;
   }
@@ -1633,9 +1638,9 @@ export class TuiBrain extends EventEmitter implements Brain {
             // Both keys' heads and lengths, and which path typed: what differs, never the words.
             const keys = `typed=${this.typedKey.slice(0, 8)}/${this.typedForm ? this.typedForm.length : '?'} hook=${m.prompt_key.slice(0, 8)}/${typeof m.prompt_len === 'number' ? m.prompt_len : '?'} by=${this.typedBy || '?'}`;
             if (this.keptOnMiss(m, sentAt)) {
-              // The prompt Claude Code ran holds the whole message typed, after this turn's Enter: the
+              // The prompt Claude Code ran starts or ends with the message typed, after this turn's Enter: the
               // turn is this message's, with something more in its prompt. Its answer goes to the chat.
-              this.emit('log', `${KEY_KEPT_LINE} prompts=1 chars=${text.length} ${keys}: the turn's one typed prompt holds the typed message whole, so its answer is delivered pane=${this.name}`);
+              this.emit('log', `${KEY_KEPT_LINE} prompts=1 chars=${text.length} ${keys}: the turn's one typed prompt starts or ends with the typed message, so its answer is delivered pane=${this.name}`);
             } else {
               rmSync(this.markerPath, { force: true });
               pending = null;
