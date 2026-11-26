@@ -246,9 +246,20 @@ export function urlPattern(url: string): string {
   return base.endsWith('*') ? base : `${base}*`;
 }
 
-/** An address with a user or password before its host (`scheme://user:key@host`): an `@` before the
- *  first `/`, `?` or `#` after the scheme. */
-export const userInfo = (url: string): boolean => /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(url);
+/** An address with a user or password before its host (`scheme://user:key@host`). Read as Node's URL
+ *  parser reads it, after a trim, so the loose forms it also takes (`https:/u:p@h`, `https:\\u:p@h`,
+ *  `https:u:p@h`, a leading space) count too. An address that does not parse (`${U:-https://u:p@h}`)
+ *  counts when it has any `@` before its first `?` or `#`: fail closed, never copy it. */
+export function userInfo(url: string): boolean {
+  const u = url.trim();
+  try {
+    const parsed = new URL(u);
+    return parsed.username !== '' || parsed.password !== '';
+  } catch {
+    const cut = u.search(/[?#]/);
+    return (cut < 0 ? u : u.slice(0, cut)).includes('@');
+  }
+}
 
 /** An address that is only a scheme and a host (and port): nothing after the host. */
 const noPath = (url: string): boolean => /^[a-z][a-z0-9+.-]*:\/\/[^/]*$/i.test(url);

@@ -24,6 +24,11 @@ test('urlPattern: no query, fragment or user:key@ is copied; an address with no 
   assert.equal(urlPattern('https://x.example.com/a@b/mcp'), 'https://x.example.com/a@b/mcp', 'an @ in the path is no user');
   assert.equal(urlPattern('https://x.example.com/mcp?u=a@b'), 'https://x.example.com/mcp*', 'an @ in the query is no user');
   assert.ok(userInfo('https://u:p@h.example/mcp') && userInfo('http://u@h.example') && !userInfo('https://h.example/a@b') && !userInfo('https://h.example?a@b') && !userInfo('https://h.example#a@b'));
+  for (const loose of [' https://u:p@h.example/mcp', '\thttps://u:p@h.example/mcp', 'https:\\\\u:p@h.example/mcp', 'https:/u:p@h.example/mcp', 'https:u:p@h.example/mcp', '${U:-https://u:p@h.example/mcp}']) {
+    assert.ok(userInfo(loose), `loose form not caught: ${JSON.stringify(loose)}`);
+    assert.throws(() => urlPattern(loose));
+  }
+  assert.ok(!userInfo('${U:-https://h.example/mcp}?a@b'));
 });
 
 /** A list-mode profile with a connector and no strict MCP, its user config and routing capabilities. */
