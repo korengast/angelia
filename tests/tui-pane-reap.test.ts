@@ -55,7 +55,13 @@ test('the build a process runs is read through the link it was started by (a nat
   const plain = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
   t.after(() => { child.kill('SIGKILL'); plain.kill('SIGKILL'); });
   await new Promise((r) => setTimeout(r, 300));
-  assert.equal(await paneBuild(child.pid!), '2.1.287');
+  const seen = (): string => {
+    let ps = ''; let exe = '';
+    try { ps = execFileSync('ps', ['-o', 'pid=,ppid=,args=', '-p', String(child.pid)], { encoding: 'utf8' }); } catch (e) { ps = `ps failed: ${(e as Error).message}`; }
+    if (process.platform === 'linux') { try { exe = execFileSync('readlink', [`/proc/${child.pid}/exe`], { encoding: 'utf8' }); } catch (e) { exe = `readlink failed: ${(e as Error).message}`; } }
+    return `exit ${child.exitCode} signal ${child.signalCode}; ps: ${ps.trim()}; exe: ${exe.trim()}`;
+  };
+  assert.equal(await paneBuild(child.pid!), '2.1.287', seen());
   assert.equal(await paneBuild(process.pid), '2.1.287', 'or a process it started');
   assert.equal(await paneBuild(plain.pid!), null, 'nothing from a versions folder');
 });
