@@ -59,6 +59,35 @@ describe('a message typed into a turn and not taken, then a new message at the t
     assert.ok(p.logs.some((l) => l.startsWith(NOT_RUN_LINE)), p.logs.join('\n'));
   });
 
+  test('the pane stays busy past the follow\'s start wait: the untaken message is not typed again, and runs once', { timeout: 40_000 }, async (t) => {
+    // followStartMs (30 s in the daemon) short: the pane is still at work when it passes.
+    const c = await stubChat({ followStartMs: 800 } as object); t.after(() => c.o.shutdown());
+    c.onEnter((n, p) => { if (n === 1) working(p); });
+    const first = c.say('one');
+    await until(() => c.pane()?.enters === 1);
+    await wait(150);
+    await c.say('two');
+    const p = c.pane();
+    // The turn ends without giving it to the model; the pane stays busy (another plugin's Stop hook),
+    // with the message still in Claude Code's queue.
+    p.rows(ROW.result('t1'), ROW.text('One.'));
+    p.stop('One.');
+    p.rows(ROW.over());
+    await first;
+    assert.ok(p.logs.some((l) => /no turn ran for the messages/.test(l)), p.logs.join('\n'));
+    // Claude Code runs it at last.
+    p.rows(ROW.prompt(p.queued[0]), ROW.text('Two by itself.'));
+    p.show('idle');
+    p.stop('Two by itself.');
+    p.rows(ROW.over());
+    await until(() => !p.marked());
+    await wait(1000);
+    assert.equal(p.buffers.length, 2, `typed once each: ${JSON.stringify(p.buffers.map((x) => x.slice(-12)))}`);
+    assert.equal(p.queued.length, 1);
+    assert.equal(p.enters, 1);
+    assert.ok(!p.logs.some((l) => l.startsWith(NOT_RUN_LINE) || l.startsWith(KEY_MISS_LINE)), p.logs.join('\n'));
+  });
+
   test('the untaken message ran by itself (as Claude Code 2.1.332 does): read as the follow, not typed again', { timeout: 40_000 }, async (t) => {
     const c = await stubChat(); t.after(() => c.o.shutdown());
     c.onEnter((n, p) => {

@@ -1431,13 +1431,15 @@ export class TuiBrain extends EventEmitter implements Brain {
         const pane = await this.capture(30);
         if (!pane && !(await this.sessionAlive())) { this.turnSentAt = undefined; this.recording = false; this.stopBeat(); yield { kind: 'result', text: '', isError: true, reason: 'exit' }; return; }
         idleSince = paneIdle(pane) ? idleSince || Date.now() : 0;
-        if (Date.now() > until || (idleSince && Date.now() - idleSince > (this.opts.quietMs ?? QUIET_MS))) {
+        const quiet = !!idleSince && Date.now() - idleSince > (this.opts.quietMs ?? QUIET_MS);
+        if (quiet || Date.now() > until) {
           this.turnSentAt = undefined; this.recording = false; this.stopBeat(); this.startIdle();
           // Taken after all, in a row not read as theirs: nothing to say. But with no row from their
           // Enter on that gives them to the model (Claude Code put them back in the box, where the next
           // paste clears them, or dropped them), they are typed again as a turn of their own (NOT_RUN):
-          // never lost unsaid.
-          if (f.msgs.length && f.msgs.every((a) => a.offset !== undefined && !this.ranSince(a.offset, a.text))) {
+          // never lost unsaid. Only from an idle pane: a busy one may hold them in Claude Code's queue
+          // still, and typed again they would run twice.
+          if (quiet && f.msgs.length && f.msgs.every((a) => a.offset !== undefined && !this.ranSince(a.offset, a.text))) {
             this.emit('log', `${NOT_RUN_LINE} (${f.msgs.length} message(s)) pane=${this.name}`);
             yield { kind: 'result', text: '', isError: true, reason: NOT_RUN };
             return;
