@@ -67,7 +67,7 @@ export function configNotes(cfg: Config): string[] {
     if (p.backend !== 'claude-code' || connectorMode(cfg, n) !== 'all') continue;
     const dropped = droppedConnectors(cfg, n).map(([c]) => c);
     out.push(`profiles.${n}: connectors: all: every Claude app connector of your claude.ai account, including ones you add later in the Claude app, reaches it at its next start${dropped.length ? `; it drops ${dropped.join(', ')}` : ''}`);
-    for (const [c, u] of droppedConnectors(cfg, n)) out.push(`profiles.${n}: ${droppedConnectorNote(c, u)}`);
+    for (const [c] of droppedConnectors(cfg, n)) out.push(`profiles.${n}: ${droppedConnectorNote(c)}`);
   }
   return out;
 }

@@ -1,6 +1,7 @@
 import type { Profile } from '../instance/config/schema.js';
 import type { BrainSession } from './brain.js';
 import { homedir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { mcpLaunch, readRecord, type McpLaunch } from '../capabilities/compile.js';
 
 /** Variables that switch a CLI from the user's subscription to per-token API billing, or send it
@@ -30,8 +31,9 @@ export function tuiSettings(p: Profile, hooks: unknown, mcp: McpLaunch = mcpLaun
 }
 
 /** `mcp`: the MCP launch the daemon took from the profile's guard (guardMcpLaunch); unset, it is read
- *  from the record in the profile's folder (mcpLaunch). */
-export function claudeArgv(p: Profile, s: BrainSession, bin = 'claude', system?: string, mcp: McpLaunch = mcpLaunch(p.cwd)): string[] {
+ *  from the record in the profile's folder (mcpLaunch). `settingsFile`: the compile's copy of its keys
+ *  (BrainOptions.mcpSettingsFile), passed by path when it holds exactly them; else they go inline. */
+export function claudeArgv(p: Profile, s: BrainSession, bin = 'claude', system?: string, mcp: McpLaunch = mcpLaunch(p.cwd), settingsFile?: string): string[] {
   const a = [bin, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--permission-prompt-tool', 'stdio'];
   if (p.permission_mode === 'bypassPermissions') a.push('--dangerously-skip-permissions');
   else a.push('--permission-mode', p.permission_mode);
@@ -44,9 +46,14 @@ export function claudeArgv(p: Profile, s: BrainSession, bin = 'claude', system?:
   // Print mode passes no other --settings: the MCP keys get one of their own, only when there are any,
   // so a launch with none (a strict profile with no connector) is the exact argv it was.
   a.push(...mcp.args);
-  if (Object.keys(mcp.settings).length) a.push('--settings', JSON.stringify(mcp.settings));
+  if (Object.keys(mcp.settings).length) a.push('--settings', settingsFile && sameKeys(settingsFile, mcp.settings) ? settingsFile : JSON.stringify(mcp.settings));
   if (system) a.push('--append-system-prompt', system);
   return a;
+}
+
+/** The settings file holds these keys and no others (compared as JSON). */
+function sameKeys(file: string, settings: Record<string, unknown>): boolean {
+  try { return JSON.stringify(JSON.parse(readFileSync(file, 'utf8'))) === JSON.stringify(settings); } catch { return false; }
 }
 
 /** A stable, readable name per profile and session: the tmux session and the Remote Control name.

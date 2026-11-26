@@ -9,6 +9,7 @@ import { effectiveTable, writeAccepted } from '../instance/accepted.js';
 import { cliWarnings, pathWithBins, type BackendName } from '../brain/index.js';
 import { reapPanes, scrubTmuxServer, sweepPanes, tmuxWarnings, tuiHookWarnings } from '../brain/tui.js';
 import { STRIP_ENV } from '../brain/argv.js';
+import { clearMcpListFiles } from '../brain/connectors-check.js';
 import { trustFolder } from '../brain/grok.js';
 import { locateBin, profileBin } from '../brain/locate.js';
 import { profileEnv, readEnvFile, SESSION_ENV, tableSecrets } from '../core/env.js';
@@ -144,6 +145,8 @@ export async function runDaemon(configPath: string): Promise<void> {
   const seeded = seedGuards(cfg, STATE_DIR);
   if (seeded.length) logLine(`launch guard: took the compiled deny rules of ${seeded.join(', ')} from their own records (first start with the state-side guard)`);
   const launchGuard = makeLaunchGuard(cfg, STATE_DIR, logLine);
+  // A connectors check's settings files that a daemon killed mid-check left (connectors-check.ts).
+  try { clearMcpListFiles(STATE_DIR); } catch (e) { logLine(`connectors check: old settings files not removed: ${(e as Error).message}`); }
 
   // The owner's API token; each agent gets one derived from it that works only for its own chat.
   const apiToken = loadOrMintToken(join(STATE_DIR, 'api.token'), (mode) => logLine(`api.token was mode ${mode.toString(8)}; set back to 600`));
