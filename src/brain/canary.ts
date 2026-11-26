@@ -12,7 +12,7 @@ import { API_ERROR, isApiErrorReason, loginLost } from './api-error.js';
 import { childEnv } from './argv.js';
 import { catalog } from './catalog.js';
 import { DEFAULT_BIN, locateBin } from './locate.js';
-import { paneBusy, paneIdle, tmux, tmuxSocketPath } from './tmux.js';
+import { exact, paneBusy, paneIdle, tmux, tmuxSocketPath } from './tmux.js';
 import { projectFolder, projectsDir } from './transcripts.js';
 import { KEY_KEPT_LINE, KEY_MISS_LINE, QUIET_MS, TuiBrain, tmuxVersion } from './tui.js';
 
@@ -391,7 +391,7 @@ export async function liveRun(bin: string, keep: CanaryRig['keep'], keepFile: (n
     const logs: string[] = [];
     pane.on('log', (l: string) => logs.push(`${new Date().toISOString()} ${l}`));
     const capture = async (): Promise<string> => {
-      const r = await tmux(['capture-pane', '-p', '-t', pane.name, '-S', '-30'], { socket, env });
+      const r = await tmux(['capture-pane', '-p', '-t', exact(pane.name), '-S', '-30'], { socket, env });
       return r.code === 0 ? r.out : '';
     };
     const run = await runChecks({ brain: pane, capture, cwd, keep, aborted: () => aborted });

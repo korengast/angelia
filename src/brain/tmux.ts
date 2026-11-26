@@ -16,6 +16,12 @@ export function tmuxSocketPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(base, `tmux-${process.getuid?.() ?? 0}`, TMUX_SOCKET);
 }
 
+/** A tmux target for exactly this session. A bare name is a prefix match: with only `foo-12` there,
+ *  `-t foo-1` reaches it (has-session answers 0, kill-session ends it). `=name` is exact but a session
+ *  target only (capture-pane, send-keys, paste-buffer and set-option -w refuse it); `=name:` is exact
+ *  for every command Angelia sends. Measured on tmux 3.7c with sessions foo-1 and foo-12 (2026-11-26). */
+export const exact = (name: string): string => `=${name}:`;
+
 /** `timedOut`: the client was killed at its time limit: the server may well be fine (a loaded machine). */
 export interface TmuxResult { code: number; out: string; err: string; timedOut?: boolean }
 

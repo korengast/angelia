@@ -24,7 +24,7 @@ test('a pane on another tmux server: every tmux call names it, and so does the l
   await (usual as any).tm(['has-session', '-t', usual.name]);
   assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n'), [
     `-L angelia-canary-1 has-session -t ${own.name}`,
-    `-L angelia-canary-1 capture-pane -p -t ${own.name} -S -30`,
+    `-L angelia-canary-1 capture-pane -p -t =${own.name}: -S -30`,
     `-L angelia has-session -t ${usual.name}`,
   ]);
   assert.equal((own as any).socket, 'angelia-canary-1');

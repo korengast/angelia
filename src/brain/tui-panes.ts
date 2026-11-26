@@ -1,11 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readlink } from 'node:fs/promises';
 import { versionAtLeast } from './argv.js';
-import { listsTeammates, paneIdle, tmux } from './tmux.js';
-
-/** A tmux target for exactly this session: a bare name also matches a longer one that starts with it
- *  (tmux 3.7c). The colon makes `=name` a pane target too, as capture-pane needs. */
-const exact = (name: string): string => `=${name}:`;
+import { exact, listsTeammates, paneIdle, tmux } from './tmux.js';
 
 /**
  * End the panes on Angelia's tmux server that no chat will reach again: a name with one of this

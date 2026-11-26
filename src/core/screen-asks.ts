@@ -1,7 +1,7 @@
 import { readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { PERMISSION_MARKER, paneHasBox, permissionDialog, tmux, TMUX_SOCKET } from '../brain/tmux.js';
+import { exact, PERMISSION_MARKER, paneHasBox, permissionDialog, tmux, TMUX_SOCKET } from '../brain/tmux.js';
 import { redactLog } from '../daemon/redact.js';
 
 /**
@@ -110,7 +110,7 @@ export class ScreenAsks {
   constructor(private readonly h: ScreenAsksHost) {}
 
   private async capture(name: string): Promise<string | null> {
-    const r = await tmux(['capture-pane', '-p', '-t', name, '-S', '-30'], { env: this.h.env(), ...(this.h.socket ? { socket: this.h.socket } : {}) });
+    const r = await tmux(['capture-pane', '-p', '-t', exact(name), '-S', '-30'], { env: this.h.env(), ...(this.h.socket ? { socket: this.h.socket } : {}) });
     return r.code === 0 ? r.out : null;
   }
 
