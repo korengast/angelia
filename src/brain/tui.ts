@@ -1010,7 +1010,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       // back from the history. Cleared from any cursor (clearBox), and what it was is said; what the
       // clear could not reach keeps the paste from its Enter (boxHoldsOnly, below).
       const box = await this.clearBox();
-      if (box.held) this.emit('log', `tmux: the input box held text before a paste; ${box.left ? `${box.left === box.held ? 'it did not change' : 'not all of it went'}, the paste goes in only if the box then holds it alone` : 'cleared'}: ${JSON.stringify(box.held.slice(0, 120))} pane=${this.name}`);
+      if (box.held) this.emit('log', `tmux: the input box held text before a paste; ${box.left ? `${box.left === box.held ? 'it did not change' : 'not all of it went'}, the paste goes in only if the box then holds it alone` : 'cleared'}: ${box.held.length} chars, sha256 ${createHash('sha256').update(box.held).digest('hex').slice(0, 12)} pane=${this.name}`);
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       if ((await loadBuffer(this.name, text, this.dir, (a) => this.tm(a))).code !== 0) {
         this.emit('log', `tmux: the message could not be loaded into a paste buffer pane=${this.name}`);

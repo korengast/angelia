@@ -87,7 +87,7 @@ async function one(r: ReturnType<typeof rig>, name: string, text: string, before
   const stored = typeof row?.message?.content === 'string' ? row.message.content : JSON.stringify(row?.message?.content ?? '');
   const ok = !miss && /by the Stop marker after/.test(ended) && result?.isError === false && String(result?.text ?? '').trim().length > 0 && m.some((x) => x.prompt_key === typedKey) && promptKey(stored) === typedKey;
   if (!ok) failed++;
-  console.log(`${ok ? 'ok  ' : 'FAIL'} | ${name} | ${ended.replace(/ pane=.*/, '').replace('tmux: turn ended by ', '')} | answer ${result?.isError ? `error (${result.reason})` : `${String(result?.text ?? '').length} chars`} | typed ${typedKey.slice(0, 8)} hook ${m.map((x) => `${String(x.prompt_key).slice(0, 8)}/${String(x.prompts)}`).join(',') || '-'} stored ${promptKey(stored).slice(0, 8)}${held ? ` | ${held.replace(/: ".*/, '').replace('tmux: the input box ', 'box ')}` : ''}${miss ? ` | ${miss.replace(/ pane=.*/, '')}` : ''}`);
+  console.log(`${ok ? 'ok  ' : 'FAIL'} | ${name} | ${ended.replace(/ pane=.*/, '').replace('tmux: turn ended by ', '')} | answer ${result?.isError ? `error (${result.reason})` : `${String(result?.text ?? '').length} chars`} | typed ${typedKey.slice(0, 8)} hook ${m.map((x) => `${String(x.prompt_key).slice(0, 8)}/${String(x.prompts)}`).join(',') || '-'} stored ${promptKey(stored).slice(0, 8)}${held ? ` | ${held.replace(/: \d+ chars.*/, '').replace('tmux: the input box ', 'box ')}` : ''}${miss ? ` | ${miss.replace(/ pane=.*/, '')}` : ''}`);
   if (dump) appendFileSync(dump, JSON.stringify({ name, ok, typed: text, typedKey, markers: m, storedKey: promptKey(stored), stored, logs: lines }) + '\n');
 }
 
