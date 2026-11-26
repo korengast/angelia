@@ -64,11 +64,11 @@ put them in jobs, and the chat of the job's profile gets a line only when there 
 **`angelia health [--days N] [--json] [--alert]`** counts trouble in `daemon.log`, per profile and
 day: turns that ended with no answer, failed, stalled or threw, answers that could not be delivered,
 tmux turns that ended by the quiet pane (all of them, and the ones with no answer for a message),
-panes that read idle with the turn open, retries with a fresh session, permissions
+panes that read idle with the turn open, API errors, retries with a fresh session, permissions
 auto-denied, markers a tmux turn dropped on a prompt key miss (`tmux: marker dropped, prompt key
 miss:`), and for the daemon as a whole its starts, WhatsApp drops and send retries (each `send
 failed, again in N s` line is one more try of a send, not a lost message). A failure that the daemon
-tried again (a retry with a fresh session) is not counted as failed: only the end of the
+tried again (an API error, a first turn that died) is not counted as failed: only the end of the
 retry is. The window is the last 24 hours, or the last N days (at most 30), split by your local
 calendar day; when the log holds less than that, the first line says where the log starts. A chat is shown as its
 profile; a chat no route names is shown by the first eight characters of its id. It reads the log
@@ -175,7 +175,7 @@ A check can also fail for a reason of the hour: the model answered slowly (`the 
 180 s`). Run it again before you change a build.
 
 **"tmux mode canary could not judge this build".** Exit 2. A turn ended with the plan's usage limit
-or a lost login, which says nothing about the build: any build ends such a turn
+a failed API call or a lost login, which says nothing about the build: any build ends such a turn
 the same way. The line says which. Nothing is recorded, no screen is kept, and the next run tries
 again; with `--if-new-build` that is the next day's job. For a lost login run `claude` and `/login`.
 
@@ -369,6 +369,10 @@ file is stale: `rm ~/.angelia/daemon.pid`, then start again.
 
 **A job timer says the job changed since it was installed.** The plist pins a hash of the job.
 `angelia jobs install <profile>` takes the new definition; `angelia jobs` lists what is out of step.
+
+**API error.** The turn runs once more after one minute (`api error key=…, the same turn again in
+60 s` in `daemon.log`). A second error ends the turn: for a lost login the chat is told to run `claude`
+and `/login` on this machine.
 
 **Usage limit.** The chat hears the CLI's own limit line plus how to switch: `/model sonnet` for
 this session only; `/model default` once the limit resets.

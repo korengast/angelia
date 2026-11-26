@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent, type SelfPermission, type SelfWork, type UnaskedAnswer } from '../core/types.js';
 import { isLimitText, TMUX_STALLED } from '../core/deliver/text.js';
+import { apiErrorReason, apiErrorText, isApiErrorRow } from './api-error.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { blockedShort, deniedConnectorCount, PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
 import { addDirAccepted, addDirDialog, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
@@ -1445,6 +1446,8 @@ export class TuiBrain extends EventEmitter implements Brain {
     const dialogs = new DialogWatch();
     const screen = new ScreenDialogs();
     let quietSince = 0, held = false, grewAt = 0, failed = false;
+    // A failed API call written as the turn's last words (api-error.ts): no answer, whatever the hook says.
+    let apiFailed: string | null = null;
     // The screen above the box's foot, and when it last changed.
     let lastAbove = '', aboveAt = 0;
     const quietMs = this.opts.quietMs ?? QUIET_MS, quietTextMs = this.opts.quietTextMs ?? QUIET_TEXT_MS, quietOpenMs = this.opts.quietOpenMs ?? QUIET_OPEN_MS;
@@ -1478,6 +1481,8 @@ export class TuiBrain extends EventEmitter implements Brain {
         // This turn's reader: whether the CLI's error row is the last word it read (turnRows).
         if (this.at !== readTo) failed = this.rows === 'error';
         for (const ev of rows) {
+          if (ev.kind === 'api-error') { if (pending) yield { kind: 'progress', text: pending }; pending = null; apiFailed = ev.text; continue; }
+          apiFailed = null; // the turn went on after it
           if (ev.kind === 'text') { if (pending) yield { kind: 'progress', text: pending }; pending = ev.text; }
           else if (pending) { yield { kind: 'progress', text: pending }; pending = null; }
         }
@@ -1495,7 +1500,7 @@ export class TuiBrain extends EventEmitter implements Brain {
             const a = this.takeIdle(true, failed);
             if (a) yield { kind: 'unasked', ...a };
             // That error row was the other turn's: it says nothing of this turn's own answer.
-            failed = false;
+            failed = false; apiFailed = null;
             continue;
           }
           // A turn whose one typed prompt is not what this turn typed: someone pressed Enter in the
@@ -1507,7 +1512,7 @@ export class TuiBrain extends EventEmitter implements Brain {
             pending = null;
             const a = this.takeIdle(true, failed);
             if (a) yield { kind: 'unasked', ...a };
-            failed = false;
+            failed = false; apiFailed = null;
             continue;
           }
           if (m?.at && m.at >= sentAt && !command && m.origin === 'prompt' && m.prompts === 1 && typeof m.prompt_key === 'string' && this.typedKey && m.prompt_key !== this.typedKey && !this.followKeys.includes(m.prompt_key)) {
@@ -1533,8 +1538,9 @@ export class TuiBrain extends EventEmitter implements Brain {
           // The next turn's prompt row may be among the rows read in this poll or just now: its reader
           // looks for it from where this poll began to read (readTo).
           if (!background) { this.readTranscript(); this.closeAbsorbed(sentAt, readTo); }
-          ended('the Stop marker', done);
-          yield { kind: 'result', text: done, isError: false };
+          // The hook hands on the last assistant text, the error row's too: only another answer is one.
+          if (apiFailed !== null && (!done.trim() || done.trim() === apiFailed)) { ended('the Stop marker, as an API error', ''); yield { kind: 'result', text: apiFailed, isError: true, reason: apiErrorReason(apiFailed) }; }
+          else { ended('the Stop marker', done); yield { kind: 'result', text: done, isError: false }; }
           return;
         }
         // After the progress lines, so the chat reads what the agent said before what it asks to run.
@@ -1625,6 +1631,12 @@ export class TuiBrain extends EventEmitter implements Brain {
             const stood = { none: 'has no turn', command: 'has a slash command only', said: 'ends with text', error: 'ends with an error row of the CLI',
               open: `open, no new row and nothing moving above the input box for ${Math.round((Date.now() - Math.max(quietSince, grewAt, aboveAt)) / 1000)} s` }[this.rows];
             const how = `the quiet pane (no Stop marker; transcript ${stood})`;
+            if (apiFailed !== null) {
+              if (!background) this.closeAbsorbed(sentAt, readTo);
+              ended(`${how}, as an API error`, '');
+              yield { kind: 'result', text: apiFailed, isError: true, reason: apiErrorReason(apiFailed) };
+              return;
+            }
             const answer = pending ?? '';
             ended(how, answer);
             // The Stop marker may still come (a failed read of the screen, a slow hook): then it is this
@@ -2409,7 +2421,7 @@ export function turnRows(chunk: string, state: TurnRows = 'none'): TurnRows {
     const content = row.message?.content;
     const blocks = (typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []) as { type?: unknown; text?: unknown; is_error?: unknown; content?: unknown }[];
     if (row.type === 'assistant') {
-      if (row.isApiErrorMessage === true || (typeof row.error === 'string' && row.error.length > 0)) { state = 'error'; continue; }
+      if (isApiErrorRow(row)) { state = 'error'; continue; }
       for (const b of blocks) {
         if (b?.type === 'text') { if (String(b.text ?? '').trim()) state = 'said'; }
         // A tool call, or thinking: the model is at work.
@@ -2431,7 +2443,8 @@ export function turnRows(chunk: string, state: TurnRows = 'none'): TurnRows {
   return state;
 }
 
-export type TranscriptEvent = { kind: 'text'; text: string } | { kind: 'tool' };
+/** `api-error`: Claude Code's own row for a failed API call (api-error.ts), never the agent's words. */
+export type TranscriptEvent = { kind: 'text'; text: string } | { kind: 'tool' } | { kind: 'api-error'; text: string };
 
 /** Assistant text and tool calls, in order, from a slice of a Claude Code transcript. */
 export function transcriptEvents(chunk: string): TranscriptEvent[] {
@@ -2440,6 +2453,8 @@ export function transcriptEvents(chunk: string): TranscriptEvent[] {
     let row: { type?: string; message?: { content?: unknown } };
     try { row = JSON.parse(line); } catch { continue; }
     const content = row?.message?.content;
+    const failed = apiErrorText(row);
+    if (failed !== null) { out.push({ kind: 'api-error', text: failed }); continue; }
     if (row?.type !== 'assistant' || !Array.isArray(content)) continue;
     for (const b of content as { type?: string; text?: string }[]) {
       if (b?.type === 'text' && String(b.text ?? '').trim()) out.push({ kind: 'text', text: String(b.text).trim() });

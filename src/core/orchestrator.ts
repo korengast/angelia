@@ -12,6 +12,7 @@ import { SessionMap } from './session/map.js';
 import { KeyedQueue } from './session/queue.js';
 import { createBrain, locateBin, profileBin, type Brain, type BackendName } from '../brain/index.js';
 import { projectsDir } from '../brain/transcripts.js';
+import { isApiErrorReason, loginLost } from '../brain/api-error.js';
 import { START_EXIT } from '../brain/tui.js';
 import { claudeHistory, claudeTranscriptFor, piHistory, type HistoryItem, type HistoryPage } from '../brain/history.js';
 import { grokPage, grokReplay } from '../brain/grok-history.js';
@@ -24,7 +25,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, notDeliveredLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, RELEASED_LINE, selfCapLine, TMUX_STALLED, TMUX_STALLED_LINE, SELF_ASK_LINE, SELF_ASK_UNTIED_LINE } from './deliver/text.js';
+import { failureLine, notDeliveredLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, LOGIN_LOST_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, RELEASED_LINE, selfCapLine, TMUX_STALLED, TMUX_STALLED_LINE, SELF_ASK_LINE, SELF_ASK_UNTIED_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -83,6 +84,8 @@ export interface OrchestratorOptions {
   stallTickMs?: number;
   /** Tests: the waits between attempts at a send that failed (default SEND_RETRY_MS). */
   sendRetryMs?: number[];
+  /** Tests: the wait before a turn whose answer was an API error runs once more (default API_RETRY_MS). */
+  apiRetryMs?: number;
   /** Tests: the random gap between the chunks of one long answer (default 1.5 to 4 s). */
   chunkGapMs?: [number, number];
   /** Tests: how long a permission request must have been in the chat before a bare "yes" or "no", or
@@ -142,7 +145,8 @@ export interface OrchestratorOptions {
 
 /** `midturnFollow`: the turn is the one Claude Code runs by itself for chat messages typed into the turn
  *  before it, which that turn did not take (followAbsorbed): no no-answer line, nothing said when none ran. */
-type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; follow?: AsyncGenerator<BrainEvent>; midturnFollow?: boolean };
+/** `apiRetried`: this is the one retry after an API error (API_RETRY_MS); `retried`: the one under a fresh id. */
+type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; apiRetried?: boolean; follow?: AsyncGenerator<BrainEvent>; midturnFollow?: boolean };
 
 /** The backends /backend offers. */
 const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex', 'pi', 'agy'];
@@ -167,6 +171,9 @@ export const ONBOARD_FAILED_LINE = 'Could not set up an agent for this chat. The
 const QUEUE_MAX = 10;
 /** The waits between attempts at a failed send: about two minutes in all, enough for a reconnect. */
 const SEND_RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
+/** The wait before a turn the API failed runs again: long enough for a token refresh or a short outage
+ *  to pass, short enough that the chat is not left wondering. */
+const API_RETRY_MS = 60_000;
 /** Undelivered answers kept per chat. */
 const OWED_MAX = 5;
 /** Requests one turn may have refused by the profile's levels (permissions) before the turn is stopped. */
@@ -1380,6 +1387,18 @@ export class Orchestrator {
         await this.reply(i, notDeliveredLine(result.reason));
         return result.reason ?? 'not delivered';
       }
+      if (!o.apiRetried && isApiErrorReason(result?.reason)) {
+        // The CLI wrote a failed API call as its answer (not logged in, a 5xx): never post it as the
+        // agent's words. Once more in the same session after a minute, which a refreshed token or a
+        // passing outage answers; the session keeps the conversation, a fresh one would lose it.
+        if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
+        const wait = this.opts.apiRetryMs ?? API_RETRY_MS;
+        this.log(`api error key=${key}, the same turn again in ${Math.round(wait / 1000)} s`);
+        await new Promise((r) => setTimeout(r, wait));
+        // /stop or /new in the wait: the chat moved on, and the turn is not typed again. Nor at a shutdown.
+        if ((this.era.get(key) ?? 0) !== era || this.stopping) { this.log(`api retry dropped key=${key}: ${this.stopping ? 'the daemon stops' : 'stopped by the user'}`); return 'stopped'; }
+        return this.runTurn(i, key, name, { ...o, follow: undefined, midturnFollow: false, apiRetried: true });
+      }
       if (!retried && !row.started && freshRetry(result?.reason)) {
         // First turn of a brand-new session died: retry exactly once with a fresh id, per plan E.
         // Once. A deterministic failure - not logged in, a flag this build rejects, no tmux - fails
@@ -1394,6 +1413,8 @@ export class Orchestrator {
       if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile);
       // Out of usage: say so, and how to switch model, instead of "something broke".
       if (result?.text && isLimitText(result.text)) await this.reply(i, `${result.text}\n${limitHint(profile.backend)}`);
+      // The retry failed the same way: what to do about it, not the CLI's own words.
+      else if (isApiErrorReason(result?.reason) && loginLost(result?.reason ?? '')) await this.reply(i, LOGIN_LOST_LINE);
       else await this.reply(i, failureLine(result?.reason, homedir(), i.isGroup));
       return result?.reason ?? 'exception';
     }

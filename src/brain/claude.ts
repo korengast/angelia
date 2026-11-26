@@ -5,6 +5,8 @@ import type { BrainEvent } from '../core/types.js';
 import { claudeArgv, childEnv, versionAtLeast, CLAUDE_ENV, MIN_CLAUDE_VERSION } from './argv.js';
 import { BrainExited, PermissionBook, blockedConnectorNames, blockedShort, deniedConnectorCount, exitReason, jsonLine, permissionPreview, stopChild, wireChild, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, CHILD_GROUP, signalGroup } from './brain.js';
 import { LOST_SESSION_LINE, placeTranscript } from './transcripts.js';
+import { apiErrorReason, apiErrorText } from './api-error.js';
+import { isLimitText } from '../core/deliver/text.js';
 import { mcpLaunch } from '../capabilities/compile.js';
 
 export { BrainExited, exitReason, type BrainOptions } from './brain.js';
@@ -131,6 +133,8 @@ export class ClaudeBrain extends EventEmitter implements Brain {
     this.lines.on('exit', onExit);
     this.send({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null });
     let pendingText: string | null = null;
+    // The text of an API error row (api-error.ts): a result that only repeats it is no answer.
+    let failed: string | null = null;
     try {
       if (this.notice) { yield { kind: 'notice', text: this.notice }; this.notice = null; }
       while (true) {
@@ -145,7 +149,11 @@ export class ClaudeBrain extends EventEmitter implements Brain {
           if (problem) { this.kill(); yield { kind: 'result', text: '', isError: true, reason: problem }; return; }
           continue;
         }
-        if (l.type === 'assistant') {
+        if (l.type === 'assistant' && apiErrorText(l) !== null) {
+          if (pendingText) { yield { kind: 'progress', text: pendingText }; pendingText = null; }
+          failed = apiErrorText(l);
+        } else if (l.type === 'assistant') {
+          failed = null;
           const blocks: Line[] = l.message?.content ?? [];
           for (const b of blocks) {
             if (b.type === 'text' && String(b.text ?? '').trim()) {
@@ -162,7 +170,10 @@ export class ClaudeBrain extends EventEmitter implements Brain {
           yield { kind: 'permission', id, tool: String(l.request.tool_name ?? '?'), ...permissionPreview(l.request.input), request: { tool: String(l.request.tool_name ?? '?'), input: l.request.input } };
         } else if (l.type === 'result') {
           this.lastUsedAt = Date.now();
-          yield { kind: 'result', text: String(l.result ?? '').trim(), isError: !!l.is_error };
+          const text = String(l.result ?? '').trim();
+          // An error result with words is the API's failure, said as the answer; a usage limit keeps its own path.
+          if (text && !isLimitText(text) && (l.is_error || text === failed)) { yield { kind: 'result', text, isError: true, reason: apiErrorReason(text) }; return; }
+          yield { kind: 'result', text, isError: !!l.is_error };
           return;
         }
       }
