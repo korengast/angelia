@@ -376,7 +376,7 @@ export class Orchestrator {
     const dir = opts.stateDir ?? join(homedir(), '.angelia');
     this.log = opts.log ?? (() => {});
     this.map = new SessionMap(join(dir, 'sessions.json'), (line) => this.log(line));
-    this.notes = new ChatNotes(join(dir, 'app-notes.json'), (line) => this.log(line));
+    this.notes = new ChatNotes(join(dir, 'posted-lines.json'), (line) => this.log(line));
     this.screen = new ScreenAsks({ panes: () => this.dialogPanes(), tell: (a) => this.tellScreen(a), log: (l) => this.log(l), env: () => this.childEnv().env });
   }
 

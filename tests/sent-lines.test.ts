@@ -34,7 +34,7 @@ function rig(dir = mkdtempSync(join(tmpdir(), 'angelia-sent-')), defaults: Recor
     sendMedia: async (_c: string, m: { path: string; caption?: string }) => { files.push(`${m.path.split('/').pop()}${m.caption ? ` :: ${m.caption}` : ''}`); },
   };
   const o = new Orchestrator(cfg, { telegram: tg }, { stateDir: dir, bins: { 'claude-code': FAKE }, apiRetryMs: 20, ...(transcripts ? { transcripts } : {}) });
-  const notes = () => JSON.parse(readFileSync(join(dir, 'app-notes.json'), 'utf8')).chats as Record<string, { kind: string; text: string; source?: string; seen?: true; session: string | null }[]>;
+  const notes = () => JSON.parse(readFileSync(join(dir, 'posted-lines.json'), 'utf8')).chats as Record<string, { kind: string; text: string; source?: string; seen?: true; session: string | null }[]>;
   return { o, cfg, sent, files, dir, notes };
 }
 const dm = (chat: string, text: string): Inbound => ({ platform: 'telegram', chat, sender: 'u1', senderName: 'Owner', text, isGroup: false, mentioned: false, media: [] });
@@ -55,7 +55,7 @@ test('a line posted past the agent is kept with who posted it; the agent\'s own 
     ['sent', 'profile b', '[from b] hello a'],
     ['sent', 'angelia', 'Restart failed.'],
   ]);
-  assert.equal(statSync(join(r.dir, 'app-notes.json')).mode & 0o777, 0o600);
+  assert.equal(statSync(join(r.dir, 'posted-lines.json')).mode & 0o777, 0o600);
 });
 
 test('the next turn reads the posted lines first, oldest first, once; a bare command leaves them for the next real turn', async (t) => {
@@ -124,7 +124,7 @@ test('a file posted past the agent is kept as its name and caption', async (t) =
 
 test('the posted lines file: seen survives a reload; the newest are kept, text and total capped', () => {
   const dir = mkdtempSync(join(tmpdir(), 'angelia-sent-notes-'));
-  const path = join(dir, 'app-notes.json');
+  const path = join(dir, 'posted-lines.json');
   const n = new ChatNotes(path);
   n.add('telegram:1', 's1', 'a', 'owner');
   assert.deepEqual(n.takeUnseen('telegram:1').map((x) => x.text), ['a']);
@@ -253,7 +253,7 @@ test('export: the posted lines come out as the agent\'s rows, in their place by 
     { type: 'user', timestamp: '2026-11-06T12:00:00.000Z', message: { role: 'user', content: 'later' } },
     { type: 'assistant', timestamp: '2026-11-06T12:00:05.000Z', message: { content: [{ type: 'text', text: 'yes' }] } },
   ].map((r) => JSON.stringify(r)).join('\n') + '\n');
-  const notes = new ChatNotes(join(state, 'app-notes.json'));
+  const notes = new ChatNotes(join(state, 'posted-lines.json'));
   notes.add('telegram:7', 'c1', 'The backup finished.', 'job backup', new Date('2026-11-06T11:00:00.000Z'));
   notes.add('telegram:7', 'c1', '[from m] note', 'profile m', new Date('2026-11-06T11:30:00.000Z'));
   notes.add('telegram:7', 'c1', 'after all', 'owner', new Date('2026-11-06T13:00:00.000Z'));
@@ -318,7 +318,7 @@ test('a retry of the turn carries the same block: under a fresh id, and after an
   await o.notify('telegram:1', 'before the error', undefined, { source: 'owner' });
   await o.handle(dm('1', 'APIERR'));
   assert.ok(log.some((l) => /api error.*retry|retry.*api error/i.test(l)) || sent.length >= 5, log.join('\n'));
-  const kept = JSON.parse(readFileSync(join(dir, 'app-notes.json'), 'utf8')).chats['telegram:1'] as { text: string; seen?: true; source: string }[];
+  const kept = JSON.parse(readFileSync(join(dir, 'posted-lines.json'), 'utf8')).chats['telegram:1'] as { text: string; seen?: true; source: string }[];
   assert.ok(kept.find((n) => n.text === 'before the error')?.seen, 'taken at the first run');
   assert.ok(kept.some((n) => n.source === 'angelia' && /API|error|wrong|again/i.test(n.text)), `the failure line is recorded: ${kept.map((n) => n.text).join(' | ')}`);
   await o.handle(dm('1', 'after'));

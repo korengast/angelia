@@ -14,7 +14,7 @@ just posted, and could not answer a question about a line the chat had just read
 
 - **Record.** `core/session/notes.ts` keeps, for any chat key: the time, the text as the chat saw
   it, who posted it (`source`), the session active then, and whether the agent was told. The newest
-  200 per chat, 2000 characters a line, 64 000 a chat. The file is `app-notes.json` in the state
+  200 per chat, 2000 characters a line, 64 000 a chat. The file is `posted-lines.json` in the state
   folder (0600), which no agent may open. Every posted line and every turn start that found lines
   rewrites the whole file, with no fsync; that is fine at these caps.
 - **The rule.** Every line Angelia posts into a chat that the agent did not write is recorded: what

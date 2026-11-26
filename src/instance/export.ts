@@ -226,7 +226,7 @@ export function exportChat(cfg: Config, sessions: SessionMapFile, chat: string, 
     else if (backend === 'agy') out.push(...(o.agy?.get(id) ?? []));
     // A session from a backend Angelia does not run has no reader: skipped, not guessed at.
   }
-  if (o.stateDir) mergeSent(out, new ChatNotes(join(o.stateDir, 'app-notes.json')).sentOf(chat), ids, c?.history ?? [], { chat, profile: route.profile, backend: p.backend }, !!o.session);
+  if (o.stateDir) mergeSent(out, new ChatNotes(join(o.stateDir, 'posted-lines.json')).sentOf(chat), ids, c?.history ?? [], { chat, profile: route.profile, backend: p.backend }, !!o.session);
   return out;
 }
 
