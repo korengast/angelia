@@ -140,6 +140,7 @@ In a WhatsApp group, \`@<number>\` in the agent's answer or in \`angelia send\` 
 number is their phone or their lid, as the message header shows it, with or without +. A number that is
 no member stays text, and so does any tag past 5 members in one message or inside backticks. Progress
 lines and Angelia's own lines never tag.
+A file's caption never tags, but a phone the group hides is written as its lid there too.
 
 A turn whose CLI gives no output for defaults.turn_stall_minutes (60; 0 for never) is stopped and the
 chat told; at half of it the chat hears that it may be stuck. tmux turns are not stopped.

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- WhatsApp: in a group file caption, a phone number that the group hides now goes out as its member id (lid), as in a text. A caption never tags.
 - The agent knows what was posted in its chat since its last turn (a job's line, `angelia send`, another profile, Angelia's own lines): it reads them before your next message and does not send them again. New: `--source <label>` on `angelia send` and `send-media`. `angelia export` lists these lines.
 - Idle tmux panes are ended: one Angelia reads no more that sat idle `defaults.pane_idle_hours` (default 12), or that runs an older Claude Code. The next message resumes it. A pane with a dialog or a teammate open is kept.
 - A session with a background shell command, subagent or teammate still running is no longer ended or let go of by the idle reap (`idle_exit_minutes`), for at most 12 hours per task. This holds in print mode too.

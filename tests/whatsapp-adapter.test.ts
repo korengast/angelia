@@ -318,6 +318,21 @@ test('send: a phone the lid map knows goes out as the lid with tags off, after a
   assert.match(last.text, /@33333333333333$/);
 });
 
+test('sendMedia: a caption in a group writes a hidden phone as its lid, untagged; in a DM it is left alone', async (t) => {
+  const { a, sock, authDir } = await connected(); t.after(() => a.stop());
+  writeFileSync(join(authDir, 'lid-mapping-15550003333.json'), JSON.stringify('33333333333333@lid'));
+  sock.ev.emit('creds.update', {});
+  const file = { path: '/x/card.png', kind: 'image' as const, mime: 'image/png', bytes: 1, fileName: 'card.png' };
+  await a.sendMedia(G, { ...file, caption: 'for @15550003333' });
+  assert.equal(sock.posts.at(-1)!.content.caption, 'for @33333333333333');
+  assert.equal(sock.posts.at(-1)!.content.mentions, undefined, 'no tag on a caption');
+  await a.sendMedia(G, { ...file, kind: 'document', mime: 'application/pdf', fileName: 'a.pdf', caption: 'by @+15550003333' });
+  assert.equal(sock.posts.at(-1)!.content.caption, 'by @33333333333333');
+  await a.sendMedia(DM, { ...file, caption: 'for @15550003333' });
+  assert.equal(sock.posts.at(-1)!.content.caption, 'for @15550003333');
+  assert.equal(sock.fetches.length, 0, 'no member fetch for a caption');
+});
+
 test('a reply carries the quoted text to the handler, and a plain message carries none', async (t) => {
   const got: Record<string, unknown>[] = [];
   const r = rig({ onInbound: async (i) => { got.push(i as never); } });

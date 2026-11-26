@@ -470,7 +470,9 @@ export class WhatsAppAdapter extends EventEmitter implements Sender {
   /** Attach a file. Baileys streams it from disk, so a large document never sits in this process's heap. */
   async sendMedia(chat: string, m: Media): Promise<void> {
     if (!this.sock || !this.connected) throw new Error('whatsapp: not connected');
-    const caption = m.caption || undefined;
+    // A caption in a group gets the same rewrite as a text: a phone the group hides goes out as its
+    // lid. No tags on a caption: it needs no member fetch, and a file is rarely where a tag belongs.
+    const caption = (m.caption && chat.endsWith('@g.us') ? withMentions(m.caption, undefined, { lidFor: (n) => this.lids.lidFor(n) }).text : m.caption) || undefined;
     if (m.kind === 'image') { await this.post(chat, { image: { url: m.path }, caption, mimetype: m.mime }); return; }
     if (m.kind === 'video') { await this.post(chat, { video: { url: m.path }, caption, mimetype: m.mime }); return; }
     if (m.kind === 'audio' && m.voice !== false) {
