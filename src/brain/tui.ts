@@ -11,7 +11,7 @@ import { isLimitText, TMUX_STALLED } from '../core/deliver/text.js';
 import { apiErrorReason, apiErrorText, isApiErrorRow } from './api-error.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { blockedShort, deniedConnectorCount, PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
-import { addDirAccepted, addDirDialog, boxHoldsOnly, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { addDirAccepted, addDirDialog, boxHoldsOnly, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, resumeDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { HOOK_GIVE_UP_MS, paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs, type RelayedRequest, type RequestOrigin } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { mcpLaunch, readRecord } from '../capabilities/compile.js';
@@ -41,6 +41,9 @@ const TMUX_STALLS = 3;
 const connectorChecks = new Set<string>();
 /** How long claude's add-dir dialog must stand before keys reach it (it drops them for ~1 s, 2.1.326). */
 const ADD_DIR_SETTLE_MS = 1500;
+/** How many times one launch may press a key at the resume dialog: one answer, pressed again only while
+ *  the dialog still stands (a new dialog may drop a key). */
+const RESUME_PRESSES = 3;
 const START_TIMEOUT_MS = 90_000;
 /** How long a message waits for the pane's prompt. Past it the message goes back to the chat as not
  *  delivered, and a pane that works or waits for a person is kept (notTyped). */
@@ -798,10 +801,11 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (r.code !== 0) { rmSync(this.envPath, { force: true }); return `tmux could not start the session: ${r.err.trim() || 'new-session failed'}`; }
     writeFileSync(this.launchPath, this.fingerprint(resume));
     this.up = true;
-    const deadline = Date.now() + START_TIMEOUT_MS;
+    const deadline = Date.now() + (this.opts.startTimeoutMs ?? START_TIMEOUT_MS);
     let asked: { dir: string; at: number; answered: number } | undefined;
     const answered = new Set<string>();
     let unlisted: string | undefined;
+    const cold = { at: 0, pressedAt: 0, presses: 0, logged: new Set<string>() };
     while (Date.now() < deadline) {
       // The pane is gone with its output, so say what was run and where: that is the one way to see why.
       if (!(await this.sessionAlive())) { this.up = false; return `${START_EXIT} (${argv[0]} in ${this.profile.cwd}; run it there by hand to see why)`; }
@@ -811,6 +815,22 @@ export class TuiBrain extends EventEmitter implements Brain {
       // stale frame in the history (between two rules) pass for a box while a dialog is open.
       if (trustDialogOpen(pane)) { await this.acceptDialog(trustDialogOpen, trustAccepted); continue; }
       if (importsDialogOpen(pane)) { await this.acceptDialog(importsDialogOpen, importsAccepted); continue; }
+      // Only a --resume launch asks it. Same waits as the add-dir dialog below: let it stand before a key,
+      // and give the key time to land. Past the last press it stands, and the start fails with its screen kept.
+      if (resume && resumeDialog(pane)) {
+        cold.at ||= Date.now();
+        if (cold.presses >= RESUME_PRESSES || Date.now() - cold.at < ADD_DIR_SETTLE_MS || Date.now() - cold.pressedAt < ADD_DIR_SETTLE_MS * 2) { await sleep(250); continue; }
+        cold.presses++;
+        const how = await this.answerResume();
+        cold.pressedAt = Date.now();
+        if (how && !cold.logged.has(how)) {
+          cold.logged.add(how);
+          this.emit('log', how === 'refused'
+            ? `pane ${this.name} shows the resume dialog, and the cursor did not reach "Resume": no Enter pressed`
+            : `pane ${this.name} answered the resume dialog with ${how}: resume`);
+        }
+        continue;
+      }
       const dir = addDirDialog(pane);
       if (dir !== null) {
         // claude 2.1.326 drops keys for about a second after it draws this dialog (measured: Down and
@@ -880,6 +900,23 @@ export class TuiBrain extends EventEmitter implements Brain {
       await sleep(300);
     }
     return false;
+  }
+
+  /** Chooses "Resume", never the new conversation: Esc where the dialog says Esc resumes, else Enter with
+   *  the cursor on "Resume", after one Up when it is not. Null: the dialog closed before a key. */
+  private async answerResume(): Promise<'Esc' | 'Enter' | 'refused' | null> {
+    let d = resumeDialog(await this.capture(40));
+    if (!d) return null;
+    if (d.esc) { await this.tm(['send-keys', '-t', this.name, 'Escape']); return 'Esc'; }
+    if (!d.onResume) {
+      await this.tm(['send-keys', '-t', this.name, 'Up']);
+      await sleep(300);
+      d = resumeDialog(await this.capture(40));
+      if (!d) return null;
+      if (!d.onResume) return 'refused';
+    }
+    await this.tm(['send-keys', '-t', this.name, 'Enter']);
+    return 'Enter';
   }
 
   private async sessionAlive(): Promise<boolean> {

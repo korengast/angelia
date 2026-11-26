@@ -202,6 +202,12 @@ before `--resume` and presses the trust and external-imports dialogs a new folde
 fails: `/new` in the chat starts a fresh session; `tmux -L angelia attach -t <name>` shows a pane
 that is stuck on a dialog. Treat a folder move as a migration, not a rename.
 
+**The start dialogs Angelia answers.** While a tmux pane starts, Angelia answers the folder-trust
+dialog, the external CLAUDE.md imports dialog, the add-dir dialog (only for a folder in `add_dirs`)
+and, on a resume, "Resume this conversation?" (a long session left idle). It always resumes: Esc when
+the dialog says Esc resumes, else Enter with the cursor on "Resume". It presses at most three times.
+The log says `answered the resume dialog with Esc: resume` (or `Enter`). Any other dialog stays.
+
 **"the session never reached a prompt".** A tui pane sat on a dialog for 90 s. The daemon keeps the
 screen it saw in `~/.angelia/tui/<session>/screen.txt` and logs that path. Attach to the pane and
 answer it once; the next launch is clean.

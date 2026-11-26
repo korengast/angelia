@@ -273,7 +273,13 @@ export function importsAccepted(pane: string): boolean {
  *  on it until the start timed out, so those chats got no answer. */
 export const ADD_DIR_MARKER = 'Adding a new directory:';
 
-/** Each start dialog is found by one line (anchorOf): the add-dir and imports titles, and the trust
+/** A long session resumed after an idle hour may open "Resume this conversation?" before the prompt,
+ *  with "Resume" and "Start a new conversation" (a customer's pane on claude 2.1.329; the words and keys
+ *  read in the 2.1.332 program text). Which row starts highlighted differs: "Resume", the new
+ *  conversation, or none. */
+export const RESUME_MARKER = 'Resume this conversation?';
+
+/** Each start dialog is found by one line (anchorOf): the resume, add-dir and imports titles, and the trust
  *  dialog's yes row (its title has changed between versions: "Accessing workspace:" on 2.1.326). Its
  *  answers are the rows the cursor may be on. */
 const TRUST_ANSWERS = ['No, exit', TRUST_MARKER];
@@ -286,6 +292,7 @@ function anchorOf(line: string): string | null {
   const t = line.replace(/[│┃║]/g, '').trimStart();
   if (t.startsWith(ADD_DIR_MARKER)) return ADD_DIR_MARKER;
   if (t.startsWith(IMPORTS_MARKER)) return IMPORTS_MARKER;
+  if (t.startsWith(RESUME_MARKER)) return RESUME_MARKER;
   return line.includes(TRUST_MARKER) ? TRUST_MARKER : null;
 }
 
@@ -306,6 +313,27 @@ function startDialog(pane: string, marker: string, answers: string[]): { lines: 
   const cursor = lastLine(lines, /❯/, lines.length);
   if (cursor < (marker === TRUST_MARKER ? at - 3 : at + 1) || !answers.some((a) => lines[cursor].includes(a))) return null;
   return { lines, at, cursor };
+}
+
+/** An option row of the resume dialog, as drawn: maybe the cursor, maybe a number, then the label. */
+const RESUME_ROW = /^(?:❯\s*)?(?:\d\.\s*)?Resume(?:\s{2,}.*)?$/;
+const NEW_ROW = /^(?:❯\s*)?(?:\d\.\s*)?Start a new conversation(?:\s{2,}.*)?$/;
+
+/** The open resume dialog, or null. It is the last start dialog on screen, with no input box below it,
+ *  both options drawn under its title, and no cursor on any other row below it. `esc`: its foot says
+ *  Esc resumes. `onResume`: the cursor is on "Resume", so Enter resumes and nothing else. The numbers
+ *  and times in its sentence are not read. */
+export function resumeDialog(pane: string): { esc: boolean; onResume: boolean } | null {
+  const lines = pane.replace(/\n+$/, '').split('\n');
+  let at = -1;
+  for (let i = lines.length - 1; i >= 0 && at < 0; i--) if (anchorOf(lines[i])) at = i;
+  if (at < 0 || anchorOf(lines[at]) !== RESUME_MARKER) return null;
+  if (inputBoxStrict(lines.slice(at + 1).join('\n')) !== null) return null;
+  const below = lines.slice(at + 1).map((l) => l.replace(/[│┃║]/g, '').trim());
+  if (!below.some((l) => RESUME_ROW.test(l)) || !below.some((l) => NEW_ROW.test(l))) return null;
+  const cursor = [...below].reverse().find((l) => l.includes('❯'));
+  if (cursor !== undefined && !RESUME_ROW.test(cursor) && !NEW_ROW.test(cursor)) return null;
+  return { esc: below.some((l) => l.includes('Esc to resume')), onResume: cursor !== undefined && RESUME_ROW.test(cursor) };
 }
 
 /** The folder the add-dir dialog asks about, or null when that dialog is not open. Both answers must

@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, paneAboveFoot, paneBusy, paneIdle, pasteLanded, permissionDialog, submitPasted, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
+import { addDirAccepted, addDirDialog, importsAccepted, importsDialogOpen, paneAboveFoot, paneBusy, paneIdle, pasteLanded, permissionDialog, resumeDialog, submitPasted, trustAccepted, trustDialogOpen } from '../src/brain/tmux.js';
 import { addDirListed, hookSettings, transcriptEvents, transcriptPath } from '../src/brain/tui.js';
 
 const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`./fixtures/pane-${name}.txt`, import.meta.url)), 'utf8');
@@ -122,6 +122,27 @@ test('the external-imports dialog (a new profile folder importing _shared) is re
   assert.equal(importsAccepted(fixture('imports-selected') + fixture('adddir')), false, 'nor above the add-dir dialog');
   assert.equal(trustDialogOpen(fixture('trust-selected') + fixture('imports')), false);
   assert.equal(importsDialogOpen(fixture('trust-selected') + fixture('imports')), true);
+});
+
+// pane-resume.txt is written after a customer's screen (claude 2.1.329), not captured here.
+test('the resume dialog of a long idle session is found by its title and options, whatever its numbers', () => {
+  const d = fixture('resume');
+  assert.equal(paneIdle(d), false);
+  assert.deepEqual(resumeDialog(d), { esc: true, onResume: true });
+  assert.deepEqual(resumeDialog(d.replace('1h 15m', '3d 2h').replace('279.5k', '1.2m').replace('about 5%', 'all')), { esc: true, onResume: true });
+  const noHint = d.replace(' · Esc to resume', '');
+  assert.deepEqual(resumeDialog(noHint), { esc: false, onResume: true });
+  const onNew = noHint.replace('❯ 1.', '  1.').replace('  2.', '❯ 2.');
+  assert.deepEqual(resumeDialog(onNew), { esc: false, onResume: false });
+  assert.deepEqual(resumeDialog(noHint.replace('❯ 1.', '  1.')), { esc: false, onResume: false }, 'no row highlighted');
+  assert.equal(trustDialogOpen(d) || importsDialogOpen(d) || addDirDialog(d) !== null || permissionDialog(d) !== null, false);
+  // Not the open dialog: quoted above the prompt, under a later dialog, half drawn, or only named.
+  assert.equal(resumeDialog(d + fixture('idle')), null);
+  assert.equal(resumeDialog(d + fixture('adddir')), null);
+  assert.equal(resumeDialog(d + fixture('permission')), null);
+  assert.equal(resumeDialog(d.replace('2. Start a new conversation', '')), null);
+  assert.equal(resumeDialog(' The "Resume this conversation?" dialog\n 1. Resume\n 2. Start a new conversation\n Esc to resume\n'), null);
+  for (const other of ['trust', 'imports', 'adddir', 'permission', 'idle', 'model-dialog']) assert.equal(resumeDialog(fixture(other)), null, other);
 });
 
 // The add-dir fixtures are not raw captures: they were written after a real claude 2.1.326 frame, at
