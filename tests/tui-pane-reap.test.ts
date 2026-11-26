@@ -16,6 +16,8 @@ const hasLsof = (() => { try { execFileSync('lsof', ['-v'], { stdio: 'ignore' })
 const socket = `angelia-test-panereap-${process.pid}`;
 process.env.ANGELIA_TMUX_SOCKET = socket;
 process.env.ANGELIA_STATE_DIR = mkdtempSync(join(tmpdir(), 'angelia-panereap-'));
+// A brain's transcripts, too: the parked-pane tests write their own.
+process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'angelia-panereap-claude-'));
 const tmux = (...a: string[]) => execFileSync('tmux', ['-L', socket, ...a], { encoding: 'utf8' }).trim();
 const names = () => { try { return tmux('list-sessions', '-F', '#{session_name}').split('\n').filter(Boolean).sort(); } catch { return []; } };
 const HOUR = 3600_000;
@@ -112,6 +114,8 @@ test('the pane reap ends a pane idle for hours or on an older build, never a bus
 test('a parked pane past the idle hours is ended through the orchestrator, and the next message resumes the conversation', { skip: !hasTmux && 'no tmux', timeout: 60_000 }, async (t) => {
   const { reapPanes } = await import('../src/brain/tui.js');
   const { Orchestrator } = await import('../src/core/orchestrator.js');
+  const { transcriptPath } = await import('../src/brain/transcripts.js');
+  const { ROW, jsonl } = await import('./tui-stub.js');
   t.after(() => { try { tmux('kill-server'); } catch { /* already gone */ } });
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'angelia-panereap-cwd-')));
   const cfg = Config.parse({ profiles: { a: { cwd, tui: true } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000 } });
@@ -127,7 +131,14 @@ test('a parked pane past the idle hours is ended through the orchestrator, and t
   assert.deepEqual(o.idlePanes(), [], 'a pane a brain holds is not the pane reap\'s');
 
   await oo.dropBrain(key, false); // the idle reap parks it
-  assert.deepEqual(o.idlePanes(), [{ name, key, bin: FAKE }]);
+  const file = transcriptPath(cwd, row.id);
+  assert.deepEqual(o.idlePanes(), [{ name, key, bin: FAKE, transcript: file }]);
+  // A task the brain never saw start (one from before a restart) keeps the parked pane.
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, jsonl([ROW.prompt('hello'), ...ROW.background('toolu_sh')]));
+  assert.equal(o.mayEndPane(o.idlePanes()[0]), false);
+  assert.deepEqual(await reapPanes(o.idlePanes(), process.env, { idleHours: 12, now: Date.now() + 13 * HOUR, mayEnd: (p) => o.mayEndPane(p) }), [], 'a background shell open: kept');
+  appendFileSync(file, jsonl([{ type: 'queue-operation', operation: 'enqueue', content: '<task-notification><tool-use-id>toolu_sh</tool-use-id></task-notification>' }]));
   assert.equal(o.mayEndPane(o.idlePanes()[0]), true);
   const ended = await reapPanes(o.idlePanes(), process.env, { idleHours: 12, now: Date.now() + 13 * HOUR, mayEnd: (p) => o.mayEndPane(p) });
   assert.deepEqual(ended.map((p) => p.why), ['idle 13h']);

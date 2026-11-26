@@ -501,6 +501,8 @@ export class TuiBrain extends EventEmitter implements Brain {
   private ready?: Promise<string | null>;
   private up = false;
   private transcript: string;
+  /** The transcript this brain reads now: the pane reap reads a parked pane's open tasks there. */
+  get transcriptFile(): string { return this.transcript; }
   private at = 0;
   /** Where this turn's rows begin in the transcript, for reading how a request answered in the pane went. */
   private from = 0;

@@ -2321,9 +2321,9 @@ export class Orchestrator {
   /** The panes the pane reap may end (brain/tui-panes.ts, reapPanes): each parked one, and each chat's
    *  active session on a tui profile that no brain holds, as a restart leaves them. Never one a brain
    *  holds, for a turn or between turns, nor one read in the background (the idle reap parks those
-   *  first), nor one let go of with a task or teammate open, until it is past TEAMMATE_MAX_MS. A pane
-   *  no brain of this daemon knows (a restart's) carries its transcript: no tracker saw its work, so
-   *  mayEndPane reads the open tasks there. */
+   *  first), nor one let go of with a task or teammate open, until it is past TEAMMATE_MAX_MS. Each
+   *  carries its transcript, where mayEndPane reads the open tasks: after a restart no tracker saw a
+   *  pane's earlier work, and a brain that took the pane since reads only from its turn's start. */
   idlePanes(now = Date.now()): IdlePane[] {
     const nameOf = (b: Brain): string | undefined => { const n = (b as { name?: unknown }).name; return typeof n === 'string' ? n : undefined; };
     const held = new Set([...this.brains.values(), ...[...this.background.values()].map((e) => e.brain)].map(nameOf));
@@ -2335,7 +2335,7 @@ export class Orchestrator {
       const bin = this.binFor(p);
       out.set(name, { name, key, ...(bin ? { bin } : {}), ...(transcript ? { transcript } : {}) });
     };
-    for (const [key, b] of this.parked) add(key, nameOf(b));
+    for (const [key, b] of this.parked) add(key, nameOf(b), (b as { transcriptFile?: string }).transcriptFile);
     const root = typeof this.opts.transcripts === 'string' ? this.opts.transcripts : projectsDir();
     for (const key of this.map.keys()) {
       const p = this.profileFor(key);
@@ -2346,8 +2346,8 @@ export class Orchestrator {
   }
 
   /** Asked right before the pane reap ends a pane: no brain took its chat since the list was made, and
-   *  nothing runs or waits there. A restart's pane: its transcript shows no background shell, subagent
-   *  or teammate open; a transcript that cannot be read keeps it. */
+   *  nothing runs or waits there. Its transcript shows no background shell, subagent or teammate open;
+   *  a transcript that cannot be read keeps it. */
   mayEndPane(p: IdlePane): boolean {
     if (this.brains.has(p.key) || this.running.has(p.key) || this.queue.queued(p.key) !== 0
       || [...this.background.values()].some((e) => (e.brain as { name?: unknown }).name === p.name)) return false;
