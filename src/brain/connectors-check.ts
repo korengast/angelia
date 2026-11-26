@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CLAUDE_ENV } from './argv.js';
 import { deniedConnectorCount, trackGroup } from './brain.js';
@@ -59,6 +58,16 @@ export function plainSettings(settings: Record<string, unknown>): Record<string,
   return Object.keys(out).length ? out : undefined;
 }
 
+/**
+ * Where the settings files of the list runs go: under the state folder's compiled/, which every
+ * profile's deny floor closes, never the temp folder, which the agent's Bash can read (it runs as
+ * the same user, and mode 0600 does not keep it out). Each run's file is removed when it ends.
+ */
+export const mcpListRoot = (stateDir: string): string => join(stateDir, 'compiled', 'mcp-list');
+
+/** The files a daemon that died mid-check left: removed at daemon start (daemon.ts). */
+export function clearMcpListFiles(stateDir: string): void { rmSync(mcpListRoot(stateDir), { recursive: true, force: true }); }
+
 /** The most of a list's output that is read. */
 const MCP_LIST_MAX = 4 << 20;
 
@@ -66,16 +75,18 @@ const MCP_LIST_MAX = 4 << 20;
  * One `claude mcp list`, with these settings when given: its connectors, or null when it failed. It
  * runs in its own process group under a timer of ours: at the timeout the whole group is killed and
  * the answer is given at once, so a claude that does not exit, or a server it started that holds its
- * output open, never holds the queue of checks. The settings go by a private file, never on the
- * command line: they name the dropped connectors' addresses, and any process of the user (the agent's
- * too) can list a command line.
+ * output open, never holds the queue of checks. The settings go by a private file under mcpListRoot of
+ * `stateDir`, never on the command line: they name the dropped connectors' addresses, and any process
+ * of the user (the agent's too) can list a command line.
  */
-export function mcpListConnectors(bin: string, cwd: string, env: NodeJS.ProcessEnv, settings?: Record<string, unknown>, timeoutMs = MCP_LIST_TIMEOUT_MS): Promise<string[] | null> {
+export function mcpListConnectors(bin: string, cwd: string, env: NodeJS.ProcessEnv, stateDir: string, settings?: Record<string, unknown>, timeoutMs = MCP_LIST_TIMEOUT_MS): Promise<string[] | null> {
   let dir: string | undefined;
   const args = ['mcp', 'list'];
   if (settings) {
     try {
-      dir = mkdtempSync(join(tmpdir(), 'angelia-mcp-list-'));
+      const root = mcpListRoot(stateDir);
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      dir = mkdtempSync(join(root, 'run-'));
       const file = join(dir, 'settings.json');
       writeFileSync(file, JSON.stringify(settings), { mode: 0o600 });
       args.unshift('--settings', file);
@@ -108,16 +119,17 @@ let queue: Promise<unknown> = Promise.resolve();
 
 /**
  * The connectors the launch's MCP keys (`settings`) block: listed without its connector denies, not
- * with them. `env` is the profile's; the runs get only mcpListEnv of it. Null when it cannot tell: a
+ * with them. `env` is the profile's; the runs get only mcpListEnv of it. `stateDir`: the daemon's state
+ * folder, where the runs' settings files go (mcpListRoot). Null when it cannot tell: a
  * list failed; the plain list names no connector (the account has none, or its connector list did not
  * load), so a short count would say nothing about the addresses; or the list with the denies names no
  * connector while the plain one names more than the denies have addresses (its connector list did not
  * load either, and every connector would count as blocked).
  */
-export function tuiBlockedConnectors(bin: string, cwd: string, env: NodeJS.ProcessEnv, settings: Record<string, unknown>, timeoutMs = MCP_LIST_TIMEOUT_MS): Promise<string[] | null> {
+export function tuiBlockedConnectors(bin: string, cwd: string, env: NodeJS.ProcessEnv, settings: Record<string, unknown>, stateDir: string, timeoutMs = MCP_LIST_TIMEOUT_MS): Promise<string[] | null> {
   const run = async (): Promise<string[] | null> => {
     const e = mcpListEnv(env, CLAUDE_ENV);
-    const [all, kept] = await Promise.all([mcpListConnectors(bin, cwd, e, plainSettings(settings), timeoutMs), mcpListConnectors(bin, cwd, e, settings, timeoutMs)]);
+    const [all, kept] = await Promise.all([mcpListConnectors(bin, cwd, e, stateDir, plainSettings(settings), timeoutMs), mcpListConnectors(bin, cwd, e, stateDir, settings, timeoutMs)]);
     if (!all || !kept || !all.length) return null;
     if (!kept.length && all.length > deniedConnectorCount(settings)) return null;
     const left = new Set(kept);

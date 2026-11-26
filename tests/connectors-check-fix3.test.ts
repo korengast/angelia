@@ -45,7 +45,7 @@ test('both runs keep the denied servers by name and the .mcp.json out, and get n
   const dir = tmp(), f = fake(dir, { blocked: ['claude.ai Gmail'] });
   const settings = { deniedMcpServers: [{ serverName: 'local-tool' }, { serverUrl: GMAIL }], disabledMcpjsonServers: ['own'] };
   const env = { HOME: '/Users/example', PATH: process.env.PATH, CLAUDE_CONFIG_DIR: '/cfg', GITHUB_TOKEN: 'granted', ANGELIA_SESSION_KEY: 'key', ANGELIA_API_TOKEN: 'tok', ANTHROPIC_API_KEY: 'k' };
-  assert.deepEqual(await tuiBlockedConnectors(f.bin, dir, env, settings), ['claude.ai Gmail']);
+  assert.deepEqual(await tuiBlockedConnectors(f.bin, dir, env, settings, dir), ['claude.ai Gmail']);
   const runs = f.runs();
   assert.equal(runs.length, 2);
   for (const r of runs) {
@@ -65,16 +65,16 @@ test('both runs keep the denied servers by name and the .mcp.json out, and get n
 
 test('the list with the denies names no connector while the plain one names more than are denied: it cannot tell', async () => {
   const dir = tmp();
-  assert.equal(await tuiBlockedConnectors(fake(dir, { keptNone: true }).bin, dir, process.env, { deniedMcpServers: [{ serverUrl: GMAIL }] }), null);
+  assert.equal(await tuiBlockedConnectors(fake(dir, { keptNone: true }).bin, dir, process.env, { deniedMcpServers: [{ serverUrl: GMAIL }] }, dir), null);
   // Three denied, three listed, none kept: they may all be blocked, which is what was asked.
   const three = { deniedMcpServers: ['https://a/*', 'https://b/*', 'https://c/*'].map((serverUrl) => ({ serverUrl })) };
-  assert.deepEqual(await tuiBlockedConnectors(fake(dir, { keptNone: true }).bin, dir, process.env, three), ['claude.ai Notes', 'claude.ai Gmail', 'claude.ai Drive']);
+  assert.deepEqual(await tuiBlockedConnectors(fake(dir, { keptNone: true }).bin, dir, process.env, three, dir), ['claude.ai Notes', 'claude.ai Gmail', 'claude.ai Drive']);
 });
 
 test('the checks run one profile at a time: never more than two lists at once', async () => {
   const dir = tmp(), f = fake(dir, { blocked: ['claude.ai Gmail'], delay: 300 });
   const settings = { deniedMcpServers: [{ serverUrl: GMAIL }] };
-  const got = await Promise.all([1, 2, 3].map(() => tuiBlockedConnectors(f.bin, dir, process.env, settings)));
+  const got = await Promise.all([1, 2, 3].map(() => tuiBlockedConnectors(f.bin, dir, process.env, settings, dir)));
   assert.deepEqual(got, [['claude.ai Gmail'], ['claude.ai Gmail'], ['claude.ai Gmail']]);
   const runs = f.runs();
   assert.equal(runs.length, 6);
@@ -83,7 +83,7 @@ test('the checks run one profile at a time: never more than two lists at once', 
   // A failed check does not stop the next one.
   const bad = join(dir, 'bad');
   writeFileSync(bad, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-  const [x, y] = await Promise.all([tuiBlockedConnectors(bad, dir, process.env, settings), tuiBlockedConnectors(f.bin, dir, process.env, settings)]);
+  const [x, y] = await Promise.all([tuiBlockedConnectors(bad, dir, process.env, settings, dir), tuiBlockedConnectors(f.bin, dir, process.env, settings, dir)]);
   assert.equal(x, null);
   assert.deepEqual(y, ['claude.ai Gmail']);
 });

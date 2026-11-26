@@ -616,7 +616,8 @@ export class TuiBrain extends EventEmitter implements Brain {
   get pendingPermissionCount(): number { return this.permissions.size + this.selfBook.size; }
   hasPendingPermission(id: string): boolean { return this.permissions.has(id) || this.selfBook.has(id); }
 
-  private get dir(): string { return join(this.opts.stateDir ?? process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia'), 'tui', this.name); }
+  private get stateDir(): string { return this.opts.stateDir ?? process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia'); }
+  private get dir(): string { return join(this.stateDir, 'tui', this.name); }
   private get settingsPath(): string { return join(this.dir, 'settings.json'); }
   private get markerPath(): string { return join(this.dir, 'turn.json'); }
   private get launchPath(): string { return join(this.dir, 'launch.sha256'); }
@@ -658,7 +659,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const key = `${this.profile.cwd}\0${JSON.stringify(settings)}`;
     if (!denied || connectorChecks.has(key)) return;
     connectorChecks.add(key);
-    const blocked = await tuiBlockedConnectors(this.opts.bin ?? 'claude', this.profile.cwd, { ...childEnv(this.opts.env), ...CLAUDE_ENV }, settings, this.opts.mcpListTimeoutMs);
+    const blocked = await tuiBlockedConnectors(this.opts.bin ?? 'claude', this.profile.cwd, { ...childEnv(this.opts.env), ...CLAUDE_ENV }, settings, this.stateDir, this.opts.mcpListTimeoutMs);
     if (!blocked) { connectorChecks.delete(key); this.emit('log', `connectors: all: pane ${this.name}: claude mcp list did not tell which connectors are blocked (it failed, or named none); checked again at the next pane start`); return; }
     const short = blockedShort(denied, blocked);
     if (!short) return;
