@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { Config } from './config/schema.js';
 import type { SessionMapFile } from '../core/types.js';
 import { sessionKey } from '../core/types.js';
+import { ChatNotes, type SentNote } from '../core/session/notes.js';
 import { transcriptPath } from '../brain/tui.js';
 import { agyReplay } from '../brain/agy-history.js';
 
@@ -20,6 +21,8 @@ import { agyReplay } from '../brain/agy-history.js';
  * Text only by default: what was said, and the names of the tools used. Tool output (file contents,
  * command output, search results) is left out unless asked for, since it is large and may hold
  * whatever the tools read.
+ * The lines posted into the chat past its agent are in no CLI's file: they come from the posted lines
+ * (core/session/notes.ts), as the agent's rows with a `source`, each in its place by time.
  */
 
 export interface Row {
@@ -31,10 +34,13 @@ export interface Row {
   role: 'user' | 'assistant' | 'tool';
   text: string;
   tools?: string[];
+  /** A line posted into the chat past the agent, as its own: who posted it. */
+  source?: string;
 }
 
 /** `agy`: each agy session's rows, replayed beforehand (agyExportRows): agy's own store is protobuf in SQLite. */
-export interface ExportOpts { all?: boolean; session?: string; tools?: boolean; home?: string; agy?: Map<string, Row[]> }
+/** `stateDir`: the instance folder, for the posted lines; without it they are left out. */
+export interface ExportOpts { all?: boolean; session?: string; tools?: boolean; home?: string; agy?: Map<string, Row[]>; stateDir?: string }
 
 /** The same rule the tui host reads live sessions with: a cwd behind a symlink is resolved first. */
 export const claudeTranscript = (cwd: string, id: string, home = homedir()): string => transcriptPath(cwd, id, home);
@@ -220,5 +226,21 @@ export function exportChat(cfg: Config, sessions: SessionMapFile, chat: string, 
     else if (backend === 'agy') out.push(...(o.agy?.get(id) ?? []));
     // A session from a backend Angelia does not run has no reader: skipped, not guessed at.
   }
+  if (o.stateDir) mergeSent(out, new ChatNotes(join(o.stateDir, 'app-notes.json')).sentOf(chat), ids, c?.history ?? [], { chat, profile: route.profile, backend: p.backend }, !!o.session);
   return out;
+}
+
+/** The chat's posted lines into the rows, each before the first row after it (by ISO time; a row with
+ *  no time is passed over). The sessions exported, and the lines of no session the chat knows (said
+ *  before its first, or of one since forgotten), which have no other export; those stay out of a
+ *  `--session` export, which asks for that session alone. */
+function mergeSent(rows: Row[], notes: SentNote[], ids: string[], history: { id: string; backend?: string }[], base: { chat: string; profile: string; backend: string }, one: boolean): void {
+  for (const n of notes) {
+    const known = n.session !== null && history.some((h) => h.id === n.session);
+    if (!(n.session !== null && ids.includes(n.session)) && (one || known)) continue;
+    const row: Row = { ...base, backend: history.find((h) => h.id === n.session)?.backend ?? base.backend, session: n.session ?? '', ts: n.at, role: 'assistant', text: n.text, source: n.source };
+    let at = rows.length;
+    for (let i = 0; i < rows.length; i++) if (rows[i].ts !== null && rows[i].ts! > n.at) { at = i; break; }
+    rows.splice(at, 0, row);
+  }
 }

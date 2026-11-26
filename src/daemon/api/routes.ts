@@ -119,6 +119,7 @@ const JobsSchema = z.object({
 
 const HandoffSchema = ok.extend({ key: z.string(), profile: z.string(), mode: z.enum(['session', 'brief']), said: z.string() });
 
+const sourceField = z.string().max(60).optional().describe('Who posted, as the chat\'s agent is told (printable, no [ ] or ·). The owner\'s token without it is `owner`; another profile\'s agent is always `profile <name>`; the chat\'s own token may not claim owner, angelia or profile.');
 const fileItem = z.union([z.string().min(1), z.object({ path: z.string().min(1), from: z.string().min(1).optional() })]);
 /** Files one app turn may carry. */
 export const TURN_FILES_MAX = 10;
@@ -139,9 +140,9 @@ export const ROUTES: Route[] = [
   },
   {
     method: 'POST', path: '/send', summary: 'Post a line into a routed chat', token: 'any', stability: 'stable',
-    description: 'A line `MEDIA:<absolute path>` in the text attaches that file (not from another profile\'s agent). No agent sees the line. '
+    description: 'A line `MEDIA:<absolute path>` in the text attaches that file (not from another profile\'s agent). The chat\'s agent reads the line at its next turn, with who posted it, unless the chat\'s own token posts it with no `source`. '
       + 'Another profile\'s agent may post when neither profile is isolated and the hourly limit between profiles allows it; the line says who sent it.',
-    body: z.object({ key, text: z.string().min(1), from, token: legacyToken }),
+    body: z.object({ key, text: z.string().min(1), from, source: sourceField, token: legacyToken }),
     response: ok.extend({ media: z.number().optional().describe('Files attached from MEDIA: lines.') }),
     errors: [400, 404], example: { key: 'telegram:1', text: 'The backup finished.' }, answer: { ok: true },
   },
@@ -150,7 +151,7 @@ export const ROUTES: Route[] = [
     description: 'An agent\'s token works for its own chat only, and attaches only what its profile may read. Audio goes as a voice note unless `voice` is false.',
     body: z.object({
       key, path: z.string().min(1).describe('Absolute path.'), caption: z.string().optional(), voice: z.boolean().optional(),
-      file_name: z.string().optional().describe('The name a document is sent under.'), token: legacyToken,
+      file_name: z.string().optional().describe('The name a document is sent under.'), source: sourceField, token: legacyToken,
     }),
     response: ok, errors: [400, 404], answer: { ok: true },
   },

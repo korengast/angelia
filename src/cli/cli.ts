@@ -101,7 +101,7 @@ try {
       const cfg = loadConfig(configPath());
       const sessions = readSessions(join(STATE_DIR, 'sessions.json'));
       const agy = await agyExportRows(cfg, sessions, chat, { all, session, stateDir: STATE_DIR, warn: (l) => console.error(l) });
-      for (const row of exportChat(cfg, sessions, chat, { all, session, tools, agy })) process.stdout.write(JSON.stringify(row) + '\n');
+      for (const row of exportChat(cfg, sessions, chat, { all, session, tools, agy, stateDir: STATE_DIR })) process.stdout.write(JSON.stringify(row) + '\n');
       break;
     }
     case 'jobs': {

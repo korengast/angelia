@@ -129,7 +129,7 @@
     "/send": {
       "post": {
         "summary": "Post a line into a routed chat",
-        "description": "A line `MEDIA:<absolute path>` in the text attaches that file (not from another profile's agent). No agent sees the line. Another profile's agent may post when neither profile is isolated and the hourly limit between profiles allows it; the line says who sent it.\n\nToken: The owner's token, or an agent's own (`ANGELIA_API_TOKEN`) for its own chat. Where the route says so, an agent's token also works for another profile's chat, with `from`.",
+        "description": "A line `MEDIA:<absolute path>` in the text attaches that file (not from another profile's agent). The chat's agent reads the line at its next turn, with who posted it, unless the chat's own token posts it with no `source`. Another profile's agent may post when neither profile is isolated and the hourly limit between profiles allows it; the line says who sent it.\n\nToken: The owner's token, or an agent's own (`ANGELIA_API_TOKEN`) for its own chat. Where the route says so, an agent's token also works for another profile's chat, with `from`.",
         "operationId": "postSend",
         "tags": [
           "stable"
@@ -154,6 +154,11 @@
                   "from": {
                     "description": "An agent writing into another profile's chat names its own chat here; its own token then counts. Not for the owner.",
                     "type": "string"
+                  },
+                  "source": {
+                    "description": "Who posted, as the chat's agent is told (printable, no [ ] or ·). The owner's token without it is `owner`; another profile's agent is always `profile <name>`; the chat's own token may not claim owner, angelia or profile.",
+                    "type": "string",
+                    "maxLength": 60
                   },
                   "token": {
                     "deprecated": true,
@@ -250,6 +255,11 @@
                   "file_name": {
                     "description": "The name a document is sent under.",
                     "type": "string"
+                  },
+                  "source": {
+                    "description": "Who posted, as the chat's agent is told (printable, no [ ] or ·). The owner's token without it is `owner`; another profile's agent is always `profile <name>`; the chat's own token may not claim owner, angelia or profile.",
+                    "type": "string",
+                    "maxLength": 60
                   },
                   "token": {
                     "deprecated": true,

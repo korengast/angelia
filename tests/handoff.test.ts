@@ -112,6 +112,11 @@ test('brief mode: a fresh session in the handoff profile\'s chat, whose first tu
   assert.notEqual(row.id, before);
   assert.notEqual(row.id, SESSION, 'the terminal session does not move');
   assert.equal(row.label, 'Fixing the parser');
+  // The handoff's own line in the chat was posted past the agent: not before the brief Angelia wrote,
+  // but before the next real turn, as the agent's own.
+  await o.handle(dm('2', 'and now?'));
+  await until(() => sent.length >= 4);
+  assert.match(sent.at(-1)!.text, /^echo: \[Posted in this chat[^\n]*\]\n\[\d{4}-\d\d-\d\d \d\d:\d\d · angelia\] From the terminal, [^\n]*Fixing the parser\.\n\n\[telegram dm 2 · /);
 });
 
 test('a chat in the middle of a turn, on a CLI that cannot go on alone, refuses the handoff', async (t) => {

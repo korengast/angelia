@@ -24,7 +24,7 @@ or `angelia restart`, which starts it detached.
 | apply an edited table | `/restart` in a chat you own, or `angelia restart` from a terminal |
 | update the code | `angelia update` (`--check` only lists), then `/restart` |
 | see or add profiles | `angelia profiles`, `angelia profile add <platform:chat> [name]` |
-| post into a chat from a script | `angelia send <platform:chat> <text>`, `angelia send-media <platform:chat> </abs/path> [caption]` |
+| post into a chat from a script | `angelia send <platform:chat> [--source <label>] <text>`, `angelia send-media <platform:chat> </abs/path> [caption]`; the chat's agent reads it at its next turn as its own |
 | run a prompt in a chat's session | `angelia turn <platform:chat> <text>` |
 | scheduled work | `angelia-jobs.yaml` in the profile folder, then `angelia jobs install` |
 | read a chat's history | `angelia export <platform:chat> [--all] [--tools]` |
@@ -373,6 +373,13 @@ file is stale: `rm ~/.angelia/daemon.pid`, then start again.
 **API error.** The turn runs once more after one minute (`api error key=…, the same turn again in
 60 s` in `daemon.log`). A second error ends the turn: for a lost login the chat is told to run `claude`
 and `/login` on this machine.
+
+**The agent repeats what a job already posted, or does not know of it.** What a `send:` job, a
+`run:` job's output or `angelia send` posts into a chat is kept (`~/.angelia/app-notes.json`) and
+read by the chat's agent at its next turn, before the message, as its own latest lines (`job
+<name>`, `owner`, `profile <name>`, `angelia`). It sees them once; a turn cut by a restart loses
+them. `angelia export <platform:chat>` shows them with a `source` field. A script that posts with
+the owner's token names itself with `--source`.
 
 **Usage limit.** The chat hears the CLI's own limit line plus how to switch: `/model sonnet` for
 this session only; `/model default` once the limit resets.

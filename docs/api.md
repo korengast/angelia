@@ -137,8 +137,8 @@ group. `angelia profiles --json` lists the keys of your chats.
 | --- | --- |
 | `GET /healthz` | The daemon is up; the API version (`api`) and the `features` it has. No token. |
 | `GET /openapi.json` | The full contract of this daemon, as OpenAPI 3.1. No token. |
-| `POST /send` | Post a line into a chat. A `MEDIA:<absolute path>` line in the text attaches that file. |
-| `POST /send-media` | Attach a file to a chat, with an optional caption. |
+| `POST /send` | Post a line into a chat. A `MEDIA:<absolute path>` line in the text attaches that file. The chat's agent reads the line at its next turn as its own latest message, and `source` says who posted (a peer is always `profile <name>`). |
+| `POST /send-media` | Attach a file to a chat, with an optional caption; the agent reads `[file: <name>]` and the caption at its next turn. Takes `source` as `/send` does. |
 | `POST /turn` | Type a prompt into a chat's session. With `reply: "caller"`, the answer goes to the event stream only, not to the chat. |
 | `POST /ask` | Ask a chat's agent a question and wait for the answer (up to ten minutes). The chat does not get the answer. |
 | `GET /events` | Server-sent events: turns, progress, answers, permission requests. |

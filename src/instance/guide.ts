@@ -343,7 +343,9 @@ jobs:
 
 turn asks the agent, in the chat's own session; send posts text; run executes a command in the
 profile folder (the profile needs shell: true) and posts what it prints. Printing nothing, or
-[SILENT], posts nothing; a failure is posted as one line. On a profile whose agent is sandboxed
+[SILENT], posts nothing; a failure is posted as one line. What send and run post, the chat's
+agent reads at its next turn, before the message, as its own latest lines ("job <name>"): it
+must not send them again, and it can answer about them. On a profile whose agent is sandboxed
 (sandbox: true on Claude Code; Codex and pi unless sandbox: false) a run: command runs in the same
 macOS sandbox: it writes only in the agent's folders and temp, reads nothing the agent may not,
 cannot start apps or launchd jobs, and runs only while the profile is compiled.

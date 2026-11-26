@@ -32,7 +32,7 @@ test('api: the owner token is minted mode 600 and reused, the socket is 600; sen
   const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } }, whatsapp: { send: async () => {} } }, { stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs') } });
   t.after(() => o.shutdown());
   const token = loadOrMintToken(join(dir, 'api.token'));
-  const api = new ApiServer({ send: (k, x) => o.notify(k, x), turn: (k, x, a) => o.injectTurn(k, x, a), sendMedia: (k, m) => o.sendMediaTo(k, m), routed: (k) => o.routed(k) }, token);
+  const api = new ApiServer({ send: (k, x, f, source) => o.notify(k, x, f, { source }), turn: (k, x, a) => o.injectTurn(k, x, a), sendMedia: (k, m) => o.sendMediaTo(k, m), routed: (k) => o.routed(k) }, token);
   const socket = join(dir, API_SOCKET);
   await claimSocket(socket);
   await api.listen(socket); t.after(() => api.close());
@@ -48,7 +48,8 @@ test('api: the owner token is minted mode 600 and reused, the socket is 600; sen
   const r = await call('/turn', { token, key: 'telegram:1', text: 'daily card please' });
   assert.equal(r.status, 200);
   while (sent.length < 2) await new Promise((res) => setTimeout(res, 20));
-  assert.match(sent[1], /^echo: \[telegram dm 1 · scheduled \(local\)\]\n\ndaily card please$/);
+  // The owner's line was posted past the agent: its next turn reads it first.
+  assert.match(sent[1], /^echo: \[Posted in this chat[^\n]*\]\n\[\d{4}-\d\d-\d\d \d\d:\d\d · owner\] note from cron\n\n\[telegram dm 1 · scheduled \(local\)\]\n\ndaily card please$/);
   assert.equal((await call('/nope', { token, key: 'telegram:1' })).status, 404);
 });
 
@@ -60,7 +61,7 @@ test('api: an agent\'s token works for its own chat only, and its turns are neve
   const o = new Orchestrator(cfg, { telegram: { send: async (chat: string, text: string) => { sent.push({ chat, text }); } }, whatsapp: { send: async () => {} } },
     { stateDir: dir, bins: { 'claude-code': join(here, 'fake-claude.mjs') }, sessionToken: (k) => sessionToken(token, k) });
   t.after(() => o.shutdown());
-  const api = new ApiServer({ send: (k, x) => o.notify(k, x), turn: (k, x, a) => o.injectTurn(k, x, a), sendMedia: (k, m) => o.sendMediaTo(k, m), routed: (k) => o.routed(k) }, token);
+  const api = new ApiServer({ send: (k, x, f, source) => o.notify(k, x, f, { source }), turn: (k, x, a) => o.injectTurn(k, x, a), sendMedia: (k, m) => o.sendMediaTo(k, m), routed: (k) => o.routed(k) }, token);
   const socket = join(dir, API_SOCKET);
   await api.listen(socket); t.after(() => api.close());
   const call = caller(socket);
@@ -79,6 +80,7 @@ test('api: an agent\'s token works for its own chat only, and its turns are neve
   // A turn from the agent's own token is plain text, labelled as the agent's, even when it looks like a command.
   assert.equal((await call('/turn', { token: mine, key: 'telegram:1', text: '/logout' })).status, 200);
   while (sent.length < 2) await new Promise((res) => setTimeout(res, 20));
+  // Its own line ('from my agent', its own token) is not told back to it: no preface.
   assert.match(sent[1].text, /^echo: \[telegram dm 1 · this chat's agent \(local\)\]\n\n\/logout$/);
   // The agent of chat 1 was given chat 1's token, in its environment.
   const dm = (chat: string, text: string): Inbound => ({ platform: 'telegram', chat, sender: 'u1', text, isGroup: false, mentioned: false, media: [] });
@@ -113,7 +115,7 @@ test('api: send-media checks the path once for every caller, and a MEDIA: line i
   const o = new Orchestrator(cfg, { telegram: tg, whatsapp: { send: async () => {} } }, { stateDir: dir });
   t.after(() => o.shutdown());
   const token = loadOrMintToken(join(dir, 'api.token'));
-  const api = new ApiServer({ send: (k, x) => o.notify(k, x), turn: (k, x, a) => o.injectTurn(k, x, a), sendMedia: (k, m) => o.sendMediaTo(k, m), routed: (k) => o.routed(k) }, token);
+  const api = new ApiServer({ send: (k, x, f, source) => o.notify(k, x, f, { source }), turn: (k, x, a) => o.injectTurn(k, x, a), sendMedia: (k, m) => o.sendMediaTo(k, m), routed: (k) => o.routed(k) }, token);
   const socket = join(dir, API_SOCKET);
   await api.listen(socket); t.after(() => api.close());
   const call = caller(socket);
@@ -216,7 +218,7 @@ test('api: profiles message each other with their own token and their own chat a
   assert.deepEqual(sent.at(-1), { chat: '2', text: '[from a] hello b' });
   assert.equal((await call('/turn', { token: a, key: 'telegram:2', from: 'telegram:1', text: '/logout' })).status, 200);
   while (!sent.some((m) => m.chat === '2' && m.text.startsWith('echo:'))) await new Promise((res) => setTimeout(res, 20));
-  assert.match(sent.find((m) => m.text.startsWith('echo:'))!.text, /^echo: \[telegram dm 2 · profile a \(telegram:1\) \(profile\)\]\n\n\/logout$/, 'labelled as the other profile, and never a CLI command');
+  assert.match(sent.find((m) => m.text.startsWith('echo:'))!.text, /^echo: \[Posted in this chat[^\n]*\]\n\[\d{4}-\d\d-\d\d \d\d:\d\d · profile a\] \[from a\] hello b\n\n\[telegram dm 2 · profile a \(telegram:1\) \(profile\)\]\n\n\/logout$/, 'labelled as the other profile, and never a CLI command');
 
   const walled = await call('/turn', { token: a, key: 'telegram:3', from: 'telegram:1', text: 'hi' });
   assert.equal(walled.status, 403);
