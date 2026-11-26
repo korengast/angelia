@@ -1989,7 +1989,7 @@ export class TuiBrain extends EventEmitter implements Brain {
 
   /** The teammates of these names are over: no message under such a name is the chat's any more. */
   private dropEnded(names: Iterable<string>): void {
-    for (const n of [...names]) {
+    for (const n of names) {
       this.endedTeammates.delete(n);
       this.endedAtEnter.delete(n);
       this.oursTeammates.delete(n);
