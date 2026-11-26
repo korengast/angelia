@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse, stringify } from 'yaml';
@@ -269,6 +269,35 @@ test('all mode: the record keeps a dropped address as a keyed hash; a record fro
   // Another key (or none) cannot vouch for the record: the start is refused until a compile.
   editJson(join(r.cwd, RECORD), (j) => { j.connectorsDenied = [deniedHash(GMAIL, Buffer.alloc(32, 7))]; });
   assert.equal(r.check().length, 1);
+});
+
+test('all mode: a plan makes no record key, even in a read-only state folder; a missing key reads as a change, and apply makes it', () => {
+  const r = rig();
+  const keyFile = join(r.state, 'compiled', 'record.key');
+  chmodSync(r.state, 0o500);
+  let pl;
+  try { pl = r.plan(); } finally { chmodSync(r.state, 0o700); }
+  assert.ok(!existsSync(keyFile), 'the plan wrote no key');
+  assert.ok(pl.changes.some((c) => c.startsWith('+ connectors: all')), planText(pl));
+  r.plan();
+  assert.ok(!existsSync(keyFile), 'a plan (compile without --write, the drift check) never makes it');
+  pl.apply();
+  const key = recordKey(r.state)!;
+  assert.deepEqual(readRecord(r.cwd)!.connectorsDenied, [deniedHash(GMAIL, key)], 'apply made the key and keyed the record with it');
+  assert.deepEqual(r.check(), []);
+  assert.deepEqual(r.plan().changes, [], 'up to date');
+  // The key gone: a change, with no line per connector (which one a hash stands for is unknown).
+  rmSync(keyFile);
+  const again = r.plan();
+  assert.ok(!existsSync(keyFile));
+  assert.ok(again.changes.some((c) => c.includes('key of the dropped connectors\' hashes is gone')), planText(again));
+  assert.ok(!again.changes.some((c) => c.includes('loads again') || c.includes('no longer loads')), planText(again));
+  again.apply();
+  const fresh = recordKey(r.state)!;
+  assert.notDeepEqual(fresh, key);
+  assert.deepEqual(readRecord(r.cwd)!.connectorsDenied, [deniedHash(GMAIL, fresh)]);
+  assert.deepEqual(r.check(), []);
+  assert.deepEqual(r.plan().changes, []);
 });
 
 test('the launch\'s settings file: no clash with a profile named <name>.settings; written at a launch when gone; the old copy removed', () => {

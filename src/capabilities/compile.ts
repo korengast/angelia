@@ -1261,7 +1261,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
   const connectors = [...allowed].flatMap(([n, c]) => (c.kind === 'connector' ? [[n, c] as const] : []));
   const connectorUrls = connectors.map(([, c]) => c.url);
   let mcpAllow: string[] = [], mcpOwn: string[] = [], mcpUrls: string[] = [], droppedUrls: string[] = [], mcpDeny: string[] = [];
-  let recKey: Buffer | undefined;
+  let recKey: Buffer | undefined, keyMissing = false;
   const all = p.backend === 'claude-code' && connectorMode(cfg, name) === 'all';
   const dropped = all ? droppedConnectors(cfg, name) : [];
   if (p.backend !== 'claude-code' && connectors.length) notes.push(`Claude app connectors work only with Claude Code, so ${connectors.map(([n]) => n).join(', ')} ${connectors.length === 1 ? 'is' : 'are'} not given to this ${p.backend} profile`);
@@ -1290,8 +1290,10 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     const wasAll = rec?.connectorsAll === true;
     if (all) {
       droppedUrls = [...new Set(dropped.map(([, u]) => u))].sort();
-      // The key the record's hashes are made with: made here, once, the first time one is needed.
-      recKey = recordKey(stateDir, droppedUrls.length > 0);
+      // The key the record's hashes are made with: read here, made only by apply(), the first time one
+      // is needed, so a plan (the drift check, compile without --write) writes nothing in the state folder.
+      recKey = recordKey(stateDir);
+      keyMissing = droppedUrls.length > 0 && !recKey;
       mcpOwn = Object.keys(servers).sort();
       if (strict) {
         const keepOut = Object.keys(claudeUserMcpServers(p.cwd, home, opts.env ?? process.env)).filter((n) => !mcpOwn.includes(n));
@@ -1315,8 +1317,12 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
       else {
         // Named by capability, never by address: the compile's lines can reach the agent (a chat that runs it).
         const before = strings(rec?.connectorsDenied);
-        for (const [n, u] of dropped) if (!before.some((h) => deniedMatches(h, u, recKey))) changes.push(`- connector ${n}: no longer loads for this profile`);
-        for (const h of before) {
+        // Keyed hashes with no key to test them: which connector each stands for is unknown, so no
+        // line per connector (each would read as dropped anew, or as loading again), only the change.
+        const blind = keyMissing && before.some((h) => h.startsWith('hmac:'));
+        if (blind) changes.push('~ record: the key of the dropped connectors\' hashes is gone from the state folder; a new one is made and the hashes written again');
+        else for (const [n, u] of dropped) if (!before.some((h) => deniedMatches(h, u, recKey))) changes.push(`- connector ${n}: no longer loads for this profile`);
+        for (const h of blind ? [] : before) {
           if (droppedUrls.some((u) => deniedMatches(h, u, recKey))) continue;
           const named = Object.entries(cfg.capabilities).filter(([, c]) => c.kind === 'connector' && deniedMatches(h, c.url, recKey)).map(([n]) => n);
           changes.push(named.length ? `+ connector ${named.join(', ')}: loads again for this profile` : '+ a connector this profile dropped before loads again');
@@ -1545,6 +1551,8 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
     profile: name, changes, conflicts, duplicates, notes, stateOnly,
     apply(o = {}) { withCompileLock(stateDir, () => {
       if (conflicts.length) throw new Error(`not compiling ${name}: ${conflicts.length} conflict(s)`);
+      // The key, made now if the plan found none, and the hashes with it.
+      if (keyMissing) record.connectorsDenied = droppedUrls.map((u) => deniedHash(u, recordKey(stateDir, true)));
       if (gdir) {
         // agy makes this file on its first start; made empty here first, so the sandbox can close it.
         agyGeminiDir(stateDir, name);
