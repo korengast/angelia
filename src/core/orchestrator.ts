@@ -35,7 +35,7 @@ import { profileEnv, tableSecrets, type ChildEnv } from './env.js';
 import { capabilityEnv } from '../capabilities/resolve.js';
 import { agentDenyRules, placedPermissions } from '../capabilities/compile.js';
 import { API_SOCKET } from '../instance/instance.js';
-import { guardMcpLaunch, mcpSettingsFile, stateOpenPaths, type McpLaunch } from '../capabilities/compile.js';
+import { guardMcpLaunch, launchSettingsFile, stateOpenPaths, type McpLaunch } from '../capabilities/compile.js';
 import { MAX_INBOUND, SenderQuota, saveInbound } from '../adapters/inbox.js';
 import type { ChatEventBody, ChatListener } from './events.js';
 import { takeAdoptTurns, writeAdoptTurns, writeCutTurns, type AdoptTurn, type AdoptWaiting } from './cut-turns.js';
@@ -1020,7 +1020,7 @@ export class Orchestrator {
   private terminalMcp(name: string, cwd: string): { mcp?: McpLaunch; settingsFile?: string } {
     const state = this.opts.stateDir ?? join(homedir(), '.angelia');
     const mcp = guardMcpLaunch(state, name, cwd);
-    return mcp ? { mcp, settingsFile: mcpSettingsFile(state, name) } : {};
+    return mcp ? { mcp, settingsFile: launchSettingsFile(state, name, mcp.settings) } : {};
   }
 
   /** A brain for one session of a chat, with its listeners, not started. */
@@ -1031,6 +1031,10 @@ export class Orchestrator {
     // The chat's own API token is a secret like the capability ones: in tmux mode it reaches the
     // pane through the private file, never a command line.
     const api = this.opts.sessionToken?.(key);
+    const state = this.opts.stateDir ?? join(homedir(), '.angelia');
+    // The MCP launch from the guard, never from the record in the agent's own folder (connectors fix2 N1),
+    // and its keys by a file in the state folder, so print mode's command line names no address.
+    const mcp = profile.backend === 'claude-code' ? guardMcpLaunch(state, name, effective.cwd) : undefined;
     const b = createBrain(effective, { id: row.id, started: row.started }, {
       bin: this.binFor(profile), env: { ...env.env, ANGELIA_SESSION_KEY: key, ...(api ? { ANGELIA_API_TOKEN: api } : {}) },
       hostEnv: this.childEnv().env, granted: api ? [...env.granted, 'ANGELIA_API_TOKEN'].sort() : env.granted, withheld: env.withheld,
@@ -1040,8 +1044,7 @@ export class Orchestrator {
       apiSocket: join(this.opts.stateDir ?? join(homedir(), '.angelia'), API_SOCKET),
       profileName: name,
       stateOpen: stateOpenPaths(this.cfg, name, this.opts.stateDir ?? join(homedir(), '.angelia')),
-      // The MCP launch from the guard, never from the record in the agent's own folder (connectors fix2 N1).
-      ...(profile.backend === 'claude-code' ? { mcp: guardMcpLaunch(this.opts.stateDir ?? join(homedir(), '.angelia'), name, effective.cwd), mcpSettingsFile: mcpSettingsFile(this.opts.stateDir ?? join(homedir(), '.angelia'), name) } : {}),
+      ...(profile.backend === 'claude-code' ? { mcp, mcpSettingsFile: mcp ? launchSettingsFile(state, name, mcp.settings) : undefined } : {}),
       // Only a session that may take messages into a running turn gets the PreToolUse hook (intoTurnAllowed).
       midturn: profile.tui && profile.midturn !== false,
       ...(this.opts.blockedCheckMs !== undefined ? { blockedCheckMs: this.opts.blockedCheckMs } : {}),

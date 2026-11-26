@@ -65,7 +65,10 @@ export function plainSettings(settings: Record<string, unknown>): Record<string,
  */
 export const mcpListRoot = (stateDir: string): string => join(stateDir, 'compiled', 'mcp-list');
 
-/** The files a daemon that died mid-check left: removed at daemon start (daemon.ts). */
+/** The files a daemon that died mid-check left: removed at daemon start (daemon.ts). It removes every
+ *  run folder, not only the dead daemon's: one daemon runs per state folder (daemon.pid), so no run of
+ *  a daemon can be going. A run of another process at that moment (a tmux pane of `angelia canary`)
+ *  loses its settings file: its list fails, and that check says it cannot tell (null), never more. */
 export function clearMcpListFiles(stateDir: string): void { rmSync(mcpListRoot(stateDir), { recursive: true, force: true }); }
 
 /** The most of a list's output that is read. */

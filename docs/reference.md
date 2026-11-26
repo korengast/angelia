@@ -218,7 +218,8 @@ address) and have a path; `*` is allowed in the path only. `?`, `#`, quotes and 
   by its address as well: measured with Claude Code 2.1.332, once a url is on the list, a remote
   server passes by its address only. The list keeps the scheme, host and path of that address, with
   a `*` where a query or fragment was, so a key in the address (`?apiKey=...`) is not copied
-  anywhere. When MCP is not strict for the profile, its user-level servers (from `~/.claude.json`,
+  anywhere. A user and password before the host (`user:key@`) become `*@`. A key in the path is
+  copied as it is: keep keys out of the path. When MCP is not strict for the profile, its user-level servers (from `~/.claude.json`,
   or `CLAUDE_CONFIG_DIR`) of the compile are on the list too. Compile again after you add one. MCP
   servers from a plugin are not on the list. A server name with a character other than letters,
   digits, `-` and `_` cannot be on the list (Claude Code drops it): in the profile's own `.mcp.json`
@@ -285,8 +286,9 @@ profiles:
   Only a connector that is a capability in the table can be dropped: add one for it first.
 - **How it loads.** No allow list. The launch passes `deniedMcpServers` in `--settings`, with each
   dropped connector by its url. The settings go by a file in the state folder, never on the command
-  line, and the record in the profile's folder holds each dropped url as a hash only: the agent does
-  not learn the address of what it is kept from. Measured with Claude Code 2.1.332: with that list and no allow list,
+  line, and the record in the profile's folder holds each dropped url as a hash only, made with a
+  key in the state folder: the agent does not learn the address of what it is kept from, and cannot
+  test a guess against the record. Measured with Claude Code 2.1.332: with that list and no allow list,
   every connector of the account loads but the dropped ones, and the profile's own `.mcp.json`
   servers (through `--mcp-config`) and user-level servers still load. A deny by a connector's name
   ("claude.ai Gmail") does nothing, so the url is used.

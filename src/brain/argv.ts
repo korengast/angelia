@@ -97,8 +97,9 @@ function shellWord(v: string, home: string): string {
  *  on at the desk. What the chat runs comes along (its folder, permissions, model, effort, extra
  *  folders, MCP servers and connectors, no auto memory); what only a chat needs stays out (print mode, the self
  *  prompt, the Stop hook, Remote Control, the screen tools refused). */
-/** `o.mcp`: the launch from the guard; `o.settingsFile`: the compile's copy of its MCP keys
- *  (mcpSettingsFile), passed by path so the line names no address. Without a file the keys go inline. */
+/** `o.mcp`: the launch from the guard; `o.settingsFile`: the copy of its MCP keys in the state folder
+ *  (launchSettingsFile), passed by path so the line names no address. Without a file that holds
+ *  exactly them the keys go inline. */
 export function claudeTerminalLine(p: Profile, id: string, home = homedir(), o: { mcp?: McpLaunch; settingsFile?: string } = {}): string {
   const w = (v: string) => shellWord(v, home);
   const a = [`cd ${w(p.cwd)}`, '&&', ...Object.entries(CLAUDE_ENV).map(([k, v]) => `${k}=${v}`), w(p.bin ?? 'claude')];
@@ -111,7 +112,9 @@ export function claudeTerminalLine(p: Profile, id: string, home = homedir(), o: 
   if (p.chrome) a.push('--chrome');
   const mcp = o.mcp ?? mcpLaunch(p.cwd);
   a.push(...mcp.args.map(w));
-  if (Object.keys(mcp.settings).length) a.push('--settings', w(o.settingsFile ?? JSON.stringify(mcp.settings)));
+  // The file only when it holds exactly these keys: one that is gone or another would start a session
+  // with other MCP servers than the chat's.
+  if (Object.keys(mcp.settings).length) a.push('--settings', w(o.settingsFile && sameKeys(o.settingsFile, mcp.settings) ? o.settingsFile : JSON.stringify(mcp.settings)));
   return a.join(' ');
 }
 
