@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GrammyError } from 'grammy';
-import type { UserFromGetMe } from 'grammy/types';
+import type { BotFullInfo } from 'grammy/types';
 import { CONFLICT, REVOKED, TelegramAdapter } from '../src/adapters/telegram/adapter.js';
 
 /**
@@ -11,12 +11,12 @@ import { CONFLICT, REVOKED, TelegramAdapter } from '../src/adapters/telegram/ada
  * telegram.test.ts, bot.start is replaced where a test scripts its outcome, and no test waits a
  * real second: the pause between retries is injected.
  */
-const ME: UserFromGetMe = { id: 42, is_bot: true, first_name: 'Angelia', username: 'Angelia_bot', can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false };
+const ME: BotFullInfo = { id: 42, is_bot: true, first_name: 'Angelia', username: 'Angelia_bot', can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false };
 
 const conflict = () => new GrammyError("Call to 'getUpdates' failed!", { ok: false, error_code: 409, description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running' }, 'getUpdates', {});
 const revoked = () => new GrammyError("Call to 'getUpdates' failed!", { ok: false, error_code: 401, description: 'Unauthorized' }, 'getUpdates', {});
 
-type StartOpts = { onStart?: (me: UserFromGetMe) => unknown };
+type StartOpts = { onStart?: (me: BotFullInfo) => unknown };
 /** One scripted run of bot.start: it gets the adapter's options and the adapter under test. */
 type Run = (o: StartOpts, tg: TelegramAdapter) => Promise<void>;
 

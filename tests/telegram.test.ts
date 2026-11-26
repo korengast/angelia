@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Update, UserFromGetMe } from 'grammy/types';
+import type { Update, BotFullInfo } from 'grammy/types';
 import { TelegramAdapter } from '../src/adapters/telegram/adapter.js';
 import type { Inbound } from '../src/core/types.js';
 import type { Media } from '../src/core/deliver/media.js';
@@ -12,7 +12,7 @@ import type { Media } from '../src/core/deliver/media.js';
  * The Telegram adapter against grammY's own update path, with the Bot API faked at the transformer
  * seam: no network, no token. The bot's identity is given up front, the way it would come from getMe.
  */
-const ME: UserFromGetMe = { id: 42, is_bot: true, first_name: 'Angelia', username: 'Angelia_bot', can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false };
+const ME: BotFullInfo = { id: 42, is_bot: true, first_name: 'Angelia', username: 'Angelia_bot', can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false };
 
 function rig(inbox?: string) {
   const got: Inbound[] = [];

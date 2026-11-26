@@ -1,5 +1,5 @@
 import { Bot, GrammyError, InputFile, type Context } from 'grammy';
-import type { UserFromGetMe } from 'grammy/types';
+import type { BotFullInfo } from 'grammy/types';
 import { extname } from 'node:path';
 import { Readable } from 'node:stream';
 import type { Inbound } from '../../core/types.js';
@@ -29,7 +29,7 @@ export interface TelegramAdapterOptions {
   onPress?: (i: Pick<Inbound, 'platform' | 'chat' | 'thread' | 'sender' | 'isGroup'>, id: string | undefined, allow: boolean) => { text: string; over: boolean };
   log?: (line: string) => void;
   /** The bot's own identity, when already known (tests): skips the getMe call handleUpdate needs first. */
-  botInfo?: UserFromGetMe;
+  botInfo?: BotFullInfo;
   /** The Telegram chats in the routing table: only they get the command menu. */
   menuChats?: string[];
   /** The pause before polling is tried again (tests pass their own). It must end when `signal` aborts. */
@@ -105,7 +105,7 @@ export class TelegramAdapter implements Sender {
 
   constructor(private readonly opts: TelegramAdapterOptions) {
     this.bot = new Bot(opts.token, opts.botInfo ? { botInfo: opts.botInfo } : undefined);
-    if (opts.botInfo) this.username = opts.botInfo.username;
+    if (opts.botInfo) this.username = opts.botInfo.username ?? '';
     this.log = opts.log ?? (() => {});
     this.bot.on('message', (ctx) => this.onMessage(ctx));
     // callback_query is among the update types polling asks for by default (grammY passes an empty
@@ -119,7 +119,7 @@ export class TelegramAdapter implements Sender {
   }
 
   async start(): Promise<void> {
-    let me: UserFromGetMe;
+    let me: BotFullInfo;
     try { me = await this.bot.api.getMe(); }
     catch (e) {
       // A token Telegram refuses at boot would otherwise end the daemon before WhatsApp even starts:
