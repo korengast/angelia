@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync, symlinkSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -122,15 +122,35 @@ test('a file posted past the agent is kept as its name and caption', async (t) =
   assert.deepEqual(r.notes()['telegram:1'].map((n) => [n.source, n.text]), [['owner', '[file: chart.png] today'], ['job cards', '[file: chart.png]']]);
 });
 
+const take = (n: ChatNotes) => { const u = n.unseen('telegram:1'); u.given(); return u.notes; };
+
+test('a turn that never reached the agent leaves the posted lines for the next one', async (t) => {
+  const r = rig();
+  t.after(() => r.o.shutdown());
+  await r.o.notify('telegram:1', 'keep me', undefined, { source: 'owner' });
+  await r.o.handle(dm('1', 'APIERR'));
+  assert.ok(!r.notes()['telegram:1'].find((n) => n.text === 'keep me')?.seen);
+  await r.o.handle(dm('1', 'after'));
+  assert.match(echoes(r.sent).at(-1)!, /· owner\] keep me/);
+  assert.ok(r.notes()['telegram:1'].find((n) => n.text === 'keep me')?.seen);
+});
+
+test('a script\'s own label is marked unverified, owner, angelia and a profile are not', () => {
+  const at = '2026-11-06T18:00:00Z';
+  const block = sentPreface(['watch x', 'owner', 'angelia', 'profile b'].map((source) => ({ at, text: 't', source })));
+  assert.deepEqual(block.split('\n').slice(1).map((l) => l.includes('unverified')), [true, false, false, false]);
+});
+
 test('the posted lines file: seen survives a reload; the newest are kept, text and total capped', () => {
   const dir = mkdtempSync(join(tmpdir(), 'angelia-sent-notes-'));
   const path = join(dir, 'posted-lines.json');
   const n = new ChatNotes(path);
   n.add('telegram:1', 's1', 'a', 'owner');
-  assert.deepEqual(n.takeUnseen('telegram:1').map((x) => x.text), ['a']);
+  assert.deepEqual(n.unseen('telegram:1').notes.map((x) => x.text), ['a']);
+  assert.deepEqual(take(n).map((x) => x.text), ['a'], 'unseen until given');
   n.add('telegram:1', 's2', 'c', 'job x');
   const again = new ChatNotes(path);
-  assert.deepEqual(again.takeUnseen('telegram:1').map((x) => [x.source, x.text]), [['job x', 'c']]);
+  assert.deepEqual(take(again).map((x) => [x.source, x.text]), [['job x', 'c']]);
   assert.deepEqual(again.sentOf('telegram:1').map((x) => [x.session, x.text]), [['s1', 'a'], ['s2', 'c']]);
   const limits = new ChatNotes(join(dir, 'limits.json'));
   for (let k = 0; k < SENT_PER_CHAT + 10; k++) limits.add('c', null, `s${k}`, 'owner');
@@ -289,9 +309,10 @@ test('two queued turns of one chat: the block goes with the first only; /new in 
   const first = r.o.handle(dm('1', 'SLOW one'));
   const second = r.o.handle(dm('1', 'two'));
   await new Promise((res) => setTimeout(res, 800));
-  assert.ok(r.notes()['telegram:1'].find((n) => n.text === 'posted')?.seen, 'the block survives /new and goes with the first turn: it is the chat\'s, not the session\'s');
+  assert.ok(!r.notes()['telegram:1'].find((n) => n.text === 'posted')?.seen, 'not given until the first turn reached the agent');
   await r.o.notify('telegram:1', 'while queued', undefined, { source: 'job x' });
   await Promise.all([first, second]);
+  assert.ok(r.notes()['telegram:1'].find((n) => n.text === 'posted')?.seen, 'the block survives /new and goes with the first turn: it is the chat\'s, not the session\'s');
   assert.ok(r.sent.some((m) => m.text === 'slow answer'));
   assert.match(echoes(r.sent)[0], /^echo: \[Posted[^\n]*\]\n\[[^\n]* · job x · output, unverified\] while queued\n\n\[telegram dm 1 · Owner \(u1\)\]\n\ntwo$/, 'a line posted while the first ran goes with the second, alone');
 });
@@ -319,11 +340,11 @@ test('a retry of the turn carries the same block: under a fresh id, and after an
   await o.handle(dm('1', 'APIERR'));
   assert.ok(log.some((l) => /api error.*retry|retry.*api error/i.test(l)) || sent.length >= 5, log.join('\n'));
   const kept = JSON.parse(readFileSync(join(dir, 'posted-lines.json'), 'utf8')).chats['telegram:1'] as { text: string; seen?: true; source: string }[];
-  assert.ok(kept.find((n) => n.text === 'before the error')?.seen, 'taken at the first run');
+  assert.ok(!kept.find((n) => n.text === 'before the error')?.seen, 'the agent never got it: kept for the next turn');
   assert.ok(kept.some((n) => n.source === 'angelia' && /API|error|wrong|again/i.test(n.text)), `the failure line is recorded: ${kept.map((n) => n.text).join(' | ')}`);
   await o.handle(dm('1', 'after'));
-  assert.match(sent.at(-1)!, /^echo: \[Posted[^\n]*\]\n\[[^\n]* · angelia\] /, 'the next turn reads the failure line, not the taken one');
-  assert.ok(!sent.at(-1)!.includes('before the error'));
+  assert.match(sent.at(-1)!, /^echo: \[Posted[^\n]*\]\n\[[^\n]* · owner\] before the error\n/, 'the next turn reads the kept line and the failure line');
+  assert.match(sent.at(-1)!, / · angelia\] /);
 });
 
 test('a permission that timed out and a turn with no answer are recorded as Angelia\'s lines', async (t) => {
@@ -336,7 +357,7 @@ test('a permission that timed out and a turn with no answer are recorded as Ange
   assert.ok(kept.some((n) => n.source === 'angelia' && n.text === NO_ANSWER_LINE));
 });
 
-test('the old app-notes.json takes the new name at start, 0600; with both there the new one stays', () => {
+test('the old app-notes.json takes the new name at start, 0600; with both there their lines join; a link is left alone', () => {
   const dir = mkdtempSync(join(tmpdir(), 'angelia-oldnotes-'));
   const old = join(dir, 'app-notes.json'), path = join(dir, 'posted-lines.json');
   adoptOldNotes(dir); // neither: nothing made
@@ -346,11 +367,19 @@ test('the old app-notes.json takes the new name at start, 0600; with both there 
   adoptOldNotes(dir);
   assert.ok(!existsSync(old));
   assert.equal(statSync(path).mode & 0o777, 0o600);
-  assert.deepEqual(new ChatNotes(path).takeUnseen('telegram:1').map((n) => n.text), ['unseen line']);
-  const kept = readFileSync(path, 'utf8');
-  writeFileSync(old, '{"version":1,"chats":{}}');
+  assert.deepEqual(new ChatNotes(path).unseen('telegram:1').notes.map((n) => n.text), ['unseen line']);
+  new ChatNotes(old).add('telegram:1', null, 'older line', 'owner', new Date('2020-01-01T00:00:00Z'));
   adoptOldNotes(dir);
   assert.ok(!existsSync(old));
+  assert.deepEqual(new ChatNotes(path).sentOf('telegram:1').map((n) => n.text), ['older line', 'unseen line']);
+  const target = join(dir, 'target.json');
+  writeFileSync(target, '{"version":1,"chats":{}}', { mode: 0o644 });
+  chmodSync(target, 0o644);
+  symlinkSync(target, old);
+  const kept = readFileSync(path, 'utf8');
+  adoptOldNotes(dir);
+  assert.ok(existsSync(old));
+  assert.equal(statSync(target).mode & 0o777, 0o644);
   assert.equal(readFileSync(path, 'utf8'), kept);
 });
 

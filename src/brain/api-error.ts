@@ -41,3 +41,12 @@ const LOGIN = /not logged in|please run \/login|invalid api key|oauth token (has
 export function loginLost(text: string): boolean {
   return LOGIN.test(text);
 }
+
+/** What a minute's wait may answer: a 5xx or an overload, a network failure, a lost login (a
+ *  refreshed token). Anything else, "Prompt is too long" for one, fails the same way again. */
+const TRANSIENT = /\bAPI Error:?\s*(?:\(\s*)?5\d\d\b|overloaded|internal server error|bad gateway|service unavailable|gateway time-?out|connection error|network|fetch failed|socket hang up|timed out|timeout|ECONN[A-Z]+|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|EPIPE|EHOSTUNREACH|ENETUNREACH/i;
+
+export function retryableApiError(reason: string | undefined): boolean {
+  const r = String(reason ?? '');
+  return isApiErrorReason(r) && (loginLost(r) || TRANSIENT.test(r));
+}

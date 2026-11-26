@@ -252,11 +252,19 @@ export function teammateName(res: { name?: unknown; teammate_id?: unknown }): st
  * has not come yet, kept by the caller across slices (a call and its result may be read apart).
  */
 export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent'> = new Map()): { starts: { id: string; teammate?: string; team?: string }[]; ends: string[] } {
+  const rows: unknown[] = [];
+  for (const l of chunk.split('\n')) {
+    try { rows.push(JSON.parse(l)); } catch { /* a part line */ }
+  }
+  return backgroundOfRows(rows, calls);
+}
+
+/** backgroundRows for rows already parsed. */
+export function backgroundOfRows(rows: unknown[], calls: Map<string, 'bash' | 'agent'> = new Map()): { starts: { id: string; teammate?: string; team?: string }[]; ends: string[] } {
   const starts: { id: string; teammate?: string; team?: string }[] = [], ends: string[] = [];
   type Block = { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown; text?: unknown };
-  for (const l of chunk.split('\n')) {
-    let r: { type?: unknown; operation?: unknown; content?: unknown; message?: { content?: unknown }; toolUseResult?: unknown } | null;
-    try { r = JSON.parse(l); } catch { continue; }
+  for (const row of rows) {
+    const r = row as { type?: unknown; operation?: unknown; content?: unknown; message?: { content?: unknown }; toolUseResult?: unknown } | null;
     if (r?.type === 'queue-operation' && r.operation === 'enqueue') {
       const c = r.content;
       const text = typeof c === 'string' ? c : Array.isArray(c) ? (c as Block[]).map((b) => (typeof b?.text === 'string' ? b.text : '')).join('\n') : '';
@@ -298,6 +306,22 @@ export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent
   return { starts, ends };
 }
 
+/** How much of a transcript's end is read for open tasks: a long conversation's file is tens of MB,
+ *  and the read holds the daemon. A task started before it, with no end after, is not seen. */
+export const OPEN_TASKS_BYTES = 8 * 1024 * 1024;
+
+/** The last \`max\` bytes of a file, from the first whole line in them. */
+function tailOf(path: string, size: number, max: number): string {
+  if (size <= max) return readFileSync(path, 'utf8');
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(max);
+    const n = readSync(fd, buf, 0, max, size - max);
+    const text = buf.subarray(0, n).toString('utf8');
+    return text.slice(text.indexOf('\n') + 1);
+  } finally { closeSync(fd); }
+}
+
 /** What a transcript read last said: by path, with the size and time it had then. */
 const openTasksRead = new Map<string, { size: number; mtime: number; open: Map<string, number> }>();
 
@@ -314,7 +338,7 @@ export function openTasksInTranscript(path: string, now = Date.now()): number | 
   let seen = openTasksRead.get(path);
   if (!seen || seen.size !== st.size || seen.mtime !== st.mtimeMs) {
     let text: string;
-    try { text = readFileSync(path, 'utf8'); } catch { return null; }
+    try { text = tailOf(path, st.size, OPEN_TASKS_BYTES); } catch { return null; }
     const calls = new Map<string, 'bash' | 'agent'>(), open = new Map<string, number>();
     for (const line of text.split('\n')) {
       if (!line.includes('tool_result') && !line.includes('tool_use') && !line.includes('task-notification')) continue;

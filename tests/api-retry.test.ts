@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
 import { LOGIN_LOST_LINE } from '../src/core/deliver/text.js';
-import { apiErrorReason, apiErrorText, isApiErrorReason, isApiErrorRow, loginLost } from '../src/brain/api-error.js';
+import { apiErrorReason, apiErrorText, isApiErrorReason, isApiErrorRow, loginLost, retryableApiError } from '../src/brain/api-error.js';
 import type { Inbound } from '../src/core/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,6 +27,14 @@ test('a lost login is told by the words Claude Code and the API use for it, and 
   for (const t of ['Not logged in · Please run /login', 'Invalid API key · Please run /login', 'OAuth token has expired. Please obtain a new token or refresh your existing token.',
     'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}']) assert.equal(loginLost(t), true, t);
   for (const t of ['API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}', 'Request timed out.', 'logged the run in notes.md', '']) assert.equal(loginLost(t), false, t);
+});
+
+test('only an error a wait may answer is retried: 5xx, overload, network, login', () => {
+  for (const t of ['API Error: 500 {"type":"error"}', 'API Error: 529 {"type":"overloaded_error"}', 'API Error: Connection error.', 'Request timed out.', 'API Error: fetch failed', 'Not logged in · Please run /login'])
+    assert.equal(retryableApiError(apiErrorReason(t)), true, t);
+  for (const t of ['Prompt is too long', 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"bad"}}', 'API Error: 413 request too large'])
+    assert.equal(retryableApiError(apiErrorReason(t)), false, t);
+  assert.equal(retryableApiError('exit'), false);
 });
 
 test('only a row Claude Code marks as a failed API call counts, and a usage limit stays an answer', () => {

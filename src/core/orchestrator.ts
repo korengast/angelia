@@ -12,7 +12,7 @@ import { SessionMap } from './session/map.js';
 import { KeyedQueue } from './session/queue.js';
 import { createBrain, locateBin, profileBin, type Brain, type BackendName } from '../brain/index.js';
 import { projectFolder, projectsDir } from '../brain/transcripts.js';
-import { isApiErrorReason, loginLost } from '../brain/api-error.js';
+import { isApiErrorReason, loginLost, retryableApiError } from '../brain/api-error.js';
 import { ChatNotes, sentPreface } from './session/notes.js';
 import { type IdlePane, openTasksInTranscript, START_EXIT, TEAMMATE_MAX_MS } from '../brain/tui.js';
 import { claudeHistory, claudeTranscriptFor, piHistory, type HistoryItem, type HistoryPage } from '../brain/history.js';
@@ -149,7 +149,7 @@ export interface OrchestratorOptions {
 /** `midturnFollow`: the turn is the one Claude Code runs by itself for chat messages typed into the turn
  *  before it, which that turn did not take (followAbsorbed): no no-answer line, nothing said when none ran. */
 /** `apiRetried`: this is the one retry after an API error (API_RETRY_MS); `retried`: the one under a fresh id. */
-type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; apiRetried?: boolean; follow?: AsyncGenerator<BrainEvent>; midturnFollow?: boolean; sent?: string };
+type TurnOptions = { bare?: boolean; preface?: string; retried?: boolean; apiRetried?: boolean; follow?: AsyncGenerator<BrainEvent>; midturnFollow?: boolean; sent?: string; given?: () => void };
 
 /** The backends /backend offers. */
 const SWITCHABLE: BackendName[] = ['claude-code', 'grok', 'codex', 'pi', 'agy'];
@@ -257,6 +257,8 @@ export class Orchestrator {
   private busyPanes = new Map<string, number>();
   /** A restart's pane the reap kept for its open tasks, and why: logged once (mayEndPane). */
   private keptPanes = new Map<string, string>();
+  /** When each pane's transcript was first found unreadable (mayEndPane). */
+  private unreadSince = new Map<string, number>();
   /** Sessions a handoff moved a chat away from while their turn ran, by session id. Their panes go on
    *  with nobody reading them until the turn is over, or `/resume` takes one back (handoff). */
   private background = new Map<string, { key: string; brain: Brain }>();
@@ -1248,18 +1250,22 @@ export class Orchestrator {
     }
     const b = await this.brainFor(key, name);
     // What was posted into the chat past its agent since its last turn: told before the envelope, as
-    // data. Taken at the turn's start: a turn the restart cuts loses them, and the cut line in the chat
-    // covers that. A bare CLI command goes as typed and leaves them, and so does a prompt Angelia wrote
+    // data. They count as told once the turn reached the agent (given, below): a turn that never did
+    // leaves them for the next one. A bare CLI command goes as typed and leaves them, and so does a prompt Angelia wrote
     // itself (a handoff brief). Another profile's line only when this profile takes its tasks
     // (accept_from): a line is no back door past that list. The chat still saw it.
-    const sent = o.sent ?? (!bare && !follow ? sentPreface(this.notes.takeUnseen(key).filter((n) => this.peerLineShown(name, n.source)), quoteLookalikes) : '');
-    o = { ...o, sent };
+    const lines = o.sent === undefined && !bare && !follow ? this.notes.unseen(key) : undefined;
+    const sent = o.sent ?? (lines ? sentPreface(lines.notes.filter((n) => this.peerLineShown(name, n.source)), quoteLookalikes) : '');
+    const given = o.given ?? lines?.given;
+    o = { ...o, sent, given };
     const before = [preface, sent].filter(Boolean).join('\n\n');
     const text = before ? `${before}\n\n${agentText(i, bare)}` : agentText(i, bare);
     // A turn another profile asked for (sender `profile`): what it starts is a peer's work (TurnFlags.peer).
     const events = follow ?? b.turn(text, { app, msg: this.msgId(i), ...(i.sender === 'profile' ? { peer: true } : {}) });
     if (!app) await sender?.typing?.(i.chat, true);
     let result: Extract<BrainEvent, { kind: 'result' }> | undefined;
+    // The agent showed it has the message: it said something, or asked for a permission.
+    let reached = false;
     // Progress lines never hold the turn: they queue, merge while the bucket is full, and give way
     // to the answer and to permission prompts (deliver/rate.ts).
     const progress = new ProgressOutbox(this.rateFor(i.platform), (t) => this.replyFromAgent(i, t, profile, true),
@@ -1289,6 +1295,7 @@ export class Orchestrator {
     try {
       for await (const e of events) {
         lastEvent = Date.now();
+        if (e.kind === 'progress' || e.kind === 'permission') reached = true;
         if (e.kind === 'progress') {
           // A client sees each line at once; the chat gets them through the rate limit. An app turn's
           // lines go to the client only, so they never reach the outbox.
@@ -1369,6 +1376,7 @@ export class Orchestrator {
       if (watch) clearInterval(watch);
       if (!app) await sender?.typing?.(i.chat, false);
     }
+    if (reached || (result && !result.isError) || result?.reason === TMUX_STALLED) given?.();
     // What the agent said along the way and the rate limit held back goes in front of the answer.
     const unsent = await progress.close();
     if (stalled) {
@@ -1417,9 +1425,10 @@ export class Orchestrator {
         await this.told(i, notDeliveredLine(result.reason));
         return result.reason ?? 'not delivered';
       }
-      if (!o.apiRetried && isApiErrorReason(result?.reason)) {
+      if (!o.apiRetried && retryableApiError(result?.reason)) {
         // The CLI wrote a failed API call as its answer (not logged in, a 5xx): never post it as the
-        // agent's words. Once more in the same session after a minute, which a refreshed token or a
+        // agent's words. Only one a wait may answer is tried again (retryableApiError).
+        // Once more in the same session after a minute, which a refreshed token or a
         // passing outage answers; the session keeps the conversation, a fresh one would lose it.
         if (unsent.length) await this.replyFromAgent(i, unsent.join('\n\n'), profile).catch(() => {});
         const wait = this.opts.apiRetryMs ?? API_RETRY_MS;
@@ -2358,13 +2367,21 @@ export class Orchestrator {
 
   /** Asked right before the pane reap ends a pane: no brain took its chat since the list was made, and
    *  nothing runs or waits there. Its transcript shows no background shell, subagent or teammate open;
-   *  a transcript that cannot be read keeps it. */
-  mayEndPane(p: IdlePane): boolean {
+   *  a transcript that cannot be read keeps it, for TEAMMATE_MAX_MS at the most. */
+  mayEndPane(p: IdlePane, now = Date.now()): boolean {
     if (this.brains.has(p.key) || this.running.has(p.key) || this.queue.queued(p.key) !== 0
       || [...this.background.values()].some((e) => (e.brain as { name?: unknown }).name === p.name)) return false;
     if (p.transcript === undefined) return true;
     const open = openTasksInTranscript(p.transcript);
+    if (open !== null) this.unreadSince.delete(p.name);
     if (open === 0) { this.keptPanes.delete(p.name); return true; }
+    // A transcript that stays unreadable (never written, removed) must not keep the pane for good:
+    // past TEAMMATE_MAX_MS from the first failed read, no task there could still be held.
+    if (open === null) {
+      let since = this.unreadSince.get(p.name);
+      if (since === undefined) this.unreadSince.set(p.name, since = now);
+      if (now - since >= TEAMMATE_MAX_MS) return true;
+    }
     // Once per pane and reason: the reap asks each minute.
     const why = open === null ? 'its transcript could not be read' : `${open} background task(s) open in its transcript`;
     if (this.keptPanes.get(p.name) !== why) { this.keptPanes.set(p.name, why); this.log(`tmux: pane ${p.name} key=${p.key} kept: ${why}`); }
@@ -2378,6 +2395,7 @@ export class Orchestrator {
     const b = this.parked.get(p.key);
     if (b && (b as { name?: unknown }).name === p.name) this.parked.delete(p.key);
     this.busyPanes.delete(p.name);
+    this.unreadSince.delete(p.name);
   }
 
   /** Reap brains idle longer than the configured window. Call from a timer. */

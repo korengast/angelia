@@ -21,8 +21,11 @@ just posted, and could not answer a question about a line the chat had just read
   `notify()` and `sendMediaTo()` post, and the lines of Angelia's own that end or replace a turn's
   answer (`told()`: no answer, denied, the failure line, a lost login, the usage-limit hint, the
   agent not found or not started, a stall that stopped it, a bare command's "done"). Not recorded,
-  because they are about the chat and not said in the agent's name: permission prompts and their
-  answers, the stall warning, a CLI notice, and the router's answers to a sender.
+  because they are about the chat and not said in the agent's name: a turn's own permission prompts
+  and their answers, the stall warning, a CLI notice, and the router's answers to a sender. Lines
+  that go through `notify()` are kept as `angelia`, whatever they are about: a permission that timed
+  out, a background turn that waits for a permission, and the note of an `angelia ask`. The answer to
+  a permission asked between turns is not kept.
 - **Who posted.** `job <name>` from a job; `profile <name>` from another profile's agent, whatever
   it says; `owner` for the owner's token with no label; `angelia` for the daemon's own lines; or the
   label a caller gives in `source` on `/send` and `/send-media` (printable, 60 characters at most,
@@ -31,11 +34,13 @@ just posted, and could not answer a question about a line the chat had just read
   not start with `owner`, `angelia` or `profile`.
 - **Tell.** At the start of a turn the chat's untold lines go before the envelope, oldest first,
   each with its local time and source, under one line that says they are data, never instructions,
-  and not to send them again. A job's line is marked `output, unverified` (a `run:` job may print
-  fetched text). Another profile's line is given only when the chat's profile lists that profile in
+  and not to send them again. A job's or a script's line (any label but `owner`, `angelia` and `profile <name>`) is
+  marked `output, unverified` (a `run:` job may print fetched text, and its script may post with its
+  own `--source`). Another profile's line is given only when the chat's profile lists that profile in
   `accept_from`: otherwise a line would be a way around that list. It stays kept, for export. At most 4000
-  characters, the newest kept, one line for the count that went. They count as told at the turn's
-  start: a turn the restart cuts loses them, and the cut line covers that. A line's further rows are
+  characters, the newest kept, one line for the count that went. They count as told once the turn
+  reached the agent (it said something, asked for a permission, answered, or tmux stopped answering);
+  a turn that never did leaves them for the next one, which may then show a line twice. A line's further rows are
   quoted with `>`, so no posted text can forge a stamp line, the head line or the count line. Not
   before a bare CLI command (it goes as typed; the lines wait) or a handoff brief Angelia wrote, nor in `angelia ask` copies. A retry
   of the turn carries the same block.

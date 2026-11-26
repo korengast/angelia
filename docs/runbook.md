@@ -383,16 +383,17 @@ file is stale: `rm ~/.angelia/daemon.pid`, then start again.
 **A job timer says the job changed since it was installed.** The plist pins a hash of the job.
 `angelia jobs install <profile>` takes the new definition; `angelia jobs` lists what is out of step.
 
-**API error.** The turn runs once more after one minute (`api error key=…, the same turn again in
-60 s` in `daemon.log`). A second error ends the turn: for a lost login the chat is told to run `claude`
-and `/login` on this machine.
+**API error.** A 5xx, an overload, a network failure or a lost login runs the turn once more after
+one minute (`api error key=…, the same turn again in 60 s` in `daemon.log`). A second error ends the
+turn: for a lost login the chat is told to run `claude` and `/login` on this machine. Any other API
+error ends the turn at once.
 
 **The agent repeats what a job already posted, or does not know of it.** What a `send:` job, a
 `run:` job's output or `angelia send` posts into a chat is kept (`~/.angelia/posted-lines.json`) and
 read by the chat's agent at its next turn, before the message, as data (`job <name>`, `owner`,
 `profile <name>`, `angelia`). A line from another profile is given only when the chat's profile
-lists it in `accept_from`. It sees them once; a turn cut by a restart loses
-them. `angelia export <platform:chat>` shows them with a `source` field. A script that posts with
+lists it in `accept_from`. It sees them once its turn reached it; a turn that never did leaves them
+for the next one. `angelia export <platform:chat>` shows them with a `source` field. A script that posts with
 the owner's token names itself with `--source`.
 
 **Usage limit.** The chat hears the CLI's own limit line plus how to switch: `/model sonnet` for

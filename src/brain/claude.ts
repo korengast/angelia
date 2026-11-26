@@ -6,7 +6,7 @@ import { claudeArgv, childEnv, versionAtLeast, CLAUDE_ENV, MIN_CLAUDE_VERSION } 
 import { BrainExited, PermissionBook, blockedConnectorNames, blockedShort, deniedConnectorCount, exitReason, jsonLine, permissionPreview, stopChild, wireChild, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, CHILD_GROUP, signalGroup } from './brain.js';
 import { LOST_SESSION_LINE, placeTranscript } from './transcripts.js';
 import { apiErrorReason, apiErrorText } from './api-error.js';
-import { backgroundRows, TEAMMATE_MAX_MS } from './tui.js';
+import { backgroundOfRows, TEAMMATE_MAX_MS } from './tui.js';
 import { isLimitText } from '../core/deliver/text.js';
 import { mcpLaunch } from '../capabilities/compile.js';
 
@@ -101,14 +101,14 @@ export class ClaudeBrain extends EventEmitter implements Brain {
   }
 
   /** What a line of the stream says of background work: a start in a call's result (the transcript's
-   *  shape, backgroundRows, with `tool_use_result` for `toolUseResult`) or in `task_started`, an end
+   *  shape, backgroundOfRows, with `tool_use_result` for `toolUseResult`) or in `task_started`, an end
    *  in `task_notification`. */
   private noteTasks(l: Line): void {
     if (l.type === 'system' && typeof l.tool_use_id === 'string') {
       if (l.subtype === 'task_started' && l.is_backgrounded === true) this.tasks.set(l.tool_use_id, Date.now());
       else if (l.subtype === 'task_notification') this.tasks.delete(l.tool_use_id);
     } else if (l.type === 'assistant' || l.type === 'user') {
-      const { starts, ends } = backgroundRows(JSON.stringify({ ...l, toolUseResult: l.toolUseResult ?? l.tool_use_result }), this.calls);
+      const { starts, ends } = backgroundOfRows([{ ...l, toolUseResult: l.toolUseResult ?? l.tool_use_result }], this.calls);
       for (const s of starts) this.tasks.set(s.id, Date.now());
       for (const id of ends) this.tasks.delete(id);
     }
