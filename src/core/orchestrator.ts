@@ -247,9 +247,9 @@ export class Orchestrator {
    *  message reattaches it by name. Kept here so that /new, /resume or a backend switch in between
    *  ends the pane too, instead of leaving it running with nobody to reach it. */
   private parked = new Map<string, Brain>();
-  /** Panes let go of while a teammate was open (name, and when): the pane reap keeps them, since a
-   *  parked brain reads no more of its teammates (TuiBrain.release). */
-  private teammatePanes = new Map<string, number>();
+  /** Panes let go of while a background task or teammate was open (name, and when): the pane reap
+   *  keeps them, since a parked brain reads no more of them (TuiBrain.release). */
+  private busyPanes = new Map<string, number>();
   /** Sessions a handoff moved a chat away from while their turn ran, by session id. Their panes go on
    *  with nobody reading them until the turn is over, or `/resume` takes one back (handoff). */
   private background = new Map<string, { key: string; brain: Brain }>();
@@ -2242,7 +2242,7 @@ export class Orchestrator {
     if (!b?.alive) return;
     if (!end && b.release) {
       const name = (b as { name?: unknown }).name;
-      if (typeof name === 'string') { if (b.openTeammateCount?.()) this.teammatePanes.set(name, Date.now()); else this.teammatePanes.delete(name); }
+      if (typeof name === 'string') { if (b.openTaskCount?.()) this.busyPanes.set(name, Date.now()); else this.busyPanes.delete(name); }
       try { await b.release(restart ? { restart } : undefined); this.parked.set(key, b); return; }
       catch (err) { this.log(`release failed key=${key} ${(err as Error).message}`); }
     }
@@ -2274,7 +2274,7 @@ export class Orchestrator {
   /** The panes the pane reap may end (brain/tui-panes.ts, reapPanes): each parked one, and each chat's
    *  active session on a tui profile that no brain holds, as a restart leaves them. Never one a brain
    *  holds, for a turn or between turns, nor one read in the background (the idle reap parks those
-   *  first), nor one let go of with a teammate open, until the teammate is past TEAMMATE_MAX_MS. */
+   *  first), nor one let go of with a task or teammate open, until it is past TEAMMATE_MAX_MS. */
   idlePanes(now = Date.now()): IdlePane[] {
     const nameOf = (b: Brain): string | undefined => { const n = (b as { name?: unknown }).name; return typeof n === 'string' ? n : undefined; };
     const held = new Set([...this.brains.values(), ...[...this.background.values()].map((e) => e.brain)].map(nameOf));
@@ -2282,7 +2282,7 @@ export class Orchestrator {
     const add = (key: string, name: string | undefined) => {
       const p = this.profileFor(key);
       if (!name || held.has(name) || out.has(name) || !p?.tui || p.backend !== 'claude-code') return;
-      if (now - (this.teammatePanes.get(name) ?? -Infinity) < TEAMMATE_MAX_MS) return;
+      if (now - (this.busyPanes.get(name) ?? -Infinity) < TEAMMATE_MAX_MS) return;
       const bin = this.binFor(p);
       out.set(name, { name, key, ...(bin ? { bin } : {}) });
     };
@@ -2307,7 +2307,7 @@ export class Orchestrator {
   paneEnded(p: IdlePane): void {
     const b = this.parked.get(p.key);
     if (b && (b as { name?: unknown }).name === p.name) this.parked.delete(p.key);
-    this.teammatePanes.delete(p.name);
+    this.busyPanes.delete(p.name);
   }
 
   /** Reap brains idle longer than the configured window. Call from a timer. */
@@ -2316,8 +2316,9 @@ export class Orchestrator {
     for (const [key, b] of this.brains) {
       // A request waiting for the owner (one asked between turns, tmux mode) is work too: reaping would
       // take it from the chat; it times out by itself.
-      // So is a teammate still at work: letting go of the pane forgets it, and its report stays unread.
-      if (b.alive && now - b.lastUsedAt > limit && this.queue.queued(key) === 0 && !b.pendingPermissionCount && !b.openTeammateCount?.()) { this.log(`reap key=${key}`); await this.dropBrain(key, false); }
+      // So is a background task or a teammate still at work: print mode would end it, and a pane let go
+      // of forgets it, so its report stays unread.
+      if (b.alive && now - b.lastUsedAt > limit && this.queue.queued(key) === 0 && !b.pendingPermissionCount && !b.openTaskCount?.()) { this.log(`reap key=${key}`); await this.dropBrain(key, false); }
     }
   }
 

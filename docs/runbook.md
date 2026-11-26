@@ -263,7 +263,7 @@ not started by a turn of this chat`).
 - `it ended before this session was read`, or no line at all: nobody was reading the session.
   Angelia reads it between turns from the chat's last turn until `defaults.idle_exit_minutes` (30)
   pass with no message and no turn woken by the end of the chat's own work (each one starts the
-  time again); `reap key=<chat>` in
+  time again) and no background task or teammate still running (12 hours at most per task); `reap key=<chat>` in
   the log is where the reading stopped; not after a daemon restart
   until the chat's next message. The answer is in the Claude app and in the session: ask the agent.
 - `no text`, `[SILENT]`, `an API error of the CLI`, `a usage limit of the CLI`: nothing to send.

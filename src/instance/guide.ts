@@ -152,7 +152,8 @@ note needs no word: answer [SILENT]. Do not also post that
 result with \`angelia send\`: the chat would get it twice. Answer [SILENT] when there is nothing to
 tell. At most 6 such messages an hour reach one chat; past that the chat is told that more are held
 back. Only while Angelia reads the session: until defaults.idle_exit_minutes (30) pass with no
-message from the chat and no turn woken by the end of such work. It does not hold for a prompt you scheduled inside the
+message from the chat and no turn woken by the end of such work, and none still runs (at
+most 12 hours per task). It does not hold for a prompt you scheduled inside the
 session, a teammate spawned in the app, in print mode, or when the daemon restarted while the
 task ran: there your words stay in the session, so post the result with \`angelia send\`. For work
 on a schedule use a job (\`angelia guide jobs\`). A turn typed in the Claude app is never sent to

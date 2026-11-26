@@ -163,8 +163,9 @@ export interface Brain extends EventEmitter {
   turnKey?(): string | undefined;
   turnKeys?(): string[] | undefined;
   restoreTurnKey?(key: unknown, keys?: unknown): void;
-  /** tmux mode: the named teammates spawned in this session and still open: its pane is not reaped. */
-  openTeammateCount?(): number;
+  /** The background tasks (shell commands, subagents, teammates) still running in the session. A
+   *  session with one is not reaped: reaping would end it (print mode) or stop reading for its end. */
+  openTaskCount?(): number;
   /** A restarted daemon takes back a session it had sent to the background, or whose turn the restart
    *  cut off from its reader (then `follow` reads it for the chat). False: it is gone. */
   adopt?(turnSentAt: number): Promise<boolean>;

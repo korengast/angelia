@@ -496,6 +496,10 @@ export class TuiBrain extends EventEmitter implements Brain {
   /** The named teammates spawned in this session and still open (no end of theirs read, and spawned
    *  less than TEAMMATE_MAX_MS ago), by name: the tool_use id of the call that spawned it, and when. */
   private openTeammates = new Map<string, { id: string; at: number }>();
+  /** The background tasks open here, of any kind (a shell command, a subagent, a teammate; started by
+   *  anyone), by tool_use id, and when: no end read, and not past TEAMMATE_MAX_MS. What keeps the
+   *  pane from the reaps. */
+  private openTasks = new Map<string, number>();
   /** The names of the teammates spawned in Angelia's turns (the Agent tool with a `name`): a turn their
    *  message starts is the chat's, as a task's end is. */
   private oursTeammates = new Set<string>();
@@ -2176,10 +2180,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     return keys.length ? keys : undefined;
   }
 
-  /** The named teammates still open here, their ends read first when no turn is: the pane is not reaped. */
-  openTeammateCount(): number {
-    if (this.up && this.turnSentAt === undefined && this.openTeammates.size) this.readTranscript();
-    return [...this.openTeammates.keys()].filter((n) => this.teammateOpen(n)).length;
+  /** The background tasks and teammates still open here, their ends read first when no turn is: the
+   *  pane is not reaped. */
+  openTaskCount(): number {
+    if (this.up && this.turnSentAt === undefined && this.openTasks.size) this.readTranscript();
+    for (const [id, at] of this.openTasks) if (Date.now() - at >= TEAMMATE_MAX_MS) this.openTasks.delete(id);
+    return this.openTasks.size;
   }
 
   /** A typed prompt's key is one of the chat's own: the turn closed on the quiet path, or a message
@@ -2267,9 +2273,13 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (!line.includes('tool_result') && !line.includes('tool_use') && !line.includes('task-notification')) return;
     const { starts, ends } = backgroundRows(line, this.calls);
     for (const s of starts) {
+      this.openTasks.set(s.id, Date.now());
+      if (this.openTasks.size > OURS_MAX) this.openTasks.delete(this.openTasks.keys().next().value!);
       if (s.teammate) {
         // The one of that name before it is over: its marks go with it.
         if (this.endedTeammates.has(s.teammate)) this.dropEnded([s.teammate]);
+        const before = this.openTeammates.get(s.teammate);
+        if (before && before.id !== s.id) this.openTasks.delete(before.id);
         this.openTeammates.delete(s.teammate);
         this.openTeammates.set(s.teammate, { id: s.id, at: Date.now() });
         if (this.openTeammates.size > OURS_MAX) this.openTeammates.delete(this.openTeammates.keys().next().value!);
@@ -2279,7 +2289,10 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.pendingSpawns.push({ id: s.id, at: this.rowAt, ...(s.teammate ? { teammate: s.teammate } : {}), ...(s.team ? { team: s.team } : {}) });
       if (this.pendingSpawns.length > OURS_MAX) this.pendingSpawns.shift();
     }
-    for (const id of ends) for (const [name, t] of this.openTeammates) if (t.id === id) { this.openTeammates.delete(name); this.endedTeammates.add(name); }
+    for (const id of ends) {
+      this.openTasks.delete(id);
+      for (const [name, t] of this.openTeammates) if (t.id === id) { this.openTeammates.delete(name); this.endedTeammates.add(name); }
+    }
   }
 
   /** A named teammate of that name is open here: spawned, no end of it read, and not past TEAMMATE_MAX_MS. */
@@ -2291,6 +2304,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   /** No teammate name ties a turn to the chat any more, and nothing waits to be settled. Task ids stay
    *  (`ours`): each is one call's, so no one else's work can take one on. */
   private forgetTeammates(): void {
+    this.openTasks.clear();
     this.openTeammates.clear();
     this.oursTeammates.clear();
     this.peerTeammates.clear();

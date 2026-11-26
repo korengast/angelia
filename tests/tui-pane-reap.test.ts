@@ -149,7 +149,7 @@ test('a pane let go of with a teammate open is not the pane reap\'s', async () =
   const cfg = Config.parse({ profiles: { a: { cwd, tui: true } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }] });
   const o = new Orchestrator(cfg, { telegram: { send: async () => {} } }, { stateDir: mkdtempSync(join(tmpdir(), 'angelia-panereap-orch-')), bins: { 'claude-code': FAKE } });
   const oo = o as any;
-  const stub = (mates: number) => ({ name: 'angelia-a-x', alive: true, openTeammateCount: () => mates, release: async () => {}, stop: async () => {} });
+  const stub = (mates: number) => ({ name: 'angelia-a-x', alive: true, openTaskCount: () => mates, release: async () => {}, stop: async () => {} });
   oo.brains.set('telegram:1', stub(1));
   await oo.dropBrain('telegram:1', false);
   assert.deepEqual(o.idlePanes(), []);

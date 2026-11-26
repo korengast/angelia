@@ -6,6 +6,7 @@ import { claudeArgv, childEnv, versionAtLeast, CLAUDE_ENV, MIN_CLAUDE_VERSION } 
 import { BrainExited, PermissionBook, blockedConnectorNames, blockedShort, deniedConnectorCount, exitReason, jsonLine, permissionPreview, stopChild, wireChild, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, CHILD_GROUP, signalGroup } from './brain.js';
 import { LOST_SESSION_LINE, placeTranscript } from './transcripts.js';
 import { apiErrorReason, apiErrorText } from './api-error.js';
+import { backgroundRows, TEAMMATE_MAX_MS } from './tui.js';
 import { isLimitText } from '../core/deliver/text.js';
 import { mcpLaunch } from '../capabilities/compile.js';
 
@@ -18,6 +19,9 @@ type Line = Record<string, any>;
 
 /** One long-lived `claude -p --input-format stream-json` child for one session key. */
 export class ClaudeBrain extends EventEmitter implements Brain {
+  /** Background tasks open in the child (a shell command, a subagent), by tool_use id, and when. */
+  private tasks = new Map<string, number>();
+  private calls = new Map<string, 'bash' | 'agent'>();
   private child?: ChildProcessWithoutNullStreams;
   private lines = new EventEmitter();
   private exited = false;
@@ -77,13 +81,14 @@ export class ClaudeBrain extends EventEmitter implements Brain {
       this.exited = true;
       clearTimeout(this.blockedTimer); // a child gone before the check says nothing about its connectors
       this.permissions.clear();
+      this.tasks.clear(); // the child's tasks go with it
       this.lines.emit('exit', { code, signal });
       this.emit('exit', { code, signal });
     };
     wireChild(child, {
       exit: done,
       failure: (t) => { this.failure = t; },
-      line: (obj: Line) => { this.lastOutputAt = Date.now(); this.lines.emit('line', obj); },
+      line: (obj: Line) => { this.lastOutputAt = Date.now(); this.noteTasks(obj); this.lines.emit('line', obj); },
       benign: (line) => { this.blocked.push(...blockedConnectorNames(line)); },
     });
     // Claude Code does not wait for the account's connector list before the first turn (docs/reference.md,
@@ -93,6 +98,25 @@ export class ClaudeBrain extends EventEmitter implements Brain {
     // Without this handshake the CLI never sends can_use_tool over stdio: it silently denies the tool
     // and the model tends to invent a result. Verified against claude 2.1.272.
     this.send({ type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize', hooks: {} } });
+  }
+
+  /** What a line of the stream says of background work: a start in a call's result (the transcript's
+   *  shape, backgroundRows, with `tool_use_result` for `toolUseResult`) or in `task_started`, an end
+   *  in `task_notification`. */
+  private noteTasks(l: Line): void {
+    if (l.type === 'system' && typeof l.tool_use_id === 'string') {
+      if (l.subtype === 'task_started' && l.is_backgrounded === true) this.tasks.set(l.tool_use_id, Date.now());
+      else if (l.subtype === 'task_notification') this.tasks.delete(l.tool_use_id);
+    } else if (l.type === 'assistant' || l.type === 'user') {
+      const { starts, ends } = backgroundRows(JSON.stringify({ ...l, toolUseResult: l.toolUseResult ?? l.tool_use_result }), this.calls);
+      for (const s of starts) this.tasks.set(s.id, Date.now());
+      for (const id of ends) this.tasks.delete(id);
+    }
+  }
+
+  openTaskCount(): number {
+    for (const [id, at] of this.tasks) if (Date.now() - at >= TEAMMATE_MAX_MS) this.tasks.delete(id);
+    return this.tasks.size;
   }
 
   /** Once per start, while the child runs: a start that named fewer connectors as blocked than it

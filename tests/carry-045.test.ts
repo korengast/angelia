@@ -107,7 +107,7 @@ test('a stop writes the owed cut lines it is given, and the reaper keeps a pane 
   const cfg = Config.parse({ profiles: { a: { cwd: dir } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }] });
   const o = new Orchestrator(cfg, {} as any, { stateDir: dir }) as any;
   let open = 1, released = 0;
-  o.brains.set('telegram:1', { alive: true, lastUsedAt: 0, pendingPermissionCount: 0, openTeammateCount: () => open, release: async () => { released++; } });
+  o.brains.set('telegram:1', { alive: true, lastUsedAt: 0, pendingPermissionCount: 0, openTaskCount: () => open, release: async () => { released++; } });
   await o.reapIdle();
   assert.equal(released, 0);
   open = 0;

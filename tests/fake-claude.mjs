@@ -8,6 +8,7 @@
 //   text contains "CRASH"    -> exit 1 mid-turn
 //   text contains "NOLOGIN"  -> the CLI's own row for a lost login, and an error result with its words;
 //                               "NOLOGINONCE" only on the first such message, then the echo
+//   text contains "BGSTART"  -> a shell command sent to the background; "BGDONE" is its end
 //   text contains "APIERR"   -> the same for a server error ("API Error: 500 …")
 //   text contains "EMPTY"    -> empty result
 //   text contains "LIMITOK"  -> a usage-limit line as an ordinary answer (no error)
@@ -84,6 +85,17 @@ rl.on('line', (line) => {
   init();
   const text = String(msg.message?.content ?? '');
   if (text.includes('CRASH')) process.exit(1);
+  if (text.includes('BGSTART')) {
+    out({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_bg1', name: 'Bash', input: { command: 'sleep 100' } }] } });
+    out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_bg1', content: 'started' }] }, tool_use_result: { backgroundTaskId: 'b1' } });
+    out({ type: 'result', subtype: 'success', is_error: false, result: 'started', session_id: sid });
+    return;
+  }
+  if (text.includes('BGDONE')) {
+    out({ type: 'system', subtype: 'task_notification', tool_use_id: 'toolu_bg1', status: 'completed' });
+    out({ type: 'result', subtype: 'success', is_error: false, result: 'done', session_id: sid });
+    return;
+  }
   if ((text.includes('NOLOGIN') && !(text.includes('NOLOGINONCE') && apiFailures > 0)) || text.includes('APIERR')) {
     apiFailures++;
     const said = text.includes('APIERR') ? 'API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}' : 'Not logged in · Please run /login';
