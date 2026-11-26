@@ -229,14 +229,24 @@ export function guardMcpLaunch(stateDir: string, name: string, cwd: string): Mcp
  * The allow-list pattern for a remote server's address: the scheme, host and path only, so a key in a
  * query (`?tavilyApiKey=...`) or a fragment never reaches the record, the command line or a settings
  * file; a `*` takes the cut part's place. Measured on claude 2.1.332 (a local http server at
- * `/mcp?key=...`): `.../mcp*` lets it in, `.../mcp` does not.
+ * `/mcp?key=...`): `.../mcp*` lets it in, `.../mcp` does not. A user and password before the host
+ * (`user:key@`) become `*@`. An address with no path before its query gets `/*`, never a bare `*`
+ * after the host, which would also let in every host whose name starts with it (`host.evil.example`);
+ * not measured: if Claude Code matches such an address without the `/`, the server does not load
+ * beside the connectors (planProfile notes it). A key in the path is copied as it is.
  */
 export function urlPattern(url: string): string {
   const cut = url.search(/[?#]/);
-  if (cut < 0) return url;
-  const base = url.slice(0, cut);
+  let base = cut < 0 ? url : url.slice(0, cut);
+  const auth = /^([a-z][a-z0-9+.-]*:\/\/)([^/]*@)/i.exec(base);
+  if (auth) base = `${auth[1]}*@${base.slice(auth[0].length)}`;
+  if (cut < 0) return base;
+  if (noPath(base)) return `${base}/*`;
   return base.endsWith('*') ? base : `${base}*`;
 }
+
+/** An address that is only a scheme and a host (and port): nothing after the host. */
+const noPath = (url: string): boolean => /^[a-z][a-z0-9+.-]*:\/\/[^/]*$/i.test(url);
 
 /** Two url patterns (`*`: any run of characters) of which one covers the other's address. */
 function urlsOverlap(a: string, b: string): boolean {
@@ -420,7 +430,7 @@ function mcpLaunchProblems(cwd: string, want: LaunchGuard['mcp'], settings: Reco
       let names: string[] | undefined;
       try { names = Object.keys((JSON.parse(readPlainText(mcpFile)) as { mcpServers?: object }).mcpServers ?? {}); } catch { names = undefined; }
       const extra = names?.filter((n) => !(want.own ?? []).includes(n)) ?? [];
-      if (!names) out.push('.mcp.json cannot be read; compile again');
+      if (!names) out.push('.mcp.json cannot be read (not valid JSON, or not a plain file); fix the file');
       else if (extra.length) out.push(`.mcp.json names ${extra.map((n) => `"${n}"`).join(', ')}, which the last compile did not (a server added by hand would hold the session on an approval dialog); compile again`);
     }
   }
@@ -1338,6 +1348,7 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
         for (const n of Object.keys(user)) if (user[n].url) remote.set(n, user[n].url!);
         for (const n of mcpOwn) { const u = serverUrl(servers[n]); if (u) remote.set(n, u); }
         mcpUrls = [...new Set([...remote.values()].map(urlPattern))].sort();
+        for (const [n, u] of remote) if (/[?#]/.test(u) && noPath(u.slice(0, u.search(/[?#]/)))) notes.push(`the address of the MCP server ${n} has no path before its query, so it is on the allow list as its host and /*, which Claude Code may not match against it: this server may not load beside the connectors; give its address a path (such as /mcp)`);
         for (const [n, u] of remote) if (u.includes('${')) notes.push(`the address of the MCP server ${n} holds \${...}, and Claude Code matches the allow list against the address after it fills that in, so this server may not load beside the connectors`);
         for (const n of mcpOwn) if (!SERVER_NAME.test(n)) conflicts.push(`the MCP server name "${n}" (in ${mcpPath}) has a character other than letters, digits, - and _; Claude Code drops such a name from its allow list, so the server would not load beside the connectors; rename it`);
         if (!was?.length) changes.push(`~ MCP by allow list: only ${mcpAllow.length ? `the servers ${mcpAllow.join(', ')} and ` : ''}the granted connectors load${strict ? '' : '; a user-level server added later loads after the next compile'}`);

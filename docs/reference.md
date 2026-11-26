@@ -218,7 +218,8 @@ address) and have a path; `*` is allowed in the path only. `?`, `#`, quotes and 
   by its address as well: measured with Claude Code 2.1.332, once a url is on the list, a remote
   server passes by its address only. The list keeps the scheme, host and path of that address, with
   a `*` where a query or fragment was, so a key in the address (`?apiKey=...`) is not copied
-  anywhere. When MCP is not strict for the profile, its user-level servers (from `~/.claude.json`,
+  anywhere. A user and password before the host (`user:key@`) become `*@`. A key in the path is
+  copied as it is: keep keys out of the path. When MCP is not strict for the profile, its user-level servers (from `~/.claude.json`,
   or `CLAUDE_CONFIG_DIR`) of the compile are on the list too. Compile again after you add one. MCP
   servers from a plugin are not on the list. A server name with a character other than letters,
   digits, `-` and `_` cannot be on the list (Claude Code drops it): in the profile's own `.mcp.json`
