@@ -69,7 +69,7 @@ const run = (cmd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<stri
  *  (`~/.local/bin/claude` points into `versions/`, and the command line shows only the link). Null
  *  when neither says, an npm install for one. `table`: `ps -axo pid=,ppid=,args=` already read. */
 export async function paneBuild(pid: number, table?: Promise<string>): Promise<string | null> {
-  const procs = (await (table ?? run('ps', ['-axo', 'pid=,ppid=,args=']))).split('\n').map((l) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l)).filter((m) => m !== null);
+  const procs = (await (table ?? run('ps', ['-Ao', 'pid=,ppid=,args=']))).split('\n').map((l) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l)).filter((m) => m !== null);
   // The pane's own process first (the CLI, exec'd by env), then what it started.
   const mine = [...procs.filter((m) => Number(m[1]) === pid), ...procs.filter((m) => Number(m[2]) === pid)];
   for (const m of mine) {
@@ -111,7 +111,7 @@ export async function reapPanes(panes: IdlePane[], env: NodeJS.ProcessEnv, o: {
   const builds = new Map<string, Promise<string | null>>(); // one --version per CLI per sweep
   const installed = (bin: string) => { let v = builds.get(bin); if (!v) builds.set(bin, v = (o.installed ?? ((b) => installedBuild(b, env)))(bin)); return v; };
   let table: Promise<string> | undefined; // one process list per sweep, read only when a build is asked
-  const build = o.build ?? ((pid: number) => paneBuild(pid, table ??= run('ps', ['-axo', 'pid=,ppid=,args='])));
+  const build = o.build ?? ((pid: number) => paneBuild(pid, table ??= run('ps', ['-Ao', 'pid=,ppid=,args='])));
   const gone: { name: string; key: string; why: string }[] = [];
   for (const p of panes) {
     const t = live.get(p.name);
