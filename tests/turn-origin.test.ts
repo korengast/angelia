@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error: a plain script, no types
-import { promptKey, rowShapes, turnOrigin, turnStarters } from '../scripts/turn-origin.mjs';
+import { promptForm, promptKey, rowShapes, turnOrigin, turnStarters } from '../scripts/turn-origin.mjs';
 import { promptKey as daemonKey } from '../src/brain/tui.js';
 
 const HOOK = fileURLToPath(new URL('../scripts/tui-stop-hook.mjs', import.meta.url));
@@ -43,7 +43,7 @@ const R = {
 const jsonl = (rows: object[]) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
 const origin = (...rows: object[]) => turnOrigin(jsonl(rows));
 /** What the hook says of a turn whose one typed prompt is `text`. */
-const typedOne = (text: string) => ({ prompt_key: promptKey(text), prompts: 1 });
+const typedOne = (text: string) => ({ prompt_key: promptKey(text), prompt_len: promptForm(text).length, prompts: 1 });
 
 test('a typed message starts a prompt turn, and says when it was typed', () => {
   assert.deepEqual(origin(R.typed('hello', 5), R.text('Hi.')), { origin: 'prompt', origin_why: 'a typed prompt (origin human)', prompt_at: T0 + 5000, ...typedOne('hello') });

@@ -147,7 +147,7 @@ describe('tmux mode: the Stop marker of a turn that was closed without it', { co
     await c.say('first');
     await c.say('second');
     assert.deepEqual(c.sent, ['First.', 'Second.']);
-    assert.ok(c.pane().logs.some((l) => /^tmux: marker dropped, prompt key miss: prompts=1 chars=17 pane=\S+$/.test(l)));
+    assert.ok(c.pane().logs.some((l) => /^tmux: marker dropped, prompt key miss: prompts=1 chars=17 typed=[0-9a-f]{8}\/\d+ hook=[0-9a-f]{8}\/\d+ by=turn pane=\S+$/.test(l)));
   });
 
   test('a turn a task\'s end started, that ended in the CLI\'s error row while a turn waited: the row is not sent as an answer', { timeout: 18_000 }, async (t) => {

@@ -14,7 +14,7 @@ import { catalog } from './catalog.js';
 import { DEFAULT_BIN, locateBin } from './locate.js';
 import { paneBusy, paneIdle, tmux, tmuxSocketPath } from './tmux.js';
 import { projectFolder, projectsDir } from './transcripts.js';
-import { KEY_MISS_LINE, QUIET_MS, TuiBrain, tmuxVersion } from './tui.js';
+import { KEY_KEPT_LINE, KEY_MISS_LINE, QUIET_MS, TuiBrain, tmuxVersion } from './tui.js';
 
 /**
  * `angelia canary`: tmux mode tried for real against the Claude Code build installed now, in a pane
@@ -217,7 +217,7 @@ export async function runChecks(rig: CanaryRig, waits: Partial<CanaryWaits> = {}
     t0 = Date.now();
     const from = logs.length;
     const t = await turn('multi-line paste', PASTE_TEXT, w.turnMs, 'multi-line-paste.txt');
-    const missed = logs.slice(from).some((l) => l.startsWith(KEY_MISS_LINE));
+    const missed = logs.slice(from).some((l) => l.startsWith(KEY_MISS_LINE) || l.startsWith(KEY_KEPT_LINE));
     if (!t.problems.length) {
       if (missed) t.problems.push('the Stop hook\'s key of the typed prompt did not match what was typed, so the turn dropped its own answer (this build stores a pasted prompt in a way the hook does not read)');
       else if (word(t.result!.text) !== 'pasted') t.problems.push(`the answer was ${JSON.stringify(t.result!.text.slice(0, 60))}, not pasted`);

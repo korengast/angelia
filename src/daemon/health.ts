@@ -43,7 +43,7 @@ export const ALERT_NO_ANSWER = 2;
 export const ALERT_FAILED = 3;
 export const ALERT_STALLED = 1;
 export const ALERT_QUIET_EMPTY = 2;
-/** A turn that dropped a marker as not its own (a prompt key miss): one is enough. When Claude Code
+/** A turn whose marker was keyed as no prompt it typed (a prompt key miss: dropped, or kept by the net): one is enough. When Claude Code
  *  changes how it stores a typed prompt, every turn drops its own answer this way. */
 export const ALERT_KEY_MISS = 1;
 const ALERTS: [Counter, number, (n: number) => string][] = [
@@ -51,7 +51,7 @@ const ALERTS: [Counter, number, (n: number) => string][] = [
   ['failed', ALERT_FAILED, (n) => `${n} turn${n === 1 ? '' : 's'} failed`],
   ['stalled', ALERT_STALLED, (n) => `${n} turn${n === 1 ? '' : 's'} stalled`],
   ['quietEmpty', ALERT_QUIET_EMPTY, (n) => `${n} tmux turn${n === 1 ? '' : 's'} ended by the quiet pane with no answer`],
-  ['keyMiss', ALERT_KEY_MISS, (n) => `${n} tmux turn${n === 1 ? '' : 's'} dropped a marker on a prompt key miss`],
+  ['keyMiss', ALERT_KEY_MISS, (n) => `${n} tmux turn${n === 1 ? '' : 's'} had a prompt key miss`],
 ];
 
 export const MAX_DAYS = 30;
@@ -180,7 +180,7 @@ export class HealthCount {
     else if (text.startsWith('api error key=')) { this.add(day, row, 'apiErrors'); this.retried(ms, key); }
     else if (text.startsWith('retry with fresh session key=')) { this.add(day, row, 'freshRetries'); this.retried(ms, key); }
     else if (text.startsWith('permission auto-denied ')) this.add(day, row, 'autoDenied');
-    else if (text.startsWith('tmux: marker dropped, prompt key miss:')) this.add(day, row, 'keyMiss');
+    else if (text.startsWith('tmux: marker dropped, prompt key miss:') || text.startsWith('tmux: prompt key miss, answer kept:')) this.add(day, row, 'keyMiss');
   }
 
   /** `tmux: turn ended by <how> after N s, answer N chars pane=<pane> key=<chat>`: every tmux turn
