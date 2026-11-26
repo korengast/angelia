@@ -30,7 +30,7 @@ const row = (o: object) => `${JSON.stringify(o)}\n`;
 test('a message taken late into the turn before is not typed a second time', async () => {
   const b = brain();
   b.ready = Promise.resolve(null);
-  b.unsure.set(promptKey('and this too'), 0);
+  b.unsure.set(promptKey('and this too'), { key: promptKey('and this too'), text: 'and this too', transcript: b.transcript, offset: 0, at: Date.now(), turn: Date.now() - 1000, answered: false });
   writeFileSync(b.transcript, row({ type: 'queue-operation', operation: 'enqueue', content: 'and this too' }));
   b.paste = () => assert.fail('typed');
   const events = [];
@@ -154,6 +154,6 @@ test('a claude mcp list that never ends is killed with its group and answers nul
   // It ignores SIGTERM and leaves a child holding its output.
   writeFileSync(bin, '#!/bin/sh\ntrap "" TERM\nsleep 30 &\nsleep 30\n', { mode: 0o755 });
   const t0 = Date.now();
-  assert.equal(await mcpListConnectors(bin, dir, process.env, undefined, 500), null);
+  assert.equal(await mcpListConnectors(bin, dir, process.env, dir, undefined, 500), null);
   assert.ok(Date.now() - t0 < 10_000);
 });

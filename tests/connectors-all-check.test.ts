@@ -110,8 +110,9 @@ test('the start check reads the Claude config of the launch environment; one oth
 
 test('a dropped connector is kept out by its address only: a note per dropped connector at compile and in check-config', () => {
   const r = rig();
-  const note = droppedConnectorNote('gmail', GMAIL);
-  assert.match(note, /gmail is kept out by its address https:\/\/gmailmcp\.googleapis\.com\/\* only; if that is not the address .* gmail loads/);
+  const note = droppedConnectorNote('gmail');
+  assert.match(note, /gmail is kept out by its address \(capabilities\.gmail\.url in the routing table\) only; if that is not the address .* gmail loads/);
+  assert.ok(!note.includes('googleapis'), 'the capability is named, never its address');
   const pl = planProfile(r.cfg(), 'home', { home: r.home, stateDir: r.state, env: {} });
   assert.deepEqual(pl.notes.filter((n) => n.includes('kept out by its address')), [note], planText(pl));
   assert.deepEqual(configNotes(r.cfg()).filter((n) => n.includes('kept out by its address')), [`profiles.home: ${note}`]);

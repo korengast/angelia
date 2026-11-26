@@ -6,8 +6,11 @@ import type { BrainEvent } from '../core/types.js';
 export type BackendName = Profile['backend'];
 
 /** What a brain may need to know of a turn besides its text. `peer`: another profile asked for it
- *  (sender `profile`): the work it starts is a peer's, which the levels never approve between turns. */
-export interface TurnFlags { app?: boolean; peer?: boolean }
+ *  (sender `profile`): the work it starts is a peer's, which the levels never approve between turns.
+ *  `msg`: the orchestrator's id for the chat message, the one absorb() was given for it, so a message
+ *  pressed into the last turn is known as that message, not by its words (another with the same words
+ *  is another message). */
+export interface TurnFlags { app?: boolean; peer?: boolean; msg?: string }
 
 export interface BrainOptions {
   bin?: string;
@@ -78,6 +81,10 @@ export interface BrainOptions {
    *  the agent cannot change. Unset: read from the record in its folder (tests, the canary, a compile
    *  from before connectors). */
   mcp?: McpLaunch;
+  /** Claude Code, print mode: the compile's copy of `mcp`'s settings in the state folder
+   *  (mcpSettingsFile), passed by path when it holds the same keys, so the command line names no
+   *  address of a dropped connector (any process of the user can list it, the agent's too). */
+  mcpSettingsFile?: string;
   /** Deny rules for this session only, on top of the compiled ones, in the backend's own form (agy;
    *  tests). Unset: the compiled ones alone. */
   deny?: string[];
@@ -140,8 +147,8 @@ export interface Brain extends EventEmitter {
   follow?(): AsyncGenerator<BrainEvent>;
   /** Type a chat message into the turn that runs now, where the CLI queues it into that turn (a tui
    *  pane). True once the CLI took it; false when nothing was submitted, and the message is queued as a
-   *  turn of its own. */
-  absorb?(text: string): Promise<boolean>;
+   *  turn of its own. `msg`: the id turn() gets for the same message (TurnFlags.msg). */
+  absorb?(text: string, msg?: string): Promise<boolean>;
   /** After a turn: how many messages typed into it it took, and how many it did not (those run as the
    *  next turn, read with followAbsorbed). Once; undefined when none was typed into it. */
   absorbOutcome?(): { taken: number; untaken: number } | undefined;

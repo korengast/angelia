@@ -318,6 +318,8 @@ export class Orchestrator {
   private askedAtStop = new Set<string>();
   /** Messages waiting for a moment in a running turn that a restart took along to the next daemon (cutTurns). */
   private carried = new WeakSet<Inbound>();
+  /** An id per chat message, for the brain to know a message pressed into a turn as that one (TurnFlags.msg). */
+  private msgIds = new WeakMap<Inbound, string>();
   /** Messages queued again because the turn they were typed into failed: never a second time. */
   private retyped = new WeakSet<Inbound>();
   /** Chats whose running turn had a permission request denied (from the chat, the app, the pane, or by
@@ -571,7 +573,7 @@ export class Orchestrator {
         if (await gone()) return {};
         const b = this.brains.get(key);
         const into = this.running.get(key) ? this.turnIds.get(key) : undefined;
-        if (this.intoTurnAllowed(i, key, profile, bare) && b?.absorb && await b.absorb(agentText(i, false))) {
+        if (this.intoTurnAllowed(i, key, profile, bare) && b?.absorb && await b.absorb(agentText(i, false), this.msgId(i))) {
           this.log(`message went into the running turn key=${key} sender=${i.sender}`);
           // The turn ended as Claude Code took it: no turn here answers it, and an entry kept now would be
           // taken for the next turn's. Claude Code runs it as a turn of its own; the reader between turns
@@ -1016,7 +1018,7 @@ export class Orchestrator {
       profileName: name,
       stateOpen: stateOpenPaths(this.cfg, name, this.opts.stateDir ?? join(homedir(), '.angelia')),
       // The MCP launch from the guard, never from the record in the agent's own folder (connectors fix2 N1).
-      ...(profile.backend === 'claude-code' ? { mcp: guardMcpLaunch(this.opts.stateDir ?? join(homedir(), '.angelia'), name, effective.cwd) } : {}),
+      ...(profile.backend === 'claude-code' ? { mcp: guardMcpLaunch(this.opts.stateDir ?? join(homedir(), '.angelia'), name, effective.cwd), mcpSettingsFile: mcpSettingsFile(this.opts.stateDir ?? join(homedir(), '.angelia'), name) } : {}),
       // Only a session that may take messages into a running turn gets the PreToolUse hook (intoTurnAllowed).
       midturn: profile.tui && profile.midturn !== false,
       ...(this.opts.blockedCheckMs !== undefined ? { blockedCheckMs: this.opts.blockedCheckMs } : {}),
@@ -1192,6 +1194,12 @@ export class Orchestrator {
     return failed;
   }
 
+  private msgId(i: Inbound): string {
+    let id = this.msgIds.get(i);
+    if (!id) this.msgIds.set(i, id = randomUUID());
+    return id;
+  }
+
   /** One turn; returns why it failed, or undefined when the agent answered. */
   private async runTurn(i: Inbound, key: string, name: string, o: TurnOptions = {}): Promise<string | undefined> {
     const { bare = false, preface, retried = false, follow } = o;
@@ -1223,7 +1231,7 @@ export class Orchestrator {
     const b = await this.brainFor(key, name);
     const text = preface ? `${preface}\n\n${agentText(i, bare)}` : agentText(i, bare);
     // A turn another profile asked for (sender `profile`): what it starts is a peer's work (TurnFlags.peer).
-    const events = follow ?? b.turn(text, { app, ...(i.sender === 'profile' ? { peer: true } : {}) });
+    const events = follow ?? b.turn(text, { app, msg: this.msgId(i), ...(i.sender === 'profile' ? { peer: true } : {}) });
     if (!app) await sender?.typing?.(i.chat, true);
     let result: Extract<BrainEvent, { kind: 'result' }> | undefined;
     // Progress lines never hold the turn: they queue, merge while the bucket is full, and give way
@@ -2440,9 +2448,11 @@ export class Orchestrator {
   private atStop(i: Inbound, key: string, bare: boolean): void {
     // A "yes <id>" or a bare yes or no, while the chat has a request open: it answered a request of
     // this daemon, and the next one asks again. With none open it is a message like any other (an
-    // answer to the agent's own question), carried.
+    // answer to the agent's own question), carried. Open: at the cut (askedAtStop: a reader let go of
+    // then forgets its requests), or now (one asked between turns after the cut, by a pane not let go of).
     const answer = parsePermissionReply(i.text) !== null || parseBareAnswer(i.text, i.botMentions) !== null;
-    if (answer && this.askedAtStop.has(key) && this.asks.get(key)?.size) { this.log(`shutdown: a permission answer that came as the daemon stops is not carried key=${key}`); return; }
+    const b = this.brains.get(key), openNow = [...this.asks.get(key)?.keys() ?? []].some((id) => b?.hasPendingPermission(id));
+    if (answer && ((this.askedAtStop.has(key) && this.asks.get(key)?.size) || openNow)) { this.log(`shutdown: a permission answer that came as the daemon stops is not carried key=${key}`); return; }
     const a = this.cutAdopt.find((x) => x.key === key);
     if (i.surface === 'app') { this.log(`shutdown: a message that came as the daemon stops is not run key=${key}`); return; }
     if (!a) {

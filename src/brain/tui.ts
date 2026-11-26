@@ -126,6 +126,9 @@ const FOLLOW_WAIT_MS = 5000;
 /** A chat message typed into a running turn (absorb): its key and text, when, the turn it went into
  *  (that turn's turnSentAt), and whether the transcript shows the turn took it. */
 export interface Absorbed { key: string; text: string; at: number; turn: number; seen: boolean }
+/** A message pressed into a running turn whose take the transcript never confirmed (TuiBrain.unsure).
+ *  `turn`: the turnSentAt of the turn it was pressed into, as an Absorbed entry's. */
+interface Unsure { key: string; text: string; transcript: string; offset: number; at: number; turn: number; answered: boolean }
 /** How long an empty box after the Enter waits for the transcript's word that Claude Code queued the
  *  message (queuedSince): the row is written at the key (measured on 2.1.332), the screen may say so first. */
 const CONFIRM_MS = 8000;
@@ -503,8 +506,13 @@ export class TuiBrain extends EventEmitter implements Brain {
   private peerTeammates = new Set<string>();
   /** The team each spawned teammate's name was last spawned in, when its spawn said it (isOurs). */
   private teams = new Map<string, string>();
-  /** The names whose teammate's end was read: dropped once its report is judged, or at the next Enter. */
+  /** The names whose teammate's end was read: dropped once its report is judged, or at the second Enter
+   *  after its end (endedAtEnter). */
   private endedTeammates = new Set<string>();
+  /** The ended names an Enter found: a teammate's last report can still be queued in Claude Code at that
+   *  Enter (it runs during or after that turn), so they go only at the next Enter, when that turn and
+   *  any turn Claude Code ran after it were read (review-045). */
+  private endedAtEnter = new Set<string>();
   /** The turn typed here now is a peer's (TurnFlags.peer). */
   private turnPeer = false;
   /** Tasks and teammates started while no turn of Angelia's was read, since the last Stop marker taken
@@ -536,9 +544,12 @@ export class TuiBrain extends EventEmitter implements Brain {
   private tieKey = '';
   /** Every key of an adopted turn that Claude Code ran for several messages (restoreTurnKey). */
   private restoredKeys: string[] = [];
-  /** Messages an Enter was pressed for in a running turn that was not seen to take them: key, and the
-   *  transcript's size at that Enter. Looked at once more before each is typed as a turn of its own. */
-  private unsure = new Map<string, number>();
+  /** Messages an Enter was pressed for in a running turn that was not seen to take them, by message
+   *  (the orchestrator's id for it, else its key): its key and text, the transcript and its size at that
+   *  Enter, the time of it, the turn it was pressed into, and whether a turn Claude Code ran for it was answered already (followerOf).
+   *  Looked at once more before each is typed as a turn of its own. From its Enter on, it is the chat's
+   *  own (typedByUs, followerOf): Claude Code may take it late and run it by itself. */
+  private unsure = new Map<string, Unsure>();
   /** The reader between turns (startIdle): it looks for a Stop marker no turn of Angelia's waits for. */
   private idle?: NodeJS.Timeout;
   /** Since when this object reads the session: its first turn. A marker from before is of a time when
@@ -604,7 +615,8 @@ export class TuiBrain extends EventEmitter implements Brain {
   get pendingPermissionCount(): number { return this.permissions.size + this.selfBook.size; }
   hasPendingPermission(id: string): boolean { return this.permissions.has(id) || this.selfBook.has(id); }
 
-  private get dir(): string { return join(this.opts.stateDir ?? process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia'), 'tui', this.name); }
+  private get stateDir(): string { return this.opts.stateDir ?? process.env.ANGELIA_STATE_DIR ?? join(homedir(), '.angelia'); }
+  private get dir(): string { return join(this.stateDir, 'tui', this.name); }
   private get settingsPath(): string { return join(this.dir, 'settings.json'); }
   private get markerPath(): string { return join(this.dir, 'turn.json'); }
   private get launchPath(): string { return join(this.dir, 'launch.sha256'); }
@@ -646,7 +658,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     const key = `${this.profile.cwd}\0${JSON.stringify(settings)}`;
     if (!denied || connectorChecks.has(key)) return;
     connectorChecks.add(key);
-    const blocked = await tuiBlockedConnectors(this.opts.bin ?? 'claude', this.profile.cwd, { ...childEnv(this.opts.env), ...CLAUDE_ENV }, settings, this.opts.mcpListTimeoutMs);
+    const blocked = await tuiBlockedConnectors(this.opts.bin ?? 'claude', this.profile.cwd, { ...childEnv(this.opts.env), ...CLAUDE_ENV }, settings, this.stateDir, this.opts.mcpListTimeoutMs);
     if (!blocked) { connectorChecks.delete(key); this.emit('log', `connectors: all: pane ${this.name}: claude mcp list did not tell which connectors are blocked (it failed, or named none); checked again at the next pane start`); return; }
     const short = blockedShort(denied, blocked);
     if (!short) return;
@@ -933,12 +945,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (problem) { yield { kind: 'result', text: '', isError: true, reason: problem }; return; }
     if (this.notice) { yield { kind: 'notice', text: this.notice }; this.notice = null; }
     // Typed into the turn before and not seen taken then: Claude Code may have taken it since.
-    const clean = cleanText(text), key = promptKey(clean), pressedAt = this.unsure.get(key);
-    this.unsure.delete(key);
-    if (pressedAt !== undefined && this.queuedSince(pressedAt, key)) {
-      this.emit('log', `tmux: a message typed into the last turn was taken late; it is not typed again pane=${this.name}`);
-      // A turn Claude Code still runs for it by itself is the chat's (followerOf).
-      this.absorbed.push({ key, text: clean, at: Date.now(), turn: 0, seen: false });
+    const id = o.msg ?? promptKey(cleanText(text)), u = this.unsure.get(id);
+    this.unsure.delete(id);
+    if (u && u.transcript === this.transcript && this.queuedSince(u.offset, u.key)) {
+      this.emit('log', `tmux: a message typed into the last turn was taken late; it is not typed again${u.answered ? ' (its answer went to the chat already)' : ''} pane=${this.name}`);
+      // A turn Claude Code still runs for it by itself is the chat's (followerOf), from its Enter on.
+      if (!u.answered) this.absorbed.push({ key: u.key, text: u.text, at: u.at, turn: 0, seen: false });
       yield { kind: 'result', text: TAKEN_LATE_LINE, isError: false };
       return;
     }
@@ -957,7 +969,8 @@ export class TuiBrain extends EventEmitter implements Brain {
       // A Stop marker still here is of a turn that ended before this one: read as between turns, so a
       // late answer or a task's result is told before this turn's answer, never just deleted.
       left.over = this.takeIdle() ?? undefined;
-      this.dropEnded(this.endedTeammates);
+      this.dropEnded([...this.endedAtEnter].filter((n) => this.endedTeammates.has(n)));
+      this.endedAtEnter = new Set(this.endedTeammates);
       // Started between turns in a turn whose marker never came: nothing shows it was the chat's.
       this.settleSpawns(false);
       this.at = this.from = fileSize(this.transcript); // only rows written from here on are this turn's
@@ -1025,8 +1038,8 @@ export class TuiBrain extends EventEmitter implements Brain {
     while (this.pressed) await sleep(100);
   }
 
-  absorb(raw: string): Promise<boolean> {
-    const run = this.absorbing.then(async () => { try { return await this.absorbNow(raw); } finally { this.pressed = false; } });
+  absorb(raw: string, msg?: string): Promise<boolean> {
+    const run = this.absorbing.then(async () => { try { return await this.absorbNow(raw, msg); } finally { this.pressed = false; } });
     this.absorbing = run.catch(() => false);
     return run;
   }
@@ -1080,8 +1093,8 @@ export class TuiBrain extends EventEmitter implements Brain {
     return null;
   }
 
-  private async absorbNow(raw: string): Promise<boolean> {
-    const text = cleanText(raw);
+  private async absorbNow(raw: string, msg?: string): Promise<boolean> {
+    const text = cleanText(raw), id = msg ?? promptKey(text);
     const sentAt = this.turnSentAt;
     const gen = this.gen;
     if (sentAt === undefined || !text || !this.midturn) return false;
@@ -1118,7 +1131,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       return confirmed;
     };
     const took = (): true => {
-      this.unsure.delete(promptKey(text));
+      this.unsure.delete(id);
       this.absorbed.push({ key: promptKey(text), text, at: Date.now(), turn: sentAt, seen: false });
       this.emit('log', `tmux: a chat message went into the running turn (${text.length} chars) pane=${this.name}`);
       return true;
@@ -1165,7 +1178,7 @@ export class TuiBrain extends EventEmitter implements Brain {
         this.pressed = true;
         await this.tm(['send-keys', '-t', this.name, 'Enter']);
         presses++;
-        this.unsure.set(promptKey(text), enterAt);
+        if (!this.unsure.has(id)) this.unsure.set(id, { key: promptKey(text), text, transcript: this.transcript, offset: enterAt, at: Date.now(), turn: sentAt, answered: false });
         if (this.unsure.size > 20) this.unsure.delete(this.unsure.keys().next().value!);
         for (let p = 0; p < TAKEN_POLLS && !emptied; p++) {
           await sleep(300);
@@ -1729,7 +1742,9 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  as one of them. Claude Code joins several into one turn (measured on 2.1.332). */
   private followerOf(m: Marker): Absorbed[] | null {
     if (m.origin !== 'prompt' || typeof m.prompt_key !== 'string' || typeof m.prompts !== 'number' || m.prompts < 1 || typeof m.at !== 'number') return null;
-    const open = this.absorbed.filter((a) => !a.seen && m.at! >= a.at);
+    // A message pressed into a turn and not seen taken counts from its Enter: Claude Code may have taken
+    // it late and run it by itself, before the chat's turn for it looked (turn()).
+    const open = [...this.absorbed.filter((a) => !a.seen && m.at! >= a.at), ...this.unsureOpen().filter((a) => m.at! >= a.at)].sort((a, b) => a.at - b.at);
     // All of them as one prompt, one blank line between.
     if (open.length > 1 && m.prompts === 1 && m.prompt_key === promptKey(open.map((a) => a.text).join('\n\n'))) return open;
     let end = -1;
@@ -1759,8 +1774,9 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.transcript = row.transcript_path;
       const id = sessionOf(row.transcript_path);
       if (id && id !== this.session.id) this.backendSessionId = id; // the CLI forked the session
-      // Another conversation: the names of the old one's teammates tie nothing in it.
-      if (id !== sessionOf(was)) this.forgetTeammates();
+      // Another conversation: the names of the old one's teammates tie nothing in it, and an Enter's
+      // offset in the old file says nothing of the new one.
+      if (id !== sessionOf(was)) { this.forgetTeammates(); this.unsure.clear(); }
     }
     return String(row.text ?? '');
   }
@@ -1868,6 +1884,8 @@ export class TuiBrain extends EventEmitter implements Brain {
       {
         ours();
         this.absorbed = this.absorbed.filter((a) => !follower.includes(a));
+        // An unsure one answered here is not answered again when its own turn finds it taken late.
+        for (const u of this.unsure.values()) if (follower.some((a) => a.turn === u.turn && a.key === u.key && a.at === u.at)) u.answered = true;
         // It runs only after the turn it was typed into: a turn closed on the quiet path is over too.
         if (!inTurn && this.quietEnd && m.at! >= this.quietEnd.sentAt) this.quietEnd = undefined;
         this.lastUsedAt = Date.now();
@@ -1973,6 +1991,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   private dropEnded(names: Iterable<string>): void {
     for (const n of names) {
       this.endedTeammates.delete(n);
+      this.endedAtEnter.delete(n);
       this.oursTeammates.delete(n);
       this.peerTeammates.delete(n);
       this.teams.delete(n);
@@ -2172,7 +2191,15 @@ export class TuiBrain extends EventEmitter implements Brain {
   /** A typed prompt's key is one of the chat's own: the turn closed on the quiet path, or a message
    *  typed into a turn that Claude Code runs as one of its own. */
   private typedByUs(key: string): boolean {
-    return this.quietEnd?.key === key || !!this.quietEnd?.taken.includes(key) || this.absorbed.some((a) => a.key === key);
+    return this.quietEnd?.key === key || !!this.quietEnd?.taken.includes(key) || this.absorbed.some((a) => a.key === key) || this.unsureOpen().some((a) => a.key === key);
+  }
+
+  /** The unsure messages (unsure) not answered yet, of the transcript read now, as Absorbed entries of
+   *  the turn their Enter went into: that turn's own marker, keyed the same (the chat sent the same words
+   *  twice), is never taken as their follower (watch). An entry of another transcript can be in neither:
+   *  its Enter's offset is not this file's. */
+  private unsureOpen(): Absorbed[] {
+    return [...this.unsure.values()].filter((u) => !u.answered && u.transcript === this.transcript).map((u) => ({ key: u.key, text: u.text, at: u.at, turn: u.turn, seen: false }));
   }
 
   /** Nothing is asked between turns any more: the pane is let go of or stopped. */
@@ -2238,6 +2265,8 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.stopIdle();
     this.quietEnd = this.heldSince = undefined;
     this.absorbed = [];
+    // An Enter of this object's is no word on what a next reader of the pane types.
+    this.unsure.clear();
     // The next turn reads from the file's end: a teammate the owner spawns in the app meanwhile under
     // a name of the chat's is never seen, so no name stays the chat's (its report stays in the app).
     // Nobody reads the pane for its teammates' ends any more either.
@@ -2283,6 +2312,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.peerTeammates.clear();
     this.teams.clear();
     this.endedTeammates.clear();
+    this.endedAtEnter.clear();
     this.startOwed.clear();
     this.pendingSpawns = [];
     this.turnStarts = [];
@@ -2297,6 +2327,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     this.stopIdle();
     this.quietEnd = this.heldSince = undefined;
     this.absorbed = [];
+    this.unsure.clear();
     this.forgetTeammates();
     await this.tm(['kill-session', '-t', this.name]);
     this.up = false;
