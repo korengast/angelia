@@ -29,10 +29,18 @@ test('a lost login is told by the words Claude Code and the API use for it, and 
   for (const t of ['API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}', 'Request timed out.', 'logged the run in notes.md', '']) assert.equal(loginLost(t), false, t);
 });
 
-test('only an error a wait may answer is retried: 5xx, overload, network, login', () => {
-  for (const t of ['API Error: 500 {"type":"error"}', 'API Error: 529 {"type":"overloaded_error"}', 'API Error: Connection error.', 'Request timed out.', 'API Error: fetch failed', 'Not logged in · Please run /login'])
+test('only an error a wait may answer is retried: 5xx, 408, 409, 429, overload, rate limit, network, login', () => {
+  const long = ' '.repeat(400); // past isLimitText's 400 characters, so a rate limit reaches the retry
+  for (const t of ['API Error: 500 {"type":"error"}', 'API Error: 529 {"type":"overloaded_error"}', 'API Error: Connection error.', 'Request timed out.', 'API Error: fetch failed', 'Not logged in · Please run /login',
+    `API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}${long}`,
+    'API Error: 408 {"type":"error","error":{"type":"timeout_error","message":"Request timed out"}}', 'API Error: 409 {"type":"error","error":{"type":"conflict"}}',
+    'API Error (429 Too Many Requests)', 'Too many requests, slow down', `Rate limited by the server${long}`, '{"status": 503, "message": "unavailable"}', 'request failed with status code 429', 'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}'])
     assert.equal(retryableApiError(apiErrorReason(t)), true, t);
-  for (const t of ['Prompt is too long', 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"bad"}}', 'API Error: 413 request too large'])
+  for (const t of ['Prompt is too long', 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"bad"}}', 'API Error: 413 request too large',
+    // A 4xx whose text holds the loose words is no network failure: the code decides.
+    'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"tool network_fetch: timeout must be a number"}}',
+    'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"network error in the tool schema"}}', 'API Error: 404 model timed out of the list', '{"status": 422, "message": "timeout is too long"}',
+    'the networking module failed', 'timeouts.json is missing'])
     assert.equal(retryableApiError(apiErrorReason(t)), false, t);
   assert.equal(retryableApiError('exit'), false);
 });
