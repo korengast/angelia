@@ -15,7 +15,8 @@
 //   text contains "SLOW"     -> the answer takes 3s, so a turn can be interrupted mid-flight
 //   text contains "HANG"     -> no output at all, ever (a stuck CLI)
 //   text contains "GRANDCHILD" -> starts `sleep 300` (a long tool), answers with its pid, then ignores EOF
-//   text contains "QUIETWORK" -> 1.2 s of system lines (work with no text), then the answer
+//   text contains "QUIETWORK" -> system lines (work with no text) every 50 ms until the file
+//                               FAKE_CLAUDE_QUIET_GO names exists, then the answer
 //   text contains "SEPARATOR" -> the answer holds a raw U+2028 (JSON.stringify leaves it unescaped)
 //   text contains "BUSYTURN" -> forty progress lines, then the answer
 //   text contains "ENVDUMP"  -> the answer lists the canary variables it can see (CANARY_*, the bot token, API keys)
@@ -24,6 +25,7 @@
 // env FAKE_CLAUDE_VERSION   -> claude_code_version override
 import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 
 // `angelia ask`: one question, the prompt on stdin, one JSON result. The answer echoes what the copy
 // was started with, so a test can see the flags. "ASKSLOW" answers after 1.5 s, "ASKFAIL" fails.
@@ -146,12 +148,13 @@ rl.on('line', (line) => {
     return;
   }
   if (text.includes('QUIETWORK')) {
-    let n = 0;
+    const go = process.env.FAKE_CLAUDE_QUIET_GO ?? '';
+    out({ type: 'system', subtype: 'status' });
     const t = setInterval(() => {
-      if (++n < 12) return out({ type: 'system', subtype: 'status' });
+      if (!existsSync(go)) return out({ type: 'system', subtype: 'status' });
       clearInterval(t);
       out({ type: 'result', subtype: 'success', is_error: false, result: 'worked quietly', session_id: sid });
-    }, 100);
+    }, 50);
     return;
   }
   if (text.includes('SLOW')) {
