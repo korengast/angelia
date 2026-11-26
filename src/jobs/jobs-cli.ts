@@ -21,9 +21,9 @@ import { lastRuns } from './jobs-view.js';
 /** What a job delivers: its own definition (`send:`, `turn:`) with the owner's token, as written in
  *  the table's folder and pinned at install; a command's output with the chat's token, so the daemon
  *  holds its MEDIA: lines to the profile's rules like anything else the agent could have written. */
-const jobDeliver = async (kind: 'send' | 'turn', key: string, text: string, asChat?: boolean): Promise<void> => {
-  if (!asChat) return apiCall(kind, key, text);
-  await post(`/${kind}`, { token: sessionToken(ownerToken(), key), key, text });
+const jobDeliver = async (kind: 'send' | 'turn', key: string, text: string, asChat?: boolean, source?: string): Promise<void> => {
+  if (!asChat) return apiCall(kind, key, text, source);
+  await post(`/${kind}`, { token: sessionToken(ownerToken(), key), key, text, ...(source ? { source } : {}) });
 };
 
 const USAGE = `usage: angelia jobs [profile...]            list jobs and whether their timers match
@@ -138,7 +138,7 @@ export async function runAndReport(cfg: Config, profile: string, job: string, ha
       const text = e instanceof JobMissed
         ? `Scheduled job ${job} missed its time, ${once ?? def?.at}: the Mac was asleep, off or logged out then, so it does not run.`
         : `Scheduled job ${job} did not run: ${msg}`;
-      try { const to = chat(); if (to) await d.deliver('send', to, text, true); } catch { /* the log line is all we can do */ }
+      try { const to = chat(); if (to) await d.deliver('send', to, text, true, `job ${job}`); } catch { /* the log line is all we can do */ }
     }
     done();
     throw e;

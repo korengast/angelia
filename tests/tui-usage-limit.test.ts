@@ -63,3 +63,30 @@ test('tmux mode: a usage-limit row ends the turn as print mode does (the limit a
   assert.deepEqual(quiet.filter((e) => e.kind === 'progress'), [{ kind: 'progress', text: 'Looking.' }]);
   assert.ok(isLimitText((quiet.at(-1) as { text: string }).text), 'the orchestrator takes it as a limit');
 });
+
+/** A failed API call as Claude Code writes it: an assistant row of its own, marked. */
+const LOST_TEXT = 'Not logged in · Please run /login';
+const LOST = row(LOST_TEXT, { isApiErrorMessage: true, message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: LOST_TEXT }] } });
+const LOST_RESULT = { kind: 'result', text: LOST_TEXT, isError: true, reason: `api-error: ${LOST_TEXT}` };
+
+test('transcript rows: a marked API error is its own event, never text; the same words in an answer are text', async () => {
+  process.env.ANGELIA_STATE_DIR ??= mkdtempSync(join(tmpdir(), 'angelia-tuilimit-'));
+  const { transcriptEvents } = await import('../src/brain/tui.js');
+  assert.deepEqual(transcriptEvents([row('Checking.'), LOST].join('\n')), [{ kind: 'text', text: 'Checking.' }, { kind: 'api-error', text: LOST_TEXT }]);
+  const sample = `If the CLI prints this:\n\`\`\`\n${LOST_TEXT}\n\`\`\`\nrun claude and type /login.`;
+  assert.deepEqual(transcriptEvents(row(sample)), [{ kind: 'text', text: sample }]);
+});
+
+test('tmux mode: an API error row ends the turn as an error result, with and without the Stop marker', { timeout: 60_000 }, async () => {
+  const withMarker = await turnWith([LOST], LOST_TEXT);
+  assert.deepEqual(withMarker.at(-1), LOST_RESULT);
+  assert.ok(!withMarker.some((e) => e.kind === 'progress'), 'nor a progress line');
+  const quiet = await turnWith([row('Looking.'), LOST], null);
+  assert.deepEqual(quiet.at(-1), LOST_RESULT);
+  assert.deepEqual(quiet.filter((e) => e.kind === 'progress'), [{ kind: 'progress', text: 'Looking.' }], 'what the agent said before it is still shown');
+});
+
+test('tmux mode: an answer quoting "please run /login" in a code sample is delivered as the answer', { timeout: 30_000 }, async () => {
+  const sample = `When it says this:\n\`\`\`\n${LOST_TEXT}\n\`\`\`\nrun claude, then /login.`;
+  assert.deepEqual((await turnWith([row(sample)], sample)).at(-1), { kind: 'result', text: sample, isError: false });
+});

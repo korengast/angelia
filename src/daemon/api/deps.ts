@@ -15,7 +15,7 @@ import type { ApiDeps } from './server.js';
 export function apiDeps(orch: Orchestrator, cfg: Config, status: () => unknown, stateDir?: string): ApiDeps {
   return {
     // `angelia send` is an agent's or a script's text: it may tag WhatsApp group members.
-    send: (key, text, fromKey) => orch.notify(key, text, fromKey, { mentions: true }),
+    send: (key, text, fromKey, source) => orch.notify(key, text, fromKey, { mentions: true, source }),
     turn: (key, text, fromAgent, fromKey, surface, turnId, media) => orch.injectTurn(key, text, fromAgent, fromKey, 'scheduled', surface, turnId, media),
     attach: (key, paths) => orch.attach(key, paths),
     command: (key, name) => orch.appCommand(key, name),
@@ -25,7 +25,7 @@ export function apiDeps(orch: Orchestrator, cfg: Config, status: () => unknown, 
     handoff: (req) => orch.handoff(req),
     peerAllowed: (kind, from, to) => orch.peerAllowed(kind, from, to),
     reach: (from, to) => orch.reach(from, to),
-    sendMedia: (key, m, byOwner) => orch.sendMediaTo(key, m, byOwner),
+    sendMedia: (key, m, byOwner, source) => orch.sendMediaTo(key, m, byOwner, source),
     events: (fn) => orch.onEvent(fn),
     answerPermission: (key, id, allow) => orch.answerPermission(key, id, allow),
     status,

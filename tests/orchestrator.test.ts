@@ -613,8 +613,10 @@ test('a print-mode CLI that gives no output is reported at half the stall time a
   assert.match(sent.at(-1)!, /gave no output for 0\.01 minutes, so Angelia stopped it/);
   sent.length = 0;
   await o.handle(dm('1', 'hello again'));
-  assert.equal(sent.length, 1, 'the next message gets a fresh process and an answer');
-  assert.doesNotMatch(sent[0], /stopped it/);
+  assert.match(sent.at(-1)!, /hello again$/, 'the next message gets a fresh process and an answer');
+  // The stop line is in the agent's preface now (it is told what the chat was told in its name), not said again.
+  assert.ok(!sent.some((x) => x.startsWith('The agent gave no output')));
+  assert.match(sent.at(-1)!, /· angelia\] The agent gave no output for 0\.01 minutes, so Angelia stopped it/);
 });
 
 test('a CLI that keeps writing lines with no text is working, not stalled', async (t) => {

@@ -52,7 +52,7 @@ for (const [name, [bin, script]] of clients) {
     const turn = await ex('turn', 'telegram:1', 'hello there');
     if (name === 'curl') assert.match(turn.stdout, /"queued":true/);
     // The fake agent echoes its prompt: the client printed the answer the chat got, and then stopped.
-    else assert.match(turn.stdout, /^echo: \[telegram dm 1 · scheduled \(local\)\]\n\nhello there\n$/);
+    else assert.match(turn.stdout, /^echo: \[Posted in this chat[^\n]*\]\n\[\d{4}-\d\d-\d\d \d\d:\d\d · owner\] The backup finished\.\n\n\[telegram dm 1 · scheduled \(local\)\]\n\nhello there\n$/, 'the posted line comes first, as the agent\'s own');
     const ask = await ex('ask', 'telegram:1', 'what is on today?');
     assert.match(ask.stdout, /what is on today\?/, 'the read-only copy answered');
     await assert.rejects(ex('send', 'telegram:9', 'nobody'), (e: { stderr?: string; stdout?: string }) => /not a routed chat/.test(`${e.stderr}${e.stdout}`));

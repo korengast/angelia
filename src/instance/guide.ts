@@ -140,6 +140,7 @@ In a WhatsApp group, \`@<number>\` in the agent's answer or in \`angelia send\` 
 number is their phone or their lid, as the message header shows it, with or without +. A number that is
 no member stays text, and so does any tag past 5 members in one message or inside backticks. Progress
 lines and Angelia's own lines never tag.
+A file's caption never tags, but a phone the group hides is written as its lid there too.
 
 A turn whose CLI gives no output for defaults.turn_stall_minutes (60; 0 for never) is stopped and the
 chat told; at half of it the chat hears that it may be stuck. tmux turns are not stopped.
@@ -152,7 +153,8 @@ note needs no word: answer [SILENT]. Do not also post that
 result with \`angelia send\`: the chat would get it twice. Answer [SILENT] when there is nothing to
 tell. At most 6 such messages an hour reach one chat; past that the chat is told that more are held
 back. Only while Angelia reads the session: until defaults.idle_exit_minutes (30) pass with no
-message from the chat and no turn woken by the end of such work. It does not hold for a prompt you scheduled inside the
+message from the chat and no turn woken by the end of such work, and none still runs (at
+most 12 hours per task). It does not hold for a prompt you scheduled inside the
 session, a teammate spawned in the app, in print mode, or when the daemon restarted while the
 task ran: there your words stay in the session, so post the result with \`angelia send\`. For work
 on a schedule use a job (\`angelia guide jobs\`). A turn typed in the Claude app is never sent to
@@ -342,7 +344,9 @@ jobs:
 
 turn asks the agent, in the chat's own session; send posts text; run executes a command in the
 profile folder (the profile needs shell: true) and posts what it prints. Printing nothing, or
-[SILENT], posts nothing; a failure is posted as one line. On a profile whose agent is sandboxed
+[SILENT], posts nothing; a failure is posted as one line. What send and run post, the chat's
+agent reads at its next turn, before the message, as data marked "job <name> · output,
+unverified": it must not send them again, and it can answer about them. On a profile whose agent is sandboxed
 (sandbox: true on Claude Code; Codex and pi unless sandbox: false) a run: command runs in the same
 macOS sandbox: it writes only in the agent's folders and temp, reads nothing the agent may not,
 cannot start apps or launchd jobs, and runs only while the profile is compiled.

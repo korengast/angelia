@@ -146,7 +146,8 @@ export const Profile = z.object({
   answer_from: z.array(z.string()).default([]),
   /** Profiles whose agents may give this one a task (`angelia turn`): a turn in its own session, which
    *  can act. "*" for every profile; default none. The owner, jobs and this chat's own agent are not
-   *  limited. A line (`angelia send`) needs no listing: the chat sees it, labelled. */
+   *  limited. A line (`angelia send`) needs no listing to reach the chat, labelled; its agent reads it at
+   *  the next turn only when the sender is listed here. */
   accept_from: z.array(z.string()).default([]),
   /** May edit the workspace's _shared/ (doctrine every profile imports, the self prompt) and
    *  _capabilities/ (the skills and tools every profile runs). Default no: an agent that could edit
@@ -224,6 +225,10 @@ export const Config = z.object({
       max_in_per_hour: z.number().int().nonnegative().default(50),
       idle_exit_minutes: z.number().positive().max(35_000).default(30),
       permission_timeout_minutes: z.number().positive().max(35_000).default(10),
+      /** tmux mode: a pane no chat is reading, idle on screen this many hours, is ended; the next
+       *  message resumes its session. A pane on an older Claude Code build than the one installed is
+       *  ended as soon as it is idle. */
+      pane_idle_hours: z.number().positive().max(8_760).default(12),
       /** A turn in print mode with no output from its CLI this long is stuck: the chat is told at half
        *  of it, and at the full time the CLI is stopped and the chat told so. 0: never. tmux turns
        *  have their own hourly line and are not stopped. */

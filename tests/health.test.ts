@@ -49,6 +49,7 @@ test('the lines the daemon writes are counted per profile and day, by the routin
     at(D, '09:30:00', `turn stalled key=${WORK} after 30 min without output`),
     at(D, '09:31:00', `turn error key=${WORK} something threw`),
     at(D, '09:32:00', `deliver failed key=${WORK} whatsapp: not connected`),
+    at(D, '09:33:00', `api error key=${WORK}, the same turn again in 60 s`),
     at(D, '09:34:00', `retry with fresh session key=${WORK}`),
     at(D, '09:35:00', `permission auto-denied key=${WORK} tool=Bash`),
     at(D, '09:36:00', `permission auto-denied 10 times key=${WORK}: turn stopped`),
@@ -61,7 +62,7 @@ test('the lines the daemon writes are counted per profile and day, by the routin
   const r = await health({ stateDir, cfg, now: NOW });
   assert.deepEqual(r.byDay[D].profiles, {
     family: { turns: 2, noAnswer: 1, failed: 2 },
-    work: { stalled: 1, errors: 1, deliverFailed: 1, freshRetries: 1, autoDenied: 2, heldOpen: 1 },
+    work: { stalled: 1, errors: 1, deliverFailed: 1, apiErrors: 1, freshRetries: 1, autoDenied: 2, heldOpen: 1 },
     'whatsapp:12036300…': { failed: 1 },
     tmux: { turns: 1 },
   });
@@ -101,9 +102,10 @@ test('the window is the last N days, split by day, and the older log file is rea
 
 test('a failure the daemon tried again is not a failed turn: only the retry\'s own end counts', async (t) => {
   const fresh = (time: string, key: string) => [at(D, time, `turn failed key=${key} reason=exit`), at(D, time, `retry with fresh session key=${key}`)];
+  const apiError = (time: string, key: string) => [at(D, time, `turn failed key=${key} reason=api-error: API Error: 500`), at(D, time, `api error key=${key}, the same turn again in 60 s`)];
   const stateDir = logWith(t, [
     // Three hiccups, each answered on the second try: the daemon logs the failure, then the retry.
-    ...fresh('09:00:00', FAMILY), ...fresh('10:00:00', FAMILY), ...fresh('11:00:00', FAMILY),
+    ...apiError('09:00:00', FAMILY), ...apiError('10:00:00', FAMILY), ...fresh('11:00:00', FAMILY),
     // The retry failed too: that is the turn's end, counted once.
     ...fresh('09:00:00', WORK), at(D, '09:01:01', `turn failed key=${WORK} reason=exit`),
     // A retry line with no failure just before it (another chat's, or long ago) takes nothing back.
@@ -111,7 +113,7 @@ test('a failure the daemon tried again is not a failed turn: only the retry\'s o
   ]);
   const r = await health({ stateDir, cfg, now: NOW });
   assert.deepEqual(r.totals.profiles, {
-    family: { freshRetries: 3 },
+    family: { apiErrors: 2, freshRetries: 1 },
     work: { freshRetries: 1, failed: 1 },
     'whatsapp:12036300…': { failed: 1, freshRetries: 1 },
   });

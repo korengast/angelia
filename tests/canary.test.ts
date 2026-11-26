@@ -216,12 +216,13 @@ describe('the canary\'s checks, on the real TuiBrain with a pretend pane', { con
   });
 
   test('the plan\'s limit or a lost login is no verdict on the build: could not judge, and the rest is not run', async (t) => {
-    const [limit, login] = await Promise.all([rigWith(t, { pongSays: "You've reached your usage limit. Your limit resets at 9pm." }), rigWith(t, { pongApiError: 'Not logged in · Please run /login' })]);
+    const [limit, api, login] = await Promise.all([rigWith(t, { pongSays: "You've reached your usage limit. Your limit resets at 9pm." }), rigWith(t, { pongApiError: 'API Error: 529 Overloaded' }), rigWith(t, { pongApiError: 'Not logged in · Please run /login' })]);
     assert.match(limit.unjudged!, /^the plan's usage limit was reached \("You've reached your usage limit\./);
     assert.deepEqual(limit.checks.map((c) => [c.name, c.ok, c.skipped ?? false]), [['start', true, false], ['pong', false, false], ['multi-line paste', false, true], ['tool run', false, true], ['idle after', false, true], ['slash command', false, true]]);
     assert.match(limit.by('pong').detail, /^could not judge: the plan's usage limit was reached/);
     assert.match(limit.by('tool run').detail, /^not run: this build could not be judged/);
     assert.deepEqual(limit.kept, {}, 'no screen is kept: it shows nothing of the build');
+    assert.equal(api.unjudged, 'the model\'s API call failed ("API Error: 529 Overloaded")');
     assert.equal(login.unjudged, 'Claude Code lost its login ("Not logged in · Please run /login")');
   });
 
@@ -328,8 +329,8 @@ test('what a turn\'s result says about the build, and what it does not', () => {
   assert.equal(cannotJudge({ text: '', isError: true, reason: 'exit' }), null, 'a pane that died is the build\'s to answer for');
   assert.equal(cannotJudge({ text: '', isError: true, reason: 'the message could not be typed into the session (no prompt, or Claude Code did not take it)' }), null);
   assert.match(cannotJudge({ text: "You've reached your Fable limit · resets 9pm", isError: false })!, /^the plan's usage limit was reached/);
-  assert.match(cannotJudge({ text: 'Not logged in · Please run /login', isError: false })!, /^Claude Code lost its login/);
-  assert.equal(cannotJudge({ text: `To fix it, please run /login in a terminal. ${'More words. '.repeat(30)}`, isError: false }), null, 'a long answer that mentions /login is an answer');
+  assert.match(cannotJudge({ text: 'x', isError: true, reason: 'api-error: API Error: 500 {"type":"error"}' })!, /^the model's API call failed \("API Error: 500/);
+  assert.match(cannotJudge({ text: 'x', isError: true, reason: 'api-error: Login reached its time limit · Please run /login' })!, /^Claude Code lost its login/);
   // An answer that talks about limits at length is an answer.
   assert.equal(cannotJudge({ text: `The rate limit of this API is described below. ${'More words. '.repeat(40)}`, isError: false }), null);
 });

@@ -24,7 +24,7 @@ or `angelia restart`, which starts it detached.
 | apply an edited table | `/restart` in a chat you own, or `angelia restart` from a terminal |
 | update the code | `angelia update` (`--check` only lists), then `/restart` |
 | see or add profiles | `angelia profiles`, `angelia profile add <platform:chat> [name]` |
-| post into a chat from a script | `angelia send <platform:chat> <text>`, `angelia send-media <platform:chat> </abs/path> [caption]` |
+| post into a chat from a script | `angelia send <platform:chat> [--source <label>] <text>`, `angelia send-media <platform:chat> </abs/path> [caption]`; the chat's agent reads it at its next turn as its own |
 | run a prompt in a chat's session | `angelia turn <platform:chat> <text>` |
 | scheduled work | `angelia-jobs.yaml` in the profile folder, then `angelia jobs install` |
 | read a chat's history | `angelia export <platform:chat> [--all] [--tools]` |
@@ -64,11 +64,11 @@ put them in jobs, and the chat of the job's profile gets a line only when there 
 **`angelia health [--days N] [--json] [--alert]`** counts trouble in `daemon.log`, per profile and
 day: turns that ended with no answer, failed, stalled or threw, answers that could not be delivered,
 tmux turns that ended by the quiet pane (all of them, and the ones with no answer for a message),
-panes that read idle with the turn open, retries with a fresh session, permissions
+panes that read idle with the turn open, API errors, retries with a fresh session, permissions
 auto-denied, markers a tmux turn dropped on a prompt key miss (`tmux: marker dropped, prompt key
 miss:`), and for the daemon as a whole its starts, WhatsApp drops and send retries (each `send
 failed, again in N s` line is one more try of a send, not a lost message). A failure that the daemon
-tried again (a retry with a fresh session) is not counted as failed: only the end of the
+tried again (an API error, a first turn that died) is not counted as failed: only the end of the
 retry is. The window is the last 24 hours, or the last N days (at most 30), split by your local
 calendar day; when the log holds less than that, the first line says where the log starts. A chat is shown as its
 profile; a chat no route names is shown by the first eight characters of its id. It reads the log
@@ -175,7 +175,7 @@ A check can also fail for a reason of the hour: the model answered slowly (`the 
 180 s`). Run it again before you change a build.
 
 **"tmux mode canary could not judge this build".** Exit 2. A turn ended with the plan's usage limit
-or a lost login, which says nothing about the build: any build ends such a turn
+a failed API call or a lost login, which says nothing about the build: any build ends such a turn
 the same way. The line says which. Nothing is recorded, no screen is kept, and the next run tries
 again; with `--if-new-build` that is the next day's job. For a lost login run `claude` and `/login`.
 
@@ -263,7 +263,7 @@ not started by a turn of this chat`).
 - `it ended before this session was read`, or no line at all: nobody was reading the session.
   Angelia reads it between turns from the chat's last turn until `defaults.idle_exit_minutes` (30)
   pass with no message and no turn woken by the end of the chat's own work (each one starts the
-  time again); `reap key=<chat>` in
+  time again) and no background task or teammate still running (12 hours at most per task); `reap key=<chat>` in
   the log is where the reading stopped; not after a daemon restart
   until the chat's next message. The answer is in the Claude app and in the session: ask the agent.
 - `no text`, `[SILENT]`, `an API error of the CLI`, `a usage limit of the CLI`: nothing to send.
@@ -369,6 +369,18 @@ file is stale: `rm ~/.angelia/daemon.pid`, then start again.
 
 **A job timer says the job changed since it was installed.** The plist pins a hash of the job.
 `angelia jobs install <profile>` takes the new definition; `angelia jobs` lists what is out of step.
+
+**API error.** The turn runs once more after one minute (`api error key=…, the same turn again in
+60 s` in `daemon.log`). A second error ends the turn: for a lost login the chat is told to run `claude`
+and `/login` on this machine.
+
+**The agent repeats what a job already posted, or does not know of it.** What a `send:` job, a
+`run:` job's output or `angelia send` posts into a chat is kept (`~/.angelia/posted-lines.json`) and
+read by the chat's agent at its next turn, before the message, as data (`job <name>`, `owner`,
+`profile <name>`, `angelia`). A line from another profile is given only when the chat's profile
+lists it in `accept_from`. It sees them once; a turn cut by a restart loses
+them. `angelia export <platform:chat>` shows them with a `source` field. A script that posts with
+the owner's token names itself with `--source`.
 
 **Usage limit.** The chat hears the CLI's own limit line plus how to switch: `/model sonnet` for
 this session only; `/model default` once the limit resets.

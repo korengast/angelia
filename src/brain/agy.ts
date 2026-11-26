@@ -112,7 +112,7 @@ export function createOnly(path: string, text: string, mode: number): boolean {
 /** Every process below `root`, whatever its process group or session: agy runs each command in a
  *  shell of its own on a PTY, a new session, which a kill of agy's group does not reach (red team
  *  round 2). Read from `ps` before anything is killed, while they are still below it. */
-export function descendants(root: number, table = (): string => spawnSync('/bin/ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8', timeout: 5000 }).stdout ?? ''): number[] {
+export function descendants(root: number, table = (): string => spawnSync('/bin/ps', ['-Ao', 'pid=,ppid='], { encoding: 'utf8', timeout: 5000 }).stdout ?? ''): number[] {
   const kids = new Map<number, number[]>();
   for (const line of table().split('\n')) {
     const [pid, ppid] = line.trim().split(/\s+/).map(Number);

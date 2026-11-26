@@ -66,11 +66,17 @@ function failed(what: string, e: unknown): Error {
 /** `angelia send <platform:chat> <text>` and `angelia turn <platform:chat> <text | - | @file>`: talk to the running daemon. */
 export async function localCall(kind: 'send' | 'turn', argv: string[]): Promise<void> {
   const [key, ...rest] = argv;
-  if (!key || !rest.length) throw new Error(`usage: angelia ${kind} <platform:chat> <text | - | @file> (@file: the whole text is @ and a path to an existing file)`);
+  const usage = `usage: angelia ${kind} <platform:chat> ${kind === 'send' ? '[--source <label>] ' : ''}<text | - | @file> (@file: the whole text is @ and a path to an existing file)`;
+  // `--source` (send only) goes right after the chat or at the very end, so a text may hold the words.
+  let source: string | undefined;
+  if (kind === 'send' && rest[0] === '--source') source = rest.splice(0, 2)[1] ?? '';
+  else if (kind === 'send' && rest.length >= 2 && rest[rest.length - 2] === '--source') source = rest.splice(-2)[1];
+  else if (kind === 'send' && rest.at(-1) === '--source') throw new Error(`--source needs a label\n${usage}`);
+  if (!key || !rest.length || source === '') throw new Error(usage);
   const what = kind === 'send' ? 'not sent' : 'not queued';
   let text: string;
   try { text = textArg(rest); } catch (e) { throw failed(what, e); }
-  try { await apiCall(kind, key, text); } catch (e) { throw failed(what, e); }
+  try { await apiCall(kind, key, text, source); } catch (e) { throw failed(what, e); }
   console.log(kind === 'send' ? 'sent' : 'queued');
 }
 
@@ -87,10 +93,11 @@ export async function askCall(argv: string[]): Promise<string> {
 }
 
 /** One send or turn through the running daemon's API. An agent says which chat it is (its session
- *  key), so its token also works toward another profile's chat when the daemon allows that. */
-export async function apiCall(kind: 'send' | 'turn', key: string, text: string): Promise<void> {
+ *  key), so its token also works toward another profile's chat when the daemon allows that.
+ *  `source` (send only): who posted (`job <name>` from a job). */
+export async function apiCall(kind: 'send' | 'turn', key: string, text: string, source?: string): Promise<void> {
   const from = process.env.ANGELIA_API_TOKEN ? process.env.ANGELIA_SESSION_KEY : undefined;
-  await post(`/${kind}`, { token: token(), key, text, ...(from && from !== key ? { from } : {}) });
+  await post(`/${kind}`, { token: token(), key, text, ...(from && from !== key ? { from } : {}), ...(source && kind === 'send' ? { source } : {}) });
 }
 
 /** `angelia send-media <platform:chat> <absolute path> [caption]`, with `--name` and `--no-voice`. */
@@ -102,10 +109,11 @@ export async function sendMediaCall(argv: string[]): Promise<void> {
     if (a === '--no-voice') flags.voice = false;
     else if (a === '--name') flags.file_name = argv[++n] ?? '';
     else if (a === '--caption') flags.caption = argv[++n] ?? '';
+    else if (a === '--source') flags.source = argv[++n] ?? '';
     else words.push(a);
   }
   const [key, path, ...rest] = words;
-  if (!key || !path) throw new Error('usage: angelia send-media <platform:chat> <absolute path> [caption] [--name FILE] [--no-voice]');
+  if (!key || !path) throw new Error('usage: angelia send-media <platform:chat> <absolute path> [caption] [--name FILE] [--no-voice] [--source LABEL]');
   if (rest.length && flags.caption === undefined) flags.caption = rest.join(' ');
   await post('/send-media', { token: token(), key, path: resolve(path), ...flags });
   console.log('sent');

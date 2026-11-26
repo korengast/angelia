@@ -8,6 +8,7 @@ import { isLimitText } from '../core/deliver/text.js';
 import type { BrainEvent } from '../core/types.js';
 import { Config } from '../instance/config/schema.js';
 import { INSTANCE_DIR } from '../instance/instance.js';
+import { API_ERROR, isApiErrorReason, loginLost } from './api-error.js';
 import { childEnv } from './argv.js';
 import { catalog } from './catalog.js';
 import { DEFAULT_BIN, locateBin } from './locate.js';
@@ -103,28 +104,25 @@ export interface CanaryRig {
 
 /** How TuiBrain says a turn ended, from its log lines (tui.ts, `ended`): by the Stop hook's marker, or
  *  by the quiet pane when no marker came. `seconds` is the turn's length as that line counts it. */
-export function turnEnd(logs: string[]): { by: 'stop' | 'quiet'; seconds: number } | null {
+export function turnEnd(logs: string[]): { by: 'stop' | 'quiet' | 'api-error'; seconds: number } | null {
   const line = logs.filter((l) => l.startsWith('tmux: turn ended by ')).pop();
   const m = line && /^tmux: turn ended by (.*) after (\d+) s, answer \d+ chars/.exec(line);
   if (!m) return null;
-  const by = m[1].startsWith('the Stop marker') ? 'stop' : 'quiet';
+  const by = m[1].endsWith('as an API error') ? 'api-error' : m[1].startsWith('the Stop marker') ? 'stop' : 'quiet';
   return { by, seconds: Number(m[2]) };
 }
 
-/** The CLI lost its login: only `claude` then `/login` on the host helps. Kept to what Claude Code
- *  and the API say for it. */
-const LOGIN = /not logged in|please run \/login|invalid api key|oauth token (has )?expired|authentication_error/i;
-export const loginLost = (text: string): boolean => LOGIN.test(text);
-
 const cut = (text: string, max = 120): string => { const t = text.replace(/\s+/g, ' ').trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; };
 
-/** Why a turn's result says nothing about the build: the plan ran out, or the CLI lost its login.
- *  Any build ends such a turn the same way. Null: the result can be judged. A short answer that is
- *  the CLI's own login line (it comes as the turn's text) counts as a lost login. */
+/** Why a turn's result says nothing about the build: the plan ran out, the API call failed, or the
+ *  CLI lost its login. Any build ends such a turn the same way. Null: the result can be judged. */
 export function cannotJudge(r: { text: string; isError: boolean; reason?: string }): string | null {
   if (isLimitText(r.text)) return `the plan's usage limit was reached ("${cut(r.text)}")`;
+  if (!r.isError) return null;
   const reason = r.reason ?? '';
-  if ((r.isError && loginLost(reason)) || (r.text.length < 200 && loginLost(r.text))) return `Claude Code lost its login ("${cut(r.text || reason)}")`;
+  const said = isApiErrorReason(reason) ? reason.slice(API_ERROR.length) : reason;
+  if (loginLost(reason) || loginLost(r.text)) return `Claude Code lost its login ("${cut(said || r.text)}")`;
+  if (isApiErrorReason(reason)) return isLimitText(said) ? `the plan's usage limit was reached ("${cut(said)}")` : `the model's API call failed ("${cut(said)}")`;
   return null;
 }
 

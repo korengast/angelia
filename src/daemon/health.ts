@@ -18,7 +18,7 @@ import type { Config } from '../instance/config/schema.js';
  */
 
 /** Counted per chat, and so per profile. */
-export const COUNTERS = ['turns', 'noAnswer', 'failed', 'stalled', 'errors', 'deliverFailed', 'quietEnds', 'quietEmpty', 'heldOpen', 'freshRetries', 'autoDenied', 'keyMiss'] as const;
+export const COUNTERS = ['turns', 'noAnswer', 'failed', 'stalled', 'errors', 'deliverFailed', 'quietEnds', 'quietEmpty', 'heldOpen', 'apiErrors', 'freshRetries', 'autoDenied', 'keyMiss'] as const;
 export type Counter = (typeof COUNTERS)[number];
 /** Counted for the daemon as a whole: its lines name no chat. */
 export const DAEMON_COUNTERS = ['starts', 'whatsappDrops', 'sendRetries'] as const;
@@ -27,7 +27,7 @@ export type DaemonCounter = (typeof DAEMON_COUNTERS)[number];
 /** A column's head in the table. `turns` are tmux-mode turns only: see TURNS_NOTE. */
 const LABEL: Record<Counter, string> = {
   turns: 'tmux turns', noAnswer: 'no answer', failed: 'failed', stalled: 'stalled', errors: 'errors', deliverFailed: 'deliver failed',
-  quietEnds: 'quiet ends', quietEmpty: 'quiet, empty', heldOpen: 'held open', freshRetries: 'fresh retries', autoDenied: 'auto-denied', keyMiss: 'key miss',
+  quietEnds: 'quiet ends', quietEmpty: 'quiet, empty', heldOpen: 'held open', apiErrors: 'api errors', freshRetries: 'fresh retries', autoDenied: 'auto-denied', keyMiss: 'key miss',
 };
 const DAEMON_LABEL: Record<DaemonCounter, [one: string, many: string]> = {
   // `send failed, again in N s`: the daemon tries the same send again, so each line is a retry, not a lost message.
@@ -177,6 +177,7 @@ export class HealthCount {
     else if (text.startsWith('turn stalled key=')) this.add(day, row, 'stalled');
     else if (text.startsWith('turn error key=')) this.add(day, row, 'errors');
     else if (text.startsWith('deliver failed key=')) this.add(day, row, 'deliverFailed');
+    else if (text.startsWith('api error key=')) { this.add(day, row, 'apiErrors'); this.retried(ms, key); }
     else if (text.startsWith('retry with fresh session key=')) { this.add(day, row, 'freshRetries'); this.retried(ms, key); }
     else if (text.startsWith('permission auto-denied ')) this.add(day, row, 'autoDenied');
     else if (text.startsWith('tmux: marker dropped, prompt key miss:')) this.add(day, row, 'keyMiss');

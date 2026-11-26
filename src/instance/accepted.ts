@@ -24,7 +24,7 @@ export const ACCEPTED_FILE = join('compiled', 'table', 'accepted.json');
  *  outgoing rate is not here: without it a chat could flood the platform into banning the number. */
 const FREE_PROFILE = new Set(['model', 'effort', 'shell_timeout_seconds']);
 const FREE_ROUTE = new Set(['mention']);
-const FREE_DEFAULTS = new Set(['idle_exit_minutes', 'permission_timeout_minutes', 'turn_stall_minutes']);
+const FREE_DEFAULTS = new Set(['idle_exit_minutes', 'pane_idle_hours', 'permission_timeout_minutes', 'turn_stall_minutes']);
 
 const routeName = (r: Config['routes'][number]) => `${r.platform}:${r.chat}${r.thread !== undefined ? `#${r.thread}` : ''}`;
 

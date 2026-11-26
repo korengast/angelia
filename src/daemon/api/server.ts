@@ -14,7 +14,7 @@ import { openApiDocument } from './openapi.js';
 
 export interface ApiDeps {
   /** Post a line into a chat. `fromKey`: another profile's agent posted it, and the line says so. */
-  send(key: string, text: string, fromKey?: string): Promise<void>;
+  send(key: string, text: string, fromKey?: string, source?: string | null): Promise<void>;
   /** Type a prompt into a chat's session. `fromAgent`: an agent asked, with its own chat's token, so
    *  the prompt is plain text and never a CLI command; otherwise it runs as if an owner had sent it. */
   turn(key: string, text: string, fromAgent: boolean, fromKey?: string, surface?: 'app', turnId?: string, media?: string[]): Promise<void>;
@@ -25,7 +25,9 @@ export interface ApiDeps {
   command?(key: string, name: AppCommand): Promise<string>;
   /** Attach a file to a chat. `byOwner`: the owner's token asked; otherwise an agent did, and the file
    *  must be one its profile may read. Rejects with a MediaError whose message is safe to show. */
-  sendMedia(key: string, req: MediaRequest, byOwner: boolean): Promise<void>;
+  /** `source` (send and sendMedia): who posted it, as the chat's agent is told at its next turn;
+   *  `null`: the agent itself. */
+  sendMedia(key: string, req: MediaRequest, byOwner: boolean, source?: string | null): Promise<void>;
   /** Is `key` a routed chat? */
   routed(key: string): boolean;
   /** A question for chat `key`, answered in a read-only copy of its session (`angelia ask`). `fromKey`:
@@ -182,12 +184,20 @@ export class ApiServer {
       const no = this.d.reach ? this.d.reach(from, key) : 'profiles cannot message each other here';
       if (no) return json(res, { error: no }, 403);
     }
+    // Who posted, for the chat's agent: a peer is always its profile (notify labels it); the owner's
+    // token is the owner unless it says otherwise (a job names itself); the chat's own token is the
+    // agent itself, which is not told its own words back, unless it names a source.
+    const label = sourceLabel(body.source);
+    if (label === null) return json(res, { error: `source must be a printable text of at most ${SOURCE_MAX} characters, without [ ] or ·` }, 400);
+    // The agent's own token may not pose as the owner, Angelia or a profile; a job's `job <name>` is its own.
+    if (who === 'chat' && label && SOURCE_RESERVED.test(label)) return json(res, { error: 'source: owner, angelia and profile are not a script\'s to claim' }, 400);
+    const source = who === 'peer' ? undefined : label ?? (who === 'owner' ? 'owner' : null);
     if (route === '/send-media') {
       const path = String(body.path ?? '');
       if (!key || !path) return json(res, { error: 'key and path required' }, 400);
       if (!this.d.routed(key)) return json(res, { error: 'not a routed chat' }, 404);
       try {
-        await this.d.sendMedia(key, { path, caption: body.caption ? String(body.caption) : undefined, voice: body.voice === undefined ? undefined : body.voice !== false, fileName: body.file_name ? String(body.file_name) : undefined }, who === 'owner');
+        await this.d.sendMedia(key, { path, caption: body.caption ? String(body.caption) : undefined, voice: body.voice === undefined ? undefined : body.voice !== false, fileName: body.file_name ? String(body.file_name) : undefined }, who === 'owner', source);
       } catch (e) {
         if (e instanceof MediaError) return json(res, { error: e.message }, 400);
         throw e;
@@ -215,8 +225,8 @@ export class ApiServer {
       // `MEDIA:<absolute path>` lines are honoured here too, so a script that already writes them
       // can post text and files in one call.
       const { text: rest, media } = who === 'peer' ? { text, media: [] } : extractMediaTags(text);
-      if (rest) await this.d.send(key, rest, who === 'peer' ? from : undefined);
-      try { for (const item of media) await this.d.sendMedia(key, item, who === 'owner'); }
+      if (rest) await this.d.send(key, rest, who === 'peer' ? from : undefined, source);
+      try { for (const item of media) await this.d.sendMedia(key, item, who === 'owner', source); }
       catch (e) { if (e instanceof MediaError) return json(res, { error: e.message }, 400); throw e; }
       return json(res, { ok: true, ...(media.length ? { media: media.length } : {}) });
     }
@@ -318,6 +328,21 @@ export function publicMessage(e: unknown): string {
   const code = (e as NodeJS.ErrnoException | undefined)?.code;
   if (typeof code === 'string' && /^E[A-Z]+$/.test(code)) return `a file could not be read (${code})`;
   return (e as Error | undefined)?.message ?? 'internal error';
+}
+
+/** A `source` label on /send and /send-media: this long at most, printable, trimmed, and never the
+ *  characters the agent's preface frames a label with (`[`, `]`, `·`). */
+export const SOURCE_MAX = 60;
+/** Labels only the daemon gives: the owner's token says `owner`, a peer is its profile, and Angelia's
+ *  own lines are `angelia`. A chat's own token may not claim them. */
+export const SOURCE_RESERVED = /^(owner|angelia|profile)\b/i;
+/** The label as given, trimmed; undefined when none was given; null when it is not a label. */
+export function sourceLabel(v: unknown): string | undefined | null {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!s || s.length > SOURCE_MAX || /[\p{C}[\]·]/u.test(s)) return null;
+  return s;
 }
 
 /** The token of one chat's agent: stable across restarts, so a tmux pane that outlives the daemon

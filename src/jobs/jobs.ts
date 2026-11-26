@@ -335,7 +335,8 @@ export function installedJobs(stateDir: string, home = homedir()): Map<string, s
 
 /** `asChat`: the text came from code the agent could have written (a `run:` job's output), so it is
  *  sent with the chat's own token and held to the profile's rules, never with the owner's. */
-export interface Deliver { (kind: 'send' | 'turn', key: string, text: string, asChat?: boolean): Promise<void> }
+/** `source`: who posted, for the chat's agent at its next turn: `job <name>` for every line a job sends. */
+export interface Deliver { (kind: 'send' | 'turn', key: string, text: string, asChat?: boolean, source?: string): Promise<void> }
 
 /** Is the profile's agent held by an OS sandbox? Then so is its `run:` job: the script it runs sits
  *  in a folder that agent may write, and a timer outside the sandbox would run whatever it wrote. */
@@ -393,7 +394,8 @@ export async function runJob(cfg: Config, profile: string, name: string, deliver
     if (opts.hash && late > AT_GRACE_MS) throw new JobMissed(`job ${profile}/${name} was due at ${j.at}; its timer fired more than ${AT_GRACE_MS / 3600_000} h after that (the Mac was asleep, off or logged out then), so it does not run`);
   }
   const chat = jobChat(cfg, profile, name, j);
-  if (j.send) { await deliver('send', chat, j.send); return `sent to ${chat}`; }
+  const source = `job ${name}`;
+  if (j.send) { await deliver('send', chat, j.send, undefined, source); return `sent to ${chat}`; }
   if (j.turn) { await deliver('turn', chat, j.turn); return `turn queued in ${chat}`; }
   // What the profile's agent gets: no bot token, no billing variable, and only its own secrets.
   const env = profileEnv(opts.env ?? process.env, opts.secrets ?? {}, tableSecrets(cfg), capabilityEnv(cfg, profile)).env;
@@ -405,12 +407,12 @@ export async function runJob(cfg: Config, profile: string, name: string, deliver
   if (r.code !== 0) {
     const why = r.timedOut ? `stopped after ${j.timeout_seconds} s` : `exit ${r.code}`;
     const last = r.err.trim().split('\n').pop()?.slice(0, 300) ?? '';
-    await deliver('send', chat, `Scheduled job ${name} failed (${why})${last ? `: ${last}` : ''}`, true);
+    await deliver('send', chat, `Scheduled job ${name} failed (${why})${last ? `: ${last}` : ''}`, true, source);
     return `failed ${why}`;
   }
   const text = r.out.trim();
   if (!text || text === SILENT) return 'ran, nothing to send';
-  await deliver('send', chat, text, true);
+  await deliver('send', chat, text, true, source);
   return `ran, sent ${text.length} chars to ${chat}`;
 }
 

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { Profile } from '../instance/config/schema.js';
 import { cleanText, type BrainEvent, type SelfPermission, type SelfWork, type UnaskedAnswer } from '../core/types.js';
 import { isLimitText, TMUX_STALLED } from '../core/deliver/text.js';
+import { apiErrorReason, apiErrorText, isApiErrorRow } from './api-error.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { blockedShort, deniedConnectorCount, PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
 import { addDirAccepted, addDirDialog, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
@@ -19,6 +20,7 @@ import { askedBy } from '../core/screen-asks.js';
 import { tuiBlockedConnectors } from './connectors-check.js';
 
 export { transcriptPath } from './transcripts.js';
+export { buildIn, paneActivity, paneBuild, paneEndReason, reapPanes, sweepPanes, type IdlePane } from './tui-panes.js';
 
 const HOOK = fileURLToPath(new URL('../../scripts/tui-stop-hook.mjs', import.meta.url));
 const PERMISSION_HOOK = fileURLToPath(new URL('../../scripts/tui-permission-hook.mjs', import.meta.url));
@@ -199,7 +201,7 @@ function addOurs(set: Set<string>, v: string): void {
 const CALLS_MAX = 500;
 
 /** How long a named teammate counts as open with no end of it read: it may never send one. */
-const TEAMMATE_MAX_MS = 12 * 60 * 60_000;
+export const TEAMMATE_MAX_MS = 12 * 60 * 60_000;
 
 /** The name of a spawned teammate, from its call's result (claude 2.1.332, measured: `name`, and
  *  `teammate_id` as `<name>@<team>`), as its messages to the lead name it (`teammate_id="<name>"`).
@@ -263,6 +265,38 @@ export function backgroundRows(chunk: string, calls: Map<string, 'bash' | 'agent
     }
   }
   return { starts, ends };
+}
+
+/** What a transcript read last said: by path, with the size and time it had then. */
+const openTasksRead = new Map<string, { size: number; mtime: number; open: Map<string, number> }>();
+
+/**
+ * The background shells, subagents and teammates a session's transcript leaves open: started (by
+ * backgroundRows), no end read, and started less than TEAMMATE_MAX_MS ago by the row's own time.
+ * Null when the file cannot be read: nobody can tell, so a caller keeps the pane. It is how the pane
+ * reap knows a pane's work after a restart, when no brain of this daemon tracked it (Orchestrator.
+ * mayEndPane). A file that did not change since the last read is not read again.
+ */
+export function openTasksInTranscript(path: string, now = Date.now()): number | null {
+  let st;
+  try { st = statSync(path); } catch { return null; }
+  let seen = openTasksRead.get(path);
+  if (!seen || seen.size !== st.size || seen.mtime !== st.mtimeMs) {
+    let text: string;
+    try { text = readFileSync(path, 'utf8'); } catch { return null; }
+    const calls = new Map<string, 'bash' | 'agent'>(), open = new Map<string, number>();
+    for (const line of text.split('\n')) {
+      if (!line.includes('tool_result') && !line.includes('tool_use') && !line.includes('task-notification')) continue;
+      const { starts, ends } = backgroundRows(line, calls);
+      // A row with no time of its own counts as started now: kept, rather than guessed old.
+      const at = Date.parse(/"timestamp"\s*:\s*"([^"]+)"/.exec(line)?.[1] ?? '');
+      for (const t of starts) open.set(t.id, Number.isNaN(at) ? now : at);
+      for (const id of ends) open.delete(id);
+    }
+    openTasksRead.set(path, seen = { size: st.size, mtime: st.mtimeMs, open });
+    if (openTasksRead.size > 200) openTasksRead.delete(openTasksRead.keys().next().value!);
+  }
+  return [...seen.open.values()].filter((at) => now - at < TEAMMATE_MAX_MS).length;
 }
 
 /** The team of a spawned teammate (`teammate_id` as `<name>@<team>`), when its result says it. */
@@ -470,6 +504,8 @@ export class TuiBrain extends EventEmitter implements Brain {
   private ready?: Promise<string | null>;
   private up = false;
   private transcript: string;
+  /** The transcript this brain reads now: the pane reap reads a parked pane's open tasks there. */
+  get transcriptFile(): string { return this.transcript; }
   private at = 0;
   /** Where this turn's rows begin in the transcript, for reading how a request answered in the pane went. */
   private from = 0;
@@ -497,6 +533,10 @@ export class TuiBrain extends EventEmitter implements Brain {
   /** The named teammates spawned in this session and still open (no end of theirs read, and spawned
    *  less than TEAMMATE_MAX_MS ago), by name: the tool_use id of the call that spawned it, and when. */
   private openTeammates = new Map<string, { id: string; at: number }>();
+  /** The background tasks open here, of any kind (a shell command, a subagent, a teammate; started by
+   *  anyone), by tool_use id, and when: no end read, and not past TEAMMATE_MAX_MS. What keeps the
+   *  pane from the reaps. */
+  private openTasks = new Map<string, number>();
   /** The names of the teammates spawned in Angelia's turns (the Agent tool with a `name`): a turn their
    *  message starts is the chat's, as a task's end is. */
   private oursTeammates = new Set<string>();
@@ -1458,6 +1498,8 @@ export class TuiBrain extends EventEmitter implements Brain {
     const dialogs = new DialogWatch();
     const screen = new ScreenDialogs();
     let quietSince = 0, held = false, grewAt = 0, failed = false;
+    // A failed API call written as the turn's last words (api-error.ts): no answer, whatever the hook says.
+    let apiFailed: string | null = null;
     // The screen above the box's foot, and when it last changed.
     let lastAbove = '', aboveAt = 0;
     const quietMs = this.opts.quietMs ?? QUIET_MS, quietTextMs = this.opts.quietTextMs ?? QUIET_TEXT_MS, quietOpenMs = this.opts.quietOpenMs ?? QUIET_OPEN_MS;
@@ -1491,6 +1533,8 @@ export class TuiBrain extends EventEmitter implements Brain {
         // This turn's reader: whether the CLI's error row is the last word it read (turnRows).
         if (this.at !== readTo) failed = this.rows === 'error';
         for (const ev of rows) {
+          if (ev.kind === 'api-error') { if (pending) yield { kind: 'progress', text: pending }; pending = null; apiFailed = ev.text; continue; }
+          apiFailed = null; // the turn went on after it
           if (ev.kind === 'text') { if (pending) yield { kind: 'progress', text: pending }; pending = ev.text; }
           else if (pending) { yield { kind: 'progress', text: pending }; pending = null; }
         }
@@ -1508,7 +1552,7 @@ export class TuiBrain extends EventEmitter implements Brain {
             const a = this.takeIdle(true, failed);
             if (a) yield { kind: 'unasked', ...a };
             // That error row was the other turn's: it says nothing of this turn's own answer.
-            failed = false;
+            failed = false; apiFailed = null;
             continue;
           }
           // A turn whose one typed prompt is not what this turn typed: someone pressed Enter in the
@@ -1520,7 +1564,7 @@ export class TuiBrain extends EventEmitter implements Brain {
             pending = null;
             const a = this.takeIdle(true, failed);
             if (a) yield { kind: 'unasked', ...a };
-            failed = false;
+            failed = false; apiFailed = null;
             continue;
           }
           if (m?.at && m.at >= sentAt && !command && m.origin === 'prompt' && m.prompts === 1 && typeof m.prompt_key === 'string' && this.typedKey && m.prompt_key !== this.typedKey && !this.followKeys.includes(m.prompt_key)) {
@@ -1546,8 +1590,9 @@ export class TuiBrain extends EventEmitter implements Brain {
           // The next turn's prompt row may be among the rows read in this poll or just now: its reader
           // looks for it from where this poll began to read (readTo).
           if (!background) { this.readTranscript(); this.closeAbsorbed(sentAt, readTo); }
-          ended('the Stop marker', done);
-          yield { kind: 'result', text: done, isError: false };
+          // The hook hands on the last assistant text, the error row's too: only another answer is one.
+          if (apiFailed !== null && (!done.trim() || done.trim() === apiFailed)) { ended('the Stop marker, as an API error', ''); yield { kind: 'result', text: apiFailed, isError: true, reason: apiErrorReason(apiFailed) }; }
+          else { ended('the Stop marker', done); yield { kind: 'result', text: done, isError: false }; }
           return;
         }
         // After the progress lines, so the chat reads what the agent said before what it asks to run.
@@ -1638,6 +1683,12 @@ export class TuiBrain extends EventEmitter implements Brain {
             const stood = { none: 'has no turn', command: 'has a slash command only', said: 'ends with text', error: 'ends with an error row of the CLI',
               open: `open, no new row and nothing moving above the input box for ${Math.round((Date.now() - Math.max(quietSince, grewAt, aboveAt)) / 1000)} s` }[this.rows];
             const how = `the quiet pane (no Stop marker; transcript ${stood})`;
+            if (apiFailed !== null) {
+              if (!background) this.closeAbsorbed(sentAt, readTo);
+              ended(`${how}, as an API error`, '');
+              yield { kind: 'result', text: apiFailed, isError: true, reason: apiErrorReason(apiFailed) };
+              return;
+            }
             const answer = pending ?? '';
             ended(how, answer);
             // The Stop marker may still come (a failed read of the screen, a slow hook): then it is this
@@ -2182,10 +2233,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     return keys.length ? keys : undefined;
   }
 
-  /** The named teammates still open here, their ends read first when no turn is: the pane is not reaped. */
-  openTeammateCount(): number {
-    if (this.up && this.turnSentAt === undefined && this.openTeammates.size) this.readTranscript();
-    return [...this.openTeammates.keys()].filter((n) => this.teammateOpen(n)).length;
+  /** The background tasks and teammates still open here, their ends read first when no turn is: the
+   *  pane is not reaped. */
+  openTaskCount(): number {
+    if (this.up && this.turnSentAt === undefined && this.openTasks.size) this.readTranscript();
+    for (const [id, at] of this.openTasks) if (Date.now() - at >= TEAMMATE_MAX_MS) this.openTasks.delete(id);
+    return this.openTasks.size;
   }
 
   /** A typed prompt's key is one of the chat's own: the turn closed on the quiet path, or a message
@@ -2283,9 +2336,13 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (!line.includes('tool_result') && !line.includes('tool_use') && !line.includes('task-notification')) return;
     const { starts, ends } = backgroundRows(line, this.calls);
     for (const s of starts) {
+      this.openTasks.set(s.id, Date.now());
+      if (this.openTasks.size > OURS_MAX) this.openTasks.delete(this.openTasks.keys().next().value!);
       if (s.teammate) {
         // The one of that name before it is over: its marks go with it.
         if (this.endedTeammates.has(s.teammate)) this.dropEnded([s.teammate]);
+        const before = this.openTeammates.get(s.teammate);
+        if (before && before.id !== s.id) this.openTasks.delete(before.id);
         this.openTeammates.delete(s.teammate);
         this.openTeammates.set(s.teammate, { id: s.id, at: Date.now() });
         if (this.openTeammates.size > OURS_MAX) this.openTeammates.delete(this.openTeammates.keys().next().value!);
@@ -2295,7 +2352,10 @@ export class TuiBrain extends EventEmitter implements Brain {
       this.pendingSpawns.push({ id: s.id, at: this.rowAt, ...(s.teammate ? { teammate: s.teammate } : {}), ...(s.team ? { team: s.team } : {}) });
       if (this.pendingSpawns.length > OURS_MAX) this.pendingSpawns.shift();
     }
-    for (const id of ends) for (const [name, t] of this.openTeammates) if (t.id === id) { this.openTeammates.delete(name); this.endedTeammates.add(name); }
+    for (const id of ends) {
+      this.openTasks.delete(id);
+      for (const [name, t] of this.openTeammates) if (t.id === id) { this.openTeammates.delete(name); this.endedTeammates.add(name); }
+    }
   }
 
   /** A named teammate of that name is open here: spawned, no end of it read, and not past TEAMMATE_MAX_MS. */
@@ -2307,6 +2367,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   /** No teammate name ties a turn to the chat any more, and nothing waits to be settled. Task ids stay
    *  (`ours`): each is one call's, so no one else's work can take one on. */
   private forgetTeammates(): void {
+    this.openTasks.clear();
     this.openTeammates.clear();
     this.oursTeammates.clear();
     this.peerTeammates.clear();
@@ -2335,26 +2396,6 @@ export class TuiBrain extends EventEmitter implements Brain {
   }
 
   kill(): void { void this.stop(); }
-}
-
-/**
- * End the panes on Angelia's tmux server that no chat will reach again: a name with one of this
- * table's tui prefixes that is not in `keep`, sitting idle. A daemon restart forgets which panes it
- * released, and a /new after that would otherwise leave the old one running for good, with its MCP
- * servers, its permissions and its Remote Control registration. A busy pane is left alone.
- */
-export async function sweepPanes(keep: Set<string>, prefixes: string[], env: NodeJS.ProcessEnv): Promise<string[]> {
-  if (!prefixes.length) return [];
-  const list = await tmux(['list-sessions', '-F', '#{session_name}'], { env });
-  if (list.code !== 0) return [];
-  const gone: string[] = [];
-  for (const name of list.out.split('\n').filter(Boolean)) {
-    if (keep.has(name) || !prefixes.some((p) => name.startsWith(p))) continue;
-    const pane = await tmux(['capture-pane', '-p', '-t', name, '-S', '-30'], { env });
-    if (pane.code !== 0 || !paneIdle(pane.out)) continue;
-    if ((await tmux(['kill-session', '-t', name], { env })).code === 0) gone.push(name);
-  }
-  return gone;
 }
 
 /**
@@ -2440,7 +2481,7 @@ export function turnRows(chunk: string, state: TurnRows = 'none'): TurnRows {
     const content = row.message?.content;
     const blocks = (typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []) as { type?: unknown; text?: unknown; is_error?: unknown; content?: unknown }[];
     if (row.type === 'assistant') {
-      if (row.isApiErrorMessage === true || (typeof row.error === 'string' && row.error.length > 0)) { state = 'error'; continue; }
+      if (isApiErrorRow(row)) { state = 'error'; continue; }
       for (const b of blocks) {
         if (b?.type === 'text') { if (String(b.text ?? '').trim()) state = 'said'; }
         // A tool call, or thinking: the model is at work.
@@ -2462,7 +2503,8 @@ export function turnRows(chunk: string, state: TurnRows = 'none'): TurnRows {
   return state;
 }
 
-export type TranscriptEvent = { kind: 'text'; text: string } | { kind: 'tool' };
+/** `api-error`: Claude Code's own row for a failed API call (api-error.ts), never the agent's words. */
+export type TranscriptEvent = { kind: 'text'; text: string } | { kind: 'tool' } | { kind: 'api-error'; text: string };
 
 /** Assistant text and tool calls, in order, from a slice of a Claude Code transcript. */
 export function transcriptEvents(chunk: string): TranscriptEvent[] {
@@ -2471,6 +2513,8 @@ export function transcriptEvents(chunk: string): TranscriptEvent[] {
     let row: { type?: string; message?: { content?: unknown } };
     try { row = JSON.parse(line); } catch { continue; }
     const content = row?.message?.content;
+    const failed = apiErrorText(row);
+    if (failed !== null) { out.push({ kind: 'api-error', text: failed }); continue; }
     if (row?.type !== 'assistant' || !Array.isArray(content)) continue;
     for (const b of content as { type?: string; text?: string }[]) {
       if (b?.type === 'text' && String(b.text ?? '').trim()) out.push({ kind: 'text', text: String(b.text).trim() });

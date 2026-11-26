@@ -26,6 +26,8 @@ export const TMUX_STALLED_LINE = 'tmux on this Mac did not answer for over a min
 /** tmux mode: the session was handed to another reader (a handoff) while this message waited for the
  *  prompt, so it was never typed. No ids in it. */
 export const RELEASED_LINE = 'Your message did not reach the agent: the session changed while the message waited. Send the message again.';
+/** A turn that still found the CLI logged out after one retry (orchestrator, API_RETRY_MS). */
+export const LOGIN_LOST_LINE = 'Claude Code on this Mac lost its login. Open Terminal, run claude, type /login, then send your message again.';
 export const PERMISSION_TIMEOUT_LINE = 'No answer to the permission request in time, so it was denied.';
 /** A turn that ended well with nothing new for the chat. Grok Build ends its turn this way after a denial
  *  (measured 2026-10-27), so the chat saw its own "no" and then nothing; Claude Code in print mode, Codex
