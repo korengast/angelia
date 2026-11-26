@@ -26,6 +26,8 @@ export interface BrainOptions {
   promptTimeoutMs?: number;
   /** tmux mode: how long a paste may take to show in the input box (tui.ts: LAND_MS). Tests shorten it. */
   landMs?: number;
+  /** tmux mode: how long a new pane may take to reach a prompt (tui.ts: START_TIMEOUT_MS). Tests shorten it. */
+  startTimeoutMs?: number;
   /** tmux mode: how long a tool call must have run before a chat message is typed into its turn (tui.ts: CALL_SETTLE_MS). Tests shorten it. */
   callSettleMs?: number;
   /** tmux mode: how long after a PreToolUse hook ended no chat message is typed into the turn (tui.ts: PRETOOL_SETTLE_MS). Tests shorten it. */

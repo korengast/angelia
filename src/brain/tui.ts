@@ -11,7 +11,7 @@ import { isLimitText, NOT_RUN, TMUX_STALLED } from '../core/deliver/text.js';
 import { apiErrorReason, apiErrorText, isApiErrorRow } from './api-error.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { blockedShort, deniedConnectorCount, PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
-import { addDirAccepted, addDirDialog, boxHoldsOnly, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { addDirAccepted, addDirDialog, boxHoldsOnly, boxText, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, resumeDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { HOOK_GIVE_UP_MS, paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs, type RelayedRequest, type RequestOrigin } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { mcpLaunch, readRecord } from '../capabilities/compile.js';
@@ -41,6 +41,9 @@ const TMUX_STALLS = 3;
 const connectorChecks = new Set<string>();
 /** How long claude's add-dir dialog must stand before keys reach it (it drops them for ~1 s, 2.1.326). */
 const ADD_DIR_SETTLE_MS = 1500;
+/** How many tries one launch, reattach or waiting message has at the resume dialog: one answer, tried again
+ *  only while the dialog still stands (a new dialog may drop a key). */
+const RESUME_PRESSES = 3;
 const START_TIMEOUT_MS = 90_000;
 /** How long a message waits for the pane's prompt. Past it the message goes back to the chat as not
  *  delivered, and a pane that works or waits for a person is kept (notTyped). */
@@ -53,6 +56,10 @@ const PASTE_TRIES = 3;
 /** How a paste went. `keep`: the pane is alive and was left as it was, so it must not be ended for
  *  this: it may hold background agents, a dialog for a person, or a turn of its own. `why`: for the chat. */
 type Pasted = { ok: true } | { ok: false; why: string; keep: boolean };
+
+/** The tries at one stand of the resume dialog (resumeStep). */
+interface ResumeTries { at: number; pressedAt: number; presses: number; logged: Set<string> }
+const noTries = (): ResumeTries => ({ at: 0, pressedAt: 0, presses: 0, logged: new Set() });
 
 /** The reason of a turn whose message was not typed into a live pane that is kept: the chat is told to
  *  send it again (core/deliver/text.ts, notDeliveredLine), and the pane is not ended. */
@@ -753,6 +760,9 @@ export class TuiBrain extends EventEmitter implements Brain {
     let resume = this.session.started;
     this.checkOtherHooks();
     if (await this.sessionAlive()) {
+      // A daemon restart during a start, or an idle pane that asks: nothing else would answer it.
+      const tries = noTries();
+      while ((await this.resumeStep(await this.capture(40), tries)) === 'wait') await sleep(250);
       if (this.launchedWith() === this.fingerprint(true)) return null;
       if (!paneIdle(await this.capture(40))) return null;
       await this.tm(['kill-session', '-t', this.name]);
@@ -806,10 +816,11 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (r.code !== 0) { rmSync(this.envPath, { force: true }); return `tmux could not start the session: ${r.err.trim() || 'new-session failed'}`; }
     writeFileSync(this.launchPath, this.fingerprint(resume));
     this.up = true;
-    const deadline = Date.now() + START_TIMEOUT_MS;
+    const deadline = Date.now() + (this.opts.startTimeoutMs ?? START_TIMEOUT_MS);
     let asked: { dir: string; at: number; answered: number } | undefined;
     const answered = new Set<string>();
     let unlisted: string | undefined;
+    const cold = noTries();
     while (Date.now() < deadline) {
       // The pane is gone with its output, so say what was run and where: that is the one way to see why.
       if (!(await this.sessionAlive())) { this.up = false; return `${START_EXIT} (${argv[0]} in ${this.profile.cwd}; run it there by hand to see why)`; }
@@ -819,6 +830,9 @@ export class TuiBrain extends EventEmitter implements Brain {
       // stale frame in the history (between two rules) pass for a box while a dialog is open.
       if (trustDialogOpen(pane)) { await this.acceptDialog(trustDialogOpen, trustAccepted); continue; }
       if (importsDialogOpen(pane)) { await this.acceptDialog(importsDialogOpen, importsAccepted); continue; }
+      // Only a --resume launch asks it here. Past the last try it stands, and the start fails with its screen kept.
+      const cool = resume ? await this.resumeStep(pane, cold) : 'none';
+      if (cool !== 'none') { await sleep(250); continue; }
       const dir = addDirDialog(pane);
       if (dir !== null) {
         // claude 2.1.326 drops keys for about a second after it draws this dialog (measured: Down and
@@ -890,6 +904,43 @@ export class TuiBrain extends EventEmitter implements Brain {
     return false;
   }
 
+  /** One look at the resume dialog, if `pane` shows it open on a session not at work. It stands a settle
+   *  time before a key, a key gets time to land, and there are RESUME_PRESSES tries. 'none': no dialog.
+   *  'spent': it stands after the last try. 'wait': look again. */
+  private async resumeStep(pane: string, t: ResumeTries): Promise<'none' | 'wait' | 'spent'> {
+    if (!resumeDialog(pane) || paneBusy(pane)) return 'none';
+    t.at ||= Date.now();
+    if (Date.now() - t.at < ADD_DIR_SETTLE_MS || Date.now() - t.pressedAt < ADD_DIR_SETTLE_MS * 2) return 'wait';
+    if (t.presses >= RESUME_PRESSES) return 'spent';
+    t.presses++;
+    const how = await this.answerResume();
+    t.pressedAt = Date.now();
+    if (how && !t.logged.has(how)) {
+      t.logged.add(how);
+      this.emit('log', how === 'refused'
+        ? `pane ${this.name} shows the resume dialog, and the cursor did not reach "Resume": no Enter pressed`
+        : `pane ${this.name} answered the resume dialog with ${how}: resume`);
+    }
+    return 'wait';
+  }
+
+  /** Chooses "Resume", never the new conversation: Esc where the dialog says Esc resumes or dismisses, else
+   *  Enter with the cursor on "Resume", after one Up when it is not. Null: the dialog closed before a key. */
+  private async answerResume(): Promise<'Esc' | 'Enter' | 'refused' | null> {
+    let d = resumeDialog(await this.capture(40));
+    if (!d) return null;
+    if (d.esc) { await this.tm(['send-keys', '-t', this.name, 'Escape']); return 'Esc'; }
+    if (!d.onResume) {
+      await this.tm(['send-keys', '-t', this.name, 'Up']);
+      await sleep(300);
+      d = resumeDialog(await this.capture(40));
+      if (!d) return null;
+      if (!d.onResume) return 'refused';
+    }
+    await this.tm(['send-keys', '-t', this.name, 'Enter']);
+    return 'Enter';
+  }
+
   private async sessionAlive(): Promise<boolean> {
     const r = await this.tm(['has-session', '-t', this.name]);
     this.up = r.code === 0;
@@ -916,12 +967,15 @@ export class TuiBrain extends EventEmitter implements Brain {
     // Whether the screen changed while the message waited: a CLI at work redraws its spinner clock,
     // background agents their rows. A screen that never moved for the whole wait is a hung CLI.
     let moved = false;
+    const tries = noTries();
     for (let attempt = 1; ; attempt++) {
       let pane = await this.capture(30);
       while (!paneIdle(pane)) {
         if (!(await this.sessionAlive())) return { ok: false, why: 'exit', keep: false };
         if (gen !== this.gen) return { ok: false, why: 'released', keep: true };
         if (Date.now() > deadline) return this.notTyped(pane, moved);
+        // An idle session may ask whether to resume: nobody else answers, and the message would wait it out.
+        await this.resumeStep(pane, tries);
         await sleep(POLL_MS);
         const now = await this.capture(30);
         if (now !== pane) moved = true;
