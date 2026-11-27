@@ -995,6 +995,14 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  is typed into the new pane instead of failing the turn. Never after an Enter: the message may have
    *  run. True once the new pane is at its prompt. */
   private async relaunch(): Promise<boolean> {
+    // The dead process's work died with it, as a fresh launch starts: no request of its waits for an
+    // answer, no task or teammate of its can end, and what it spawned between turns is nobody's.
+    this.permissions.clear();
+    this.forgetSelfAsks();
+    this.forgetTeammates();
+    this.ours.clear();
+    this.peerIds.clear();
+    this.calls.clear();
     const resume = this.session.started || fileSize(this.transcript) > 0;
     const why = await this.ensure(resume);
     this.emit('log', `tmux: the session of pane ${this.name} is gone before the message was typed; ${why === null ? `launched again${resume ? ' (resume)' : ''}` : `the launch failed: ${why}`}`);

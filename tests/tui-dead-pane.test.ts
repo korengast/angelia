@@ -33,6 +33,37 @@ test('a warm pane whose session is gone before the next message: launched again 
   assert.ok(c.log.some((l) => /tmux: the session of pane \S+ is gone before the message was typed; launched again/.test(l)), c.log.join('\n'));
 });
 
+// Review fix (Fable, 0.4.10): the relaunch kept the dead process's state. Its tasks and teammates
+// died with it and its requests wait for nobody, so the brain starts as a fresh launch does.
+test('the launch again starts the brain fresh: no task, teammate, spawn or request of the dead process', { timeout: 30_000 }, async (t) => {
+  const c = await stubChat(); t.after(() => c.o.shutdown());
+  c.onEnter((n, p) => {
+    if (n === 1) { p.rows(p.prompt(), ...ROW.background('toolu_1'), ...ROW.teammate('toolu_2', 'scout'), ROW.text('Answer 1.')); p.stop('Answer 1.'); }
+    else answer(n, p);
+  });
+  await c.say('one');
+  const b = c.brain();
+  assert.ok(b.ours.has('toolu_1') && b.oursTeammates.has('scout') && b.openTasks.size > 0, 'the first turn\'s work is the chat\'s');
+  // Between turns: a spawn not settled yet, a request the chat was asked, one asked between turns.
+  b.pendingSpawns.push({ id: 'toolu_9', at: 0 });
+  b.permissions.add('req-1');
+  b.selfBook.add('req-2');
+  assert.equal(b.pendingPermissionCount, 2);
+  const p = c.pane();
+  p.die();
+  await c.say('two');
+  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}`);
+  assert.equal(c.brain(), b, 'the same brain, launched again in place');
+  assert.equal(b.pendingPermissionCount, 0, 'no request of the dead process waits');
+  assert.equal(b.hasPendingPermission('req-1'), false);
+  assert.equal(b.ours.size, 0);
+  assert.equal(b.peerIds.size, 0);
+  assert.equal(b.oursTeammates.size, 0);
+  assert.equal(b.openTeammates.size, 0);
+  assert.equal(b.openTasks.size, 0);
+  assert.deepEqual(b.pendingSpawns, [], 'what it spawned between turns is nobody\'s');
+});
+
 test('the same, and that launch fails: the turn fails as before, after one try', { timeout: 30_000 }, async (t) => {
   const c = await stubChat(); t.after(() => c.o.shutdown());
   c.onEnter((n, p) => answer(n, p));
