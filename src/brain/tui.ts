@@ -1510,7 +1510,10 @@ export class TuiBrain extends EventEmitter implements Brain {
         if (!pane && !(await this.sessionAlive())) { this.turnSentAt = undefined; this.recording = false; this.stopBeat(); yield { kind: 'result', text: '', isError: true, reason: 'exit' }; return; }
         idleSince = paneIdle(pane) ? idleSince || Date.now() : 0;
         const quiet = !!idleSince && Date.now() - idleSince > (this.opts.quietMs ?? QUIET_MS);
-        if (quiet || Date.now() > until) {
+        // At the limit with the pane idle but not quiet yet (busy most of the wait, a long Stop hook):
+        // the wait goes on until it is quiet, at most QUIET_MS more, so a message Claude Code put back in
+        // the box is typed again (NOT_RUN below), not left for the next paste to clear (recheck-keymiss2).
+        if (quiet || (Date.now() > until && !idleSince)) {
           this.turnSentAt = undefined; this.recording = false; this.stopBeat(); this.startIdle();
           // Taken after all, in a row not read as theirs: nothing to say. But with no row from their
           // Enter on that gives them to the model (Claude Code put them back in the box, where the next
@@ -1522,6 +1525,10 @@ export class TuiBrain extends EventEmitter implements Brain {
             yield { kind: 'result', text: '', isError: true, reason: NOT_RUN };
             return;
           }
+          // Claude Code may still run them (a busy pane holds them in its queue): they wait as untaken
+          // again, so the reader between turns delivers that turn's marker (followerOf), never as a
+          // person's (fix-keymiss2).
+          this.absorbed.push(...f.msgs.filter((a) => !this.absorbed.some((x) => x.key === a.key && x.at === a.at)));
           this.emit('log', `tmux: no turn ran for the messages the last turn did not take pane=${this.name}`);
           yield { kind: 'result', text: '', isError: true, reason: 'nothing to follow' };
           return;
