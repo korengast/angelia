@@ -26,7 +26,7 @@ import { profileCacheDir } from '../brain/cache.js';
 import { chunk, LIMITS } from './deliver/chunk.js';
 import { assertOrigin, extractMediaTags, resolveMedia, snapshotMedia, MediaError, type Media, type MediaRequest } from './deliver/media.js';
 import { ProgressOutbox, RateLimiter } from './deliver/rate.js';
-import { failureLine, notDeliveredLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, LOGIN_LOST_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, RELEASED_LINE, selfCapLine, NOT_RUN, TMUX_STALLED, TMUX_STALLED_LINE, SELF_ASK_LINE, SELF_ASK_UNTIED_LINE } from './deliver/text.js';
+import { failureLine, notDeliveredLine, isLimitText, limitHint, AUTO_DENY_MESSAGE, AUTO_DENY_FAILED_LINE, autoDenyCapLine, DENIED_LINE, NO_ANSWER_LINE, UNMATCHED_LINE, NOT_OWNER_LINE, LATE_ANSWER_LINE, LOGIN_LOST_LINE, permissionLine, parsePermissionReply, parseBareAnswer, shortId, READ_FIRST_LINE, whichOneLine, answeredLine, pressedText, afterCloseLine, followsCloseLine, BUTTON_GONE_LINE, PERMISSION_TIMEOUT_LINE, RELEASED_LINE, selfCapLine, heldLine, NOT_RUN, TMUX_STALLED, TMUX_STALLED_LINE, SELF_ASK_LINE, SELF_ASK_UNTIED_LINE } from './deliver/text.js';
 import { parseCommand, HELP, statusText, resumeListText, type AppCommand } from './commands.js';
 import { briefTurn, handoffTarget, HandoffError, pickChat } from './handoff.js';
 import { runShell } from './shell.js';
@@ -220,6 +220,9 @@ const SELF_PER_HOUR = 6;
  *  own count, as a team of several sends many in an hour. A turn only idle notes started counts here
  *  too: nothing bounds how often a busy team sends them. */
 const TEAMMATE_PER_HOUR = 30;
+/** What one chat's held-back answers may be, both caps together; past either the oldest go. */
+const HELD_MAX = 20;
+const HELD_CHARS = 20_000;
 /** A sender who is not an owner went over max_in_per_hour: said at most once an hour. */
 export const SENDER_LIMIT_LINE = 'Too many messages. Wait up to one hour, then try again.';
 const BUSY_LINE = 'Still working through earlier messages in this chat, so this one was not taken. Send it again when I have answered.';
@@ -354,6 +357,9 @@ export class Orchestrator {
   private selfSent = new Map<string, { at: number[]; toldAt: number }>();
   /** The same for answers to teammates' messages (TEAMMATE_PER_HOUR). */
   private teammateSent = new Map<string, { at: number[]; toldAt: number }>();
+  /** Per chat, the answers those caps held back, oldest first, and how many were dropped for room. In
+   *  memory only: a restart loses them. */
+  private held = new Map<string, { list: { teammate: boolean; text: string }[]; dropped: number }>();
   /** Each chat's open permission requests by full id, so an answer by prefix (the chat's `y abcde`)
    *  is evented under the id the client was given, and a client that connects later can list them. */
   private asks = new Map<string, Map<string, WaitingPermission>>();
@@ -1523,8 +1529,8 @@ export class Orchestrator {
    * markers are one, and logs the ones that are not). `late`: the turn was closed without it and the
    * chat was told so, or got only its last line; it goes where that turn's answer went. `self`: the
    * agent was woken by background work a turn of the chat started; it goes to the chat, at most
-   * SELF_PER_HOUR an hour (TEAMMATE_PER_HOUR for teammates' messages, a teammate's idle note among
-   * them). Both are the agent's words, sent as an answer is. Never throws.
+   * SELF_PER_HOUR an hour, or the profile's self_per_hour (TEAMMATE_PER_HOUR for teammates' messages, a
+   * teammate's idle note among them), and the ones past it are held for later (sendHeld). Both are the agent's words, sent as an answer is. Never throws.
    */
   private async unasked(key: string, a: UnaskedAnswer): Promise<void> {
     const what = a.answer === 'late' ? 'late answer' : a.answer === 'midturn' ? 'mid-turn answer' : 'self-started answer';
@@ -1542,13 +1548,14 @@ export class Orchestrator {
         const prev = this.lastTurn.get(key);
         if (prev) to = prev;
       } else {
-        const now = Date.now();
-        const [book, max] = a.by === 'teammate' ? [this.teammateSent, TEAMMATE_PER_HOUR] : [this.selfSent, SELF_PER_HOUR];
-        const sent = book.get(key) ?? { at: [], toldAt: 0 };
-        sent.at = sent.at.filter((t) => t > now - 3600_000);
-        book.set(key, sent);
-        if (sent.at.length >= max) {
-          no('hourly-limit');
+        const now = Date.now(), teammate = a.by === 'teammate';
+        const { sent, max } = this.hourOf(key, teammate, profile, now);
+        // Behind answers already held too, so the chat reads them in order.
+        if (sent.at.length >= max || this.held.get(key)?.list.some((h) => h.teammate === teammate)) {
+          const full = sent.at.length >= max;
+          this.hold(key, teammate, text);
+          this.log(`${what} held key=${key} reason=hourly-limit chars=${text.length}`);
+          if (!full) return await this.sendHeldOf(key, now);
           if (now - sent.toldAt < 3600_000) return;
           sent.toldAt = now;
           await this.told(chat, selfCapLine(max)).catch((e) => this.log(`self-started limit line failed key=${key} ${(e as Error).message}`));
@@ -1556,17 +1563,65 @@ export class Orchestrator {
         }
         sent.at.push(now);
       }
-      try {
-        await this.replyFromAgent(to, text, profile);
-        this.log(`${what} delivered key=${key} chars=${text.length}`);
-      } catch (err) {
-        // The platform was down: kept, and sent with the next thing this chat is told, as an answer is.
-        this.log(`${what} deliver failed key=${key} ${(err as Error).message}`);
-        const rest = (err as { unsent?: string }).unsent ?? text;
-        const owed = this.owed.get(key) ?? [];
-        if (rest && owed.length < OWED_MAX) this.owed.set(key, [...owed, rest]);
-      }
+      await this.sendUnasked(key, to, text, profile, what);
     } catch (err) { this.log(`${what} failed key=${key} ${(err as Error).message}`); }
+  }
+
+  private async sendUnasked(key: string, to: Inbound, text: string, profile: Profile, what: string): Promise<void> {
+    try {
+      await this.replyFromAgent(to, text, profile);
+      this.log(`${what} delivered key=${key} chars=${text.length}`);
+    } catch (err) {
+      // The platform was down: kept, and sent with the next thing this chat is told, as an answer is.
+      this.log(`${what} deliver failed key=${key} ${(err as Error).message}`);
+      const rest = (err as { unsent?: string }).unsent ?? text;
+      const owed = this.owed.get(key) ?? [];
+      if (rest && owed.length < OWED_MAX) this.owed.set(key, [...owed, rest]);
+    }
+  }
+
+  /** A chat's count of one cap, with only the last hour's sends in it, and the cap. */
+  private hourOf(key: string, teammate: boolean, profile: Profile, now: number): { sent: { at: number[]; toldAt: number }; max: number } {
+    const book = teammate ? this.teammateSent : this.selfSent;
+    const sent = book.get(key) ?? { at: [], toldAt: 0 };
+    sent.at = sent.at.filter((t) => t > now - 3600_000);
+    book.set(key, sent);
+    return { sent, max: teammate ? TEAMMATE_PER_HOUR : profile.self_per_hour ?? SELF_PER_HOUR };
+  }
+
+  private hold(key: string, teammate: boolean, text: string): void {
+    const h = this.held.get(key) ?? { list: [], dropped: 0 };
+    this.held.set(key, h);
+    // One answer longer than the whole room keeps its start.
+    const cut = ' [cut: too long to hold]';
+    h.list.push({ teammate, text: text.length > HELD_CHARS ? `${text.slice(0, HELD_CHARS - cut.length)}${cut}` : text });
+    let chars = h.list.reduce((n, x) => n + x.text.length, 0);
+    while (h.list.length > HELD_MAX || chars > HELD_CHARS) { chars -= h.list.shift()!.text.length; h.dropped++; }
+  }
+
+  /** The held answers whose cap has room again go to their chats, as one message each. The daemon
+   *  calls it every minute. */
+  async sendHeld(now = Date.now()): Promise<void> {
+    await Promise.all([...this.held.keys()].map((key) => this.sendHeldOf(key, now)
+      .catch((e) => this.log(`held answers failed key=${key} ${(e as Error).message}`))));
+  }
+
+  /** One message takes one place in the hour of each cap it carries answers of. */
+  private async sendHeldOf(key: string, now: number): Promise<void> {
+    const h = this.held.get(key), profile = this.profileFor(key);
+    if (!h) return;
+    if (!profile) { this.held.delete(key); this.log(`held answers dropped key=${key} reason=not-routed count=${h.list.length}`); return; }
+    const free = [false, true].filter((t) => h.list.some((x) => x.teammate === t))
+      .map((t) => ({ t, ...this.hourOf(key, t, profile, now) })).filter((c) => c.sent.at.length < c.max);
+    if (!free.length) return;
+    const goes = (x: { teammate: boolean }) => free.some((c) => c.t === x.teammate);
+    // Taken out before the send, so no answer goes twice.
+    const out = h.list.filter(goes).map((x) => x.text), dropped = h.dropped;
+    h.list = h.list.filter((x) => !goes(x));
+    h.dropped = 0;
+    if (!h.list.length) this.held.delete(key);
+    for (const c of free) c.sent.at.push(now);
+    await this.sendUnasked(key, this.chatOf(key), heldLine(out, dropped), profile, 'held self-started answers');
   }
 
   /** Is this key a routed chat? */

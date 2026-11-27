@@ -27,6 +27,12 @@ const BEARER = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
 const PAIR = /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key|authorization|auth[_-]?token|cookie)[A-Za-z0-9_-]*["']?\s*[=:]\s*["']?)([^\s"']{8,})/gi;
 /** A key that names where a secret is kept (`api_key_file=/etc/key`), not the secret: its path stays. */
 const FILE_KEY = /[_-](?:file|path|dir)["']?\s*[=:]\s*["']?$/i;
+/** Whether a file key's value reads as a path. A secret may start with `/` too (base64): it holds `+`
+ *  or `=`, or a long run of letters of both cases and digits with nothing that parts a name. */
+function isPath(value: string): boolean {
+  if (!/^[~.]?\//.test(value) || /[+=]/.test(value)) return false;
+  return !value.split('/').some((s) => /^[A-Za-z0-9]{12,}$/.test(s) && /[a-z]/.test(s) && /[A-Z]/.test(s) && /\d/.test(s));
+}
 /** Past this a line is cut before the regexes run: a log line is short, and a dump that is not stays
  *  cheap to mask. */
 const MAX_LINE = 2000;
@@ -37,6 +43,6 @@ export function redactLog(line: string): string {
   let out = line.length > MAX_LINE ? `${line.slice(0, MAX_LINE)} … (line cut at ${MAX_LINE} characters)` : line;
   for (const re of SHAPES) out = out.replace(re, MASK);
   out = out.replace(BEARER, `$1${MASK}`);
-  out = out.replace(PAIR, (all, key: string, value: string) => (FILE_KEY.test(key) && /^[~.]?\//.test(value) ? all : `${key}${MASK}`));
+  out = out.replace(PAIR, (all, key: string, value: string) => (FILE_KEY.test(key) && isPath(value) ? all : `${key}${MASK}`));
   return out;
 }

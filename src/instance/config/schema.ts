@@ -125,6 +125,10 @@ export const Profile = z.object({
    *  letting the line through as text. Off by default: a model that quotes such a line in prose would
    *  otherwise send a file nobody asked for. Turn it on for a chat whose instructions use the convention. */
   media_tags: z.boolean().default(false),
+  /** tmux mode: how many answers to turns the agent started by itself (a background task's end) reach a
+   *  chat in an hour; past it they are held and sent later as one message. Unset: 6. Teammates'
+   *  messages have their own cap of 30. */
+  self_per_hour: z.number().int().min(1).max(60).optional(),
   /** CLI slash commands every member of a group may send as commands, such as `compact`. Owners may
    *  send any; from anyone else, a message that starts with a slash is text in the envelope. */
   agent_commands: z.array(z.string().regex(/^[a-z0-9:_-]+$/i).transform((s) => s.toLowerCase())).default([]),

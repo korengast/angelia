@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { selfCapLine } from '../src/core/deliver/text.js';
+import { heldLine, selfCapLine } from '../src/core/deliver/text.js';
 import { ROW, stubChat, until, wait, type PaneStub } from './tui-stub.js';
 
 // Own state dir and socket before the brain modules load: nothing here can touch a live Angelia. The
@@ -170,6 +170,9 @@ describe('tmux mode: a turn a teammate\'s message started, between turns', { con
     for (let n = 30; n <= 32; n++) { p.mark(report(n)); await taken(p); }
     assert.equal(c.sent.at(-2), 'Report 30.');
     assert.equal(c.sent.at(-1), selfCapLine(30));
-    assert.equal(c.lines().filter((l) => /self-started answer not delivered .*reason=hourly-limit/.test(l)).length, 3);
+    assert.equal(c.lines().filter((l) => /self-started answer held .*reason=hourly-limit/.test(l)).length, 3);
+    // Both caps' held ones go in one message once both hours have room.
+    await c.o.sendHeld(Date.now() + 3601_000);
+    assert.equal(c.sent.at(-1), heldLine(['Task 7.', 'Report 31.', 'Report 32.'], 0));
   });
 });

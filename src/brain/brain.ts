@@ -434,7 +434,14 @@ export function wireChild(child: import('node:child_process').ChildProcessWithou
     const chunk = b.toString('utf8');
     if (w.benign) { const lines = (part + chunk).split('\n'); part = lines.pop() ?? ''; lines.forEach(benign); }
     // A line a healthy CLI prints (BENIGN_STDERR) is no failure text: kept, it could be the reason given.
-    raw = (raw + chunk).slice(-STDERR_TAIL);
+    const all = raw + chunk;
+    raw = all.slice(-STDERR_TAIL);
+    // A cut leaves the end of a line at the front, which no benign pattern matches: it goes, unless
+    // nothing else is left.
+    if (all.length > STDERR_TAIL) {
+      const rest = raw.slice(raw.indexOf('\n') + 1);
+      if (rest.trim()) raw = rest;
+    }
     const text = raw.split('\n').filter((l) => !isBenign(l)).join('\n');
     if (text === shown) return;
     // Set back too when the text is gone: the start of a benign line was shown until its line ended.

@@ -49,7 +49,7 @@ first and refuses a broken one.
 | the daemon's own stdout and stderr | `~/.angelia/daemon.out` |
 | what the service does | `angelia service status`; `launchctl print gui/$(id -u)/angelia.daemon` (macOS), `systemctl --user status angelia` (Linux) |
 | a job timer's output | `~/.angelia/jobs.log`, `~/.angelia/jobs.out` |
-| a tui pane that will not answer | `tmux -L angelia ls`, then `tmux -L angelia attach -t <name>` (detach with `C-b d`) |
+| a tui pane that will not answer | `tmux -L angelia ls`, then `tmux -L angelia attach -t '=<name>'` (detach with `C-b d`) |
 | the agent's own transcript | `~/.claude/projects/<cwd with non-alphanumerics as ->/<session>.jsonl` |
 
 The first thing to read when a chat says "Something broke on my side" is the `turn failed` line in
@@ -242,11 +242,12 @@ Angelia typed`.
 
 **A message from the agent that nobody asked for (tui profiles).** A background task or a subagent
 that a turn of the chat started ended, or a teammate such a turn spawned (the Agent tool with a
-name) sent the agent a message; Claude Code woke the agent, and Angelia sent what the agent said: `self-started answer delivered key=<chat> chars=<n>`. At most 6 an hour per chat for tasks' ends, and
+name) sent the agent a message; Claude Code woke the agent, and Angelia sent what the agent said: `self-started answer delivered key=<chat> chars=<n>`. At most 6 an hour per chat for tasks' ends (`self_per_hour` on the profile, 1 to 60), and
 30 an hour for teammates' messages (counted apart; a teammate's idle note is among them); then the
-chat hears once that more are held back (`reason=hourly-limit`), and those are not kept. To stop a
+chat hears once that more are held back (`self-started answer held ... reason=hourly-limit`). They are kept, at most 20 answers or
+20,000 characters per chat, and sent as one message when the hour has room (`held self-started answers delivered`). To stop a
 loop, `/stop` or `/new` in the chat ends the session and its tasks. The count is kept in the
-daemon's memory, so a restart starts it again; a Stop marker on disk when the daemon restarts is
+daemon's memory, as are the held answers: a restart starts the count again and loses them; a Stop marker on disk when the daemon restarts is
 not read by the new one (its reader starts at the chat's next turn), so that answer stays in the
 Claude app: lost to the chat, never sent twice. A restarted daemon also does not know which tasks
 the chat's turns started before it: the end of such a task is not sent (`the work it reports was
