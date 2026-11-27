@@ -111,9 +111,12 @@ export const PASTED_MARKER = '[Pasted text';
 /** A chip as drawn: its number, and the paste's line breaks (none drawn for a paste of one line).
  *  Older versions drew no number. */
 const CHIP_RE = /\[Pasted text(?: #\d+)? ?(?:\+(\d+) lines?)?\]/g;
-/** A paste of more characters than this, or of CHIP_BREAKS line breaks or more, is drawn as a chip. */
+/** A paste of more characters than this, or of CHIP_BREAKS line breaks or more, is drawn as a chip
+ *  (a pane of at least 12 rows; a shorter one collapses fewer breaks: chipFits). */
 const CHIP_CHARS = 800;
 const CHIP_BREAKS = 3;
+/** A chip that is all the box holds. */
+const LONE_CHIP_RE = /^\[Pasted text(?: #\d+)? ?(?:\+(\d+) lines?)?\]$/;
 
 /** The length Claude Code measures against CHIP_CHARS: it turns each tab into 4 spaces first (measured
  *  on 2.1.332, 2026-11-27: one line of 740 characters with 20 tabs is drawn as text, 741 as a chip). */
@@ -123,16 +126,25 @@ const pastedLength = (text: string): number => text.length + 3 * (text.match(/\t
  *  and the text is one Claude Code collapses. Measured on 2.1.332 (2026-11-27, a 220-column pane): 3
  *  breaks or more than 800 characters collapse, 2 breaks and 800 characters do not; the count is the
  *  breaks ("+5 lines" for 6 lines, "+1 lines" for one break); a paste of one line has none. Anything
- *  else is a chip of some other paste: a message pasted earlier and never cleared, someone's in the app. */
-function chipFits(chip: RegExpMatchArray, text: string): boolean {
+ *  else is a chip of some other paste: a message pasted earlier and never cleared, someone's in the app.
+ *  A short pane collapses less (measured the same day: at 11 rows 2 breaks, at 10 rows and under 1
+ *  break; one line of up to 800 characters never, down to 6 rows), so a chip `alone` in the box is
+ *  taken on its count only: a chip of this text is never refused for the pane's height. */
+function chipFits(chip: RegExpMatchArray, text: string, alone = false): boolean {
   const breaks = text.split('\n').length - 1;
-  if (breaks < CHIP_BREAKS && pastedLength(text) <= CHIP_CHARS) return false;
+  if (!alone && breaks < CHIP_BREAKS && pastedLength(text) <= CHIP_CHARS) return false;
   return chip[1] === undefined ? breaks === 0 : Number(chip[1]) === breaks;
 }
 
 /** The box shows a chip that can be the paste of `text`. */
 function chipOf(box: string, text: string): boolean {
   return [...box.matchAll(CHIP_RE)].some((m) => chipFits(m, text));
+}
+
+/** The box holds one chip and nothing else, and it can be the paste of `text` (chipFits, alone). */
+function loneChipOf(pane: string, text: string): boolean | null {
+  const chip = LONE_CHIP_RE.exec(boxText(pane));
+  return chip ? chipFits(chip, text, true) : null;
 }
 
 export function paneBusy(pane: string): boolean {
@@ -211,9 +223,9 @@ export function paneMidTurn(pane: string, text?: string): boolean {
  *  emoji's joiners and skin tones, a variation selector, a combining mark. A symbol or an emoji left in
  *  the box goes with the paste as a letter does (review-keymiss, 0.4.8). */
 export function boxHoldsOnly(pane: string, text: string): boolean {
+  const lone = loneChipOf(pane, text);
+  if (lone !== null) return lone;
   const shown = boxText(pane);
-  const chip = /^\[Pasted text(?: #\d+)? ?(?:\+(\d+) lines?)?\]$/.exec(shown);
-  if (chip) return chipFits(chip, text);
   const flat = (s: string) => s.normalize('NFC').replace(/[\s>\p{M}\p{Cf}\u{1F3FB}-\u{1F3FF}]+/gu, '');
   const want = flat(text);
   if (!want) return false;
@@ -411,7 +423,7 @@ export function addDirAccepted(pane: string): boolean {
 export function pasteLanded(pane: string, text: string): boolean {
   const box = inputBox(pane);
   // A chip of another paste is not this one: an Enter on it would send that paste (review-keymiss).
-  if (box.includes(PASTED_MARKER) && chipOf(box, text)) return true;
+  if (box.includes(PASTED_MARKER) && (loneChipOf(pane, text) || chipOf(box, text))) return true;
   const head = text.split(/\s+/).join(' ').slice(0, 24);
   return head.length > 0 && box.split(/\s+/).join(' ').includes(head);
 }

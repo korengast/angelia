@@ -31,7 +31,9 @@ test('a lone chip is the paste only when it has the paste\'s shape', () => {
   // One line of more than 800 characters: a chip with no count; up to 800 it is drawn as text.
   const long = 'q'.repeat(801);
   assert.equal(boxHoldsOnly(box('[Pasted text #12]'), long), true);
-  assert.equal(boxHoldsOnly(box('[Pasted text #12]'), 'q'.repeat(800)), false);
+  // Alone in the box, a chip is taken on its count only (the pane's height: see below).
+  assert.equal(boxHoldsOnly(box('[Pasted text #12]'), 'q'.repeat(800)), true);
+  assert.equal(boxHoldsOnly(box('hi [Pasted text #12]'), 'q'.repeat(800)), false, 'not alone: text that would go with it');
   assert.equal(boxHoldsOnly(box('[Pasted text #12]'), `${'q'.repeat(400)}\n${'r'.repeat(400)}`), false, 'one break: a count is drawn');
   assert.equal(boxHoldsOnly(box('[Pasted text #14 +1 lines]'), `${'q'.repeat(400)}\n${'r'.repeat(401)}`), true);
 });
@@ -58,4 +60,22 @@ test('a one-line paste with tabs is a chip by its length with each tab as 4 spac
   const tabs740 = `${'x'.repeat(36)}\t`.repeat(20);
   assert.equal(pasteLanded(box('[Pasted text #1] [Pasted text #2]'), tabs740), false);
   assert.equal(pasteLanded(box('[Pasted text #1] [Pasted text #2]'), `${tabs740}y`), true);
+});
+
+// Review fix (Fable, 0.4.10): a pane under 12 rows collapses fewer line breaks (measured on 2.1.332,
+// 2026-11-27, a 220-column pane: at 11 rows 2 breaks are a chip, at 10 rows 1 break is; from 12 rows 3).
+test('on a short pane a chip of fewer than 3 line breaks, alone in the box, is the paste when its count fits', () => {
+  const two = 'alpha line\nbeta line';
+  const chip = box('[Pasted text #3 +1 lines]');
+  assert.equal(pasteLanded(chip, two), true);
+  assert.equal(boxHoldsOnly(chip, two), true);
+  assert.equal(boxHoldsOnly(box('[Pasted text #4 +2 lines]'), 'alpha\nbeta\ngamma'), true);
+  assert.equal(pasteLanded(box('[Pasted text #4 +2 lines]'), 'alpha\nbeta\ngamma'), true);
+  // The count still decides: another paste's chip is refused.
+  assert.equal(boxHoldsOnly(box('[Pasted text #3 +2 lines]'), two), false);
+  assert.equal(pasteLanded(box('[Pasted text #3 +2 lines]'), two), false);
+  assert.equal(boxHoldsOnly(box('[Pasted text #3 +1 lines]'), 'one line'), false);
+  // Not alone: another chip or text with it would go with the paste.
+  assert.equal(boxHoldsOnly(box('[Pasted text #2 +1 lines] [Pasted text #3 +1 lines]'), two), false);
+  assert.equal(boxHoldsOnly(box('ok [Pasted text #3 +1 lines]'), two), false);
 });
