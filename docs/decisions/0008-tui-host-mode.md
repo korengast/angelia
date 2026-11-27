@@ -80,7 +80,8 @@ warm between turns, background tasks outlive a turn, and slash commands behave a
   ids of a task's end, and a key (a hash) of the typed prompt. The daemon reads the marker between
   turns while the daemon holds the session. A late answer of its own turn is sent when the turn's one
   typed prompt has the key of what Angelia typed; the answer to a task's end only when each task
-  it names was started in a turn Angelia typed, at most 6 an hour per chat; the same for a named
+  it names was started in a turn Angelia typed, at most 6 an hour per chat (`self_per_hour`; the rest are held and sent later as one
+  message); the same for a named
   teammate's message (2.1.332: a user row with no origin, `rowSource: recorded`, the line "Another
   Claude session sent a message:", then `<teammate-message teammate_id="<name>">`) when that teammate
   was spawned in such a turn, or in a turn such a message started; 30 an hour, counted apart, a

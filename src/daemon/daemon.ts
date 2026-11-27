@@ -300,6 +300,8 @@ export async function runDaemon(configPath: string): Promise<void> {
   const statusTimer = setInterval(writeStatus, 10_000);
   const tmuxEnv = profileEnv(process.env, secrets, tableSecrets(cfg)).env;
   const reap = async () => {
+    // Not awaited: a platform that is down holds a send for minutes, and the reap goes on.
+    void orch.sendHeld();
     await orch.reapIdle();
     const { keep, prefixes } = orch.tuiPanes();
     const gone = await sweepPanes(keep, prefixes, tmuxEnv);
