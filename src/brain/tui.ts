@@ -1447,7 +1447,10 @@ export class TuiBrain extends EventEmitter implements Brain {
     const first = boxText(await this.capture(20));
     // A reply Claude Code guesses, drawn dim in the empty box, is no text: nothing to clear, and the
     // paste takes its place (0.4.11: 0.4.10 sent nothing while one was drawn).
-    if (first && (await this.typedInBox()) === '') return { held: '', left: '' };
+    if (first && (await this.typedInBox()) === '') {
+      this.emit('log', `tmux: the input box held only text drawn dim (a guessed reply), taken as empty: ${first.length} chars pane=${this.name}`);
+      return { held: '', left: '' };
+    }
     let last = first;
     for (let i = 0; last && i < CLEAR_ROUNDS; i++) {
       await this.tm(['send-keys', '-t', exact(this.name), 'C-k', 'C-u']);

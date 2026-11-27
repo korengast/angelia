@@ -59,6 +59,7 @@ test('a message sent while a guessed reply is drawn in the box is pasted and ans
   assert.equal(p.enters, 2, p.logs.join('\n'));
   assert.ok(c.sent.includes('Answer 2.'), JSON.stringify(c.sent));
   assert.ok(!p.logs.some((l) => /input box held text/.test(l)), p.logs.join('\n'));
+  assert.ok(p.logs.some((l) => /input box held only text drawn dim/.test(l)), `the guess is said: ${p.logs.join('\n')}`);
 });
 
 test('a guess drawn once old text in the box is cleared does not stop the paste', { timeout: 30_000 }, async (t) => {
