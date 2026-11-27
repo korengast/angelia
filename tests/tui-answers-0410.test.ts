@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KEY_MISS_LINE, NOT_RUN_LINE, promptKey, TAKEN_LATE_LINE } from '../src/brain/tui.js';
@@ -199,5 +199,20 @@ describe('0.4.10 lost or doubled answers', { concurrency: true, timeout: 180_000
     await until(() => c.sent.includes('One and two.'), 3000).catch(() => {});
     assert.ok(c.sent.includes('One and two.'), `${JSON.stringify(c.sent)}\n${p.logs.join('\n')}`);
     assert.equal(p.enters, 1);
+  });
+  test('join review: at a stop, a message queued again after a failed turn goes to the next daemon before a newer one held for the running turn', { timeout: 30_000 }, async (t) => {
+    const c = await stubChat(); t.after(() => c.o.shutdown());
+    c.onEnter((n, p) => { if (n === 1) working(p); });
+    void c.say('one');
+    await until(() => c.pane()?.enters === 1);
+    const q = (c.o as any).queue;
+    const msg = (text: string, at: number) => ({ inbound: { platform: 'telegram', chat: '1', sender: 'u1', senderName: 'Owner', text, isGroup: false, mentioned: false, media: [], at }, bare: false });
+    // Typed into a turn that failed, queued again as its own (intoTurnAgain): it came first.
+    void q.enqueue(c.key, async () => {}, msg('older, queued again', Date.now() - 60_000)).catch(() => {});
+    // A newer one, held while it waits for a moment in the running turn.
+    q.hold(c.key, msg('newer, held', Date.now()));
+    (c.o as any).cutTurns();
+    const kept = JSON.parse(readFileSync(join(c.stateDir, 'adopt-turns.json'), 'utf8')).turns[0];
+    assert.deepEqual(kept.waiting.map((w: { inbound: { text: string } }) => w.inbound.text), ['older, queued again', 'newer, held']);
   });
 });
