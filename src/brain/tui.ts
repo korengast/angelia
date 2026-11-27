@@ -780,8 +780,8 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  add_dirs would never reach it. Each launch records a fingerprint of its argv; on reattach a
    *  different one means the pane is stale, and an idle stale pane is relaunched with --resume, which
    *  keeps the conversation. A busy one is left alone: cutting a turn is worse than one more stale turn. */
-  private async ensure(): Promise<string | null> {
-    let resume = this.session.started;
+  private async ensure(resumeIt = this.session.started): Promise<string | null> {
+    let resume = resumeIt;
     this.checkOtherHooks();
     if (await this.sessionAlive()) {
       // A daemon restart during a start, or an idle pane that asks: nothing else would answer it.
@@ -965,6 +965,17 @@ export class TuiBrain extends EventEmitter implements Brain {
     return 'Enter';
   }
 
+  /** The tmux session is gone before a message was typed (killed, crashed; seen on a customer's server,
+   *  0.4.10): launched again as start() does, resuming the conversation when it has one, so the message
+   *  is typed into the new pane instead of failing the turn. Never after an Enter: the message may have
+   *  run. True once the new pane is at its prompt. */
+  private async relaunch(): Promise<boolean> {
+    const resume = this.session.started || fileSize(this.transcript) > 0;
+    const why = await this.ensure(resume);
+    this.emit('log', `tmux: the session of pane ${this.name} is gone before the message was typed; ${why === null ? `launched again${resume ? ' (resume)' : ''}` : `the launch failed: ${why}`}`);
+    return why === null;
+  }
+
   private async sessionAlive(): Promise<boolean> {
     const r = await this.tm(['has-session', '-t', exact(this.name)]);
     this.up = r.code === 0;
@@ -992,10 +1003,19 @@ export class TuiBrain extends EventEmitter implements Brain {
     // background agents their rows. A screen that never moved for the whole wait is a hung CLI.
     let moved = false;
     const tries = noTries();
+    // Nothing of this message is submitted before its Enter, so a session found gone in the wait is
+    // launched again, once (relaunch).
+    let relaunched = false;
     for (let attempt = 1; ; attempt++) {
       let pane = await this.capture(30);
       while (!paneIdle(pane)) {
-        if (!(await this.sessionAlive())) return { ok: false, why: 'exit', keep: false };
+        if (!(await this.sessionAlive())) {
+          if (relaunched || gen !== this.gen || !(await this.relaunch())) return { ok: false, why: 'exit', keep: false };
+          relaunched = true;
+          moved = true;
+          pane = await this.capture(30);
+          continue;
+        }
         if (gen !== this.gen) return { ok: false, why: 'released', keep: true };
         if (Date.now() > deadline) return this.notTyped(pane, moved);
         // An idle session may ask whether to resume: nobody else answers, and the message would wait it out.

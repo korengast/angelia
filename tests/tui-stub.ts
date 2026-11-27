@@ -103,6 +103,10 @@ export interface PaneStub {
   lockedAtEnter: boolean[];
   /** The pane dies: the screen is empty, and tmux has no such session. */
   die(): void;
+  /** Each tmux new-session the brain ran on this stub, as its arguments: it brings the pane back, idle. */
+  launches: string[][];
+  /** From now on a new-session fails, and the pane stays dead. */
+  failLaunch(): void;
   /** From now on Claude Code takes a message typed into a turn at its Enter, but the screen shows it only `ms` later. */
   slowTake(ms: number): void;
   /** From now on an Enter on a message typed into a turn empties the box but Claude Code does not queue it (a relaunch, the owner cleared the box). */
@@ -154,11 +158,13 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
     buffers: [],
     lockedAtEnter: [],
     die: () => { dead = true; shown = ''; },
+    launches: [],
+    failLaunch: () => { launchFails = true; },
     slowTake: (ms) => { takeMs = ms; },
     loseTake: () => { lost = true; },
     slowRow: (ms) => { rowMs = ms; },
   };
-  let buffer = '', dead = false, takeMs = 0, taking = false, lost = false, rowMs = 0;
+  let buffer = '', dead = false, takeMs = 0, taking = false, lost = false, rowMs = 0, launchFails = false;
   const paste = b.paste.bind(b);
   b.paste = (text: string, ...rest: unknown[]) => { stub.typed = cleanText(text); return paste(text, ...rest); };
   b.on('log', (l: string) => stub.logs.push(l));
@@ -182,6 +188,11 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
       else { shown = busyBox; stub.queued.push(buffer); }
     }
     else if (a[0] === 'has-session' && dead) return { code: 1, out: '', err: 'no session' };
+    else if (a[0] === 'new-session') {
+      stub.launches.push(a);
+      if (launchFails) return { code: 1, out: '', err: 'stub: no launch' };
+      dead = false; shown = idle;
+    }
     else if (a[0] === 'send-keys' && a.includes('Enter') && shown === landed) { shown = idle; stub.enters++; stub.enteredAt.push(Date.now()); for (const fn of hooks) fn(stub.enters); }
     return { code: 0, out: '', err: '' };
   };
