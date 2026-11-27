@@ -34,6 +34,10 @@ test('a guessed reply, drawn dim, is no text in the box; typed text is', () => {
   assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[38:5:2mcolon\x1b[39m')), 'colon', 'the colon form');
   assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[2;38;5;0mstill dim\x1b[0m')), '', 'a 0 inside a colour ends nothing');
   assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b]8;;https://x.example\x07link\x1b]8;;\x07')), 'link', 'an OSC 8 link is drawn text');
+  // A guess that wraps: tmux writes no new dim run on its second line, the dim goes on.
+  const wrapped = live.replace('\x1b[2mYes a\x1b[0m', '\x1b[2mthe first line of a long guess\n  and its second line\x1b[0m');
+  assert.equal(boxTyped(wrapped), '', 'a wrapped guess is still no text');
+  assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[2mdim\x1b[0m\n  typed')), 'typed', 'a reset carries too');
   assert.equal(boxTyped('no box here'), null);
 });
 
@@ -48,12 +52,31 @@ test('a message sent while a guessed reply is drawn in the box is pasted and ans
   });
   await c.say('one');
   await until(() => c.sent.includes('Answer 1.'));
-  await c.say('Yes a');
+  // Other words than the guess: the box then shows the paste, not the guess.
+  await c.say('No, wait');
   await until(() => c.sent.includes('Answer 2.'), 10_000).catch(() => {});
   const p = c.pane();
   assert.equal(p.enters, 2, p.logs.join('\n'));
   assert.ok(c.sent.includes('Answer 2.'), JSON.stringify(c.sent));
   assert.ok(!p.logs.some((l) => /input box held text/.test(l)), p.logs.join('\n'));
+});
+
+test('a guess drawn once old text in the box is cleared does not stop the paste', { timeout: 30_000 }, async (t) => {
+  const c = await stubChat(); t.after(() => c.o.shutdown());
+  c.onEnter((n, p) => {
+    p.rows(p.prompt(), ROW.text(`Answer ${n}.`));
+    if (n === 1) p.show('draftGuess');
+    p.stop(`Answer ${n}.`);
+    p.rows(ROW.over());
+  });
+  await c.say('one');
+  await until(() => c.sent.includes('Answer 1.'));
+  await c.say('two');
+  await until(() => c.sent.includes('Answer 2.'), 15_000).catch(() => {});
+  const p = c.pane();
+  assert.equal(p.enters, 2, p.logs.join('\n'));
+  assert.ok(c.sent.includes('Answer 2.'), JSON.stringify(c.sent));
+  assert.ok(p.logs.some((l) => /the input box held text before a paste; cleared/.test(l)), `the old text is said: ${p.logs.join('\n')}`);
 });
 
 test('every session Angelia starts has prompt suggestions off', () => {

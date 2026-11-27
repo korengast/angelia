@@ -460,8 +460,11 @@ function sgrDim(params: string, dim: boolean): boolean {
 export function boxTyped(escaped: string): string | null {
   const plain: string[] = [];
   const typed: string[] = [];
+  // tmux carries the attributes from line to line and writes only their changes: a guess that wraps
+  // has no dim run of its own on its second line.
+  let dim = false;
   for (const line of escaped.replace(/\n+$/, '').split('\n')) {
-    let all = '', bright = '', dim = false;
+    let all = '', bright = '';
     // SGR runs set or end dim (2 on; 22 or 0 off); other control runs are not drawn.
     // oxlint-disable-next-line no-control-regex -- reading the terminal's control runs is the point
     const re = /\x1b\[([0-9;:]*)m|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b./g;

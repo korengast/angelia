@@ -37,6 +37,8 @@ const history = readFileSync(join(here, 'fixtures', 'pane-history-332.txt'), 'ut
 // Claude Code's guessed reply in the empty box: drawn dim, so a plain capture shows it as text.
 const suggestion = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ Yes a');
 const suggestionColours = idle.replace(/❯\s+Try "refactor <filepath>"/, '\x1b[39m❯ \x1b[2mYes a\x1b[0m');
+// An old message in the box; once Ctrl-K Ctrl-U clear it, Claude Code draws its guess there.
+const draftGuess = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ an old message before a guess');
 
 /** Rows shaped as the readers in src/brain take them from a session's transcript. Content made up. */
 export const ROW = {
@@ -113,8 +115,9 @@ export interface PaneStub {
    *  `busy` shows in the box; its Enter queues it (Claude Code's own queue) and the box is empty again.
    *  `resume`: the resume dialog, which closes by itself right before an Up, so the Up calls an old
    *  prompt back into the box (`history`); Ctrl-K Ctrl-U clears it. `suggestion`: a reply Claude Code
-   *  guesses, dim in the empty box; no key clears it, a paste takes its place. */
-  show(screen: 'idle' | 'busy' | 'dialog' | 'half' | 'draft' | 'draft2' | 'resume' | 'history' | 'suggestion'): void;
+   *  guesses, dim in the empty box; no key clears it, a paste takes its place. `draftGuess`: an old
+   *  message that Ctrl-K Ctrl-U clear, and then such a guess. */
+  show(screen: 'idle' | 'busy' | 'dialog' | 'half' | 'draft' | 'draft2' | 'resume' | 'history' | 'suggestion' | 'draftGuess'): void;
   /** Messages Enter queued into a running turn, as typed. */
   queued: string[];
   /** Whether Angelia's absorb lock was there at each Enter that queued a message into a turn. */
@@ -171,7 +174,7 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
     marked: () => { try { readFileSync(join(b.dir, 'turn.json')); return true; } catch { return false; } },
     typed: '',
     prompt: (at) => ROW.prompt(stub.typed, at),
-    show: (screen) => { shown = { idle, busy: busyBox, dialog, half: halfTyped, draft, draft2, resume, history, suggestion }[screen]; },
+    show: (screen) => { shown = { idle, busy: busyBox, dialog, half: halfTyped, draft, draft2, resume, history, suggestion, draftGuess }[screen]; },
     queued: [],
     buffers: [],
     lockedAtEnter: [],
@@ -199,6 +202,7 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
     }
     else if (a[0] === 'paste-buffer' && shown === busyBox) shown = busyLanded;
     else if (a[0] === 'send-keys' && a.includes('C-u') && (shown === draft || shown === history)) shown = idle;
+    else if (a[0] === 'send-keys' && a.includes('C-u') && shown === draftGuess) shown = suggestion;
     else if (a[0] === 'send-keys' && a.includes('Up') && shown === resume) shown = history;
     else if (a[0] === 'send-keys' && a.includes('C-u') && shown === draft2) shown = draft;
     else if (a[0] === 'paste-buffer' && shown === draft) shown = idleWith(`half of an old message${drawnPaste(buffer)}`);
