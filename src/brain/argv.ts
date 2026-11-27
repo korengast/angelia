@@ -121,8 +121,11 @@ export function claudeTerminalLine(p: Profile, id: string, home = homedir(), o: 
 /** Set for every Claude Code session Angelia starts, in print and tmux mode alike. Claude's auto
  *  memory keeps one folder per git repository (code.claude.com/docs/en/memory, 2.1.285), and every
  *  profile in the workspace shares its repository: each would load at start, and add to, what the
- *  others saved. A profile keeps its memory in its own folder instead. */
-export const CLAUDE_ENV: Record<string, string> = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
+ *  others saved. A profile keeps its memory in its own folder instead.
+ *
+ *  Prompt suggestions off: Claude Code draws a reply it guesses in the empty box, dim, and a plain
+ *  capture of the screen reads it as typed text (0.4.11; boxTyped reads it right where one is drawn). */
+export const CLAUDE_ENV: Record<string, string> = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: '0' };
 
 export function childEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};

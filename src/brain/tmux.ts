@@ -434,6 +434,40 @@ export function pasteLanded(pane: string, text: string, rows?: number): boolean 
   return head.length > 0 && box.split(/\s+/).join(' ').includes(head);
 }
 
+/** The box's text drawn plain, with what is drawn dim taken out. Claude Code puts a reply it guesses
+ *  in an empty box, dim, right after the prompt mark ("Yes a" after an answer that ended "Reply with:
+ *  yes a / no", 2.1.332, 2026-11-27). It is not text: the clear cannot delete it, and a paste takes its
+ *  place. A plain capture draws it like typed text, so the box read as holding text that would not
+ *  clear, and 0.4.10 sent nothing. `escaped`: the screen captured with its colours (`capture-pane -e`).
+ *  null when the screen has no box. */
+export function boxTyped(escaped: string): string | null {
+  const plain: string[] = [];
+  const typed: string[] = [];
+  for (const line of escaped.replace(/\n+$/, '').split('\n')) {
+    let all = '', bright = '', dim = false;
+    // SGR runs set or end dim (2 on; 22 or 0 off); other control runs are not drawn.
+    // oxlint-disable-next-line no-control-regex -- reading the terminal's control runs is the point
+    const re = /\x1b\[([0-9;:]*)m|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b./g;
+    let at = 0;
+    for (let m = re.exec(line); ; m = re.exec(line)) {
+      const piece = line.slice(at, m ? m.index : line.length);
+      all += piece;
+      if (!dim) bright += piece;
+      if (!m) break;
+      at = m.index + m[0].length;
+      if (m[1] !== undefined) for (const c of (m[1] === '' ? ['0'] : m[1].split(/[;:]/))) {
+        if (c === '2') dim = true;
+        else if (c === '0' || c === '22' || c === '') dim = false;
+      }
+    }
+    plain.push(all);
+    typed.push(bright);
+  }
+  const box = boxSpan(plain);
+  if (!box) return null;
+  return typed.slice(box.top + 1, box.bottom).map((l) => l.replace(/^\s*(❯|>)\s?/, '').trim()).join('\n').trim();
+}
+
 /**
  * Press Enter on a pasted message and make sure Claude took it. A Claude Code that is still starting can
  * drop that Enter and leave the text in the box with nothing running (seen on a fresh pane, 2.1.296,

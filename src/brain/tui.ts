@@ -11,7 +11,7 @@ import { isLimitText, NOT_RUN, TMUX_STALLED } from '../core/deliver/text.js';
 import { apiErrorReason, apiErrorText, isApiErrorRow } from './api-error.js';
 import { childEnv, CLAUDE_ENV, claudeTuiArgv, MIN_CLAUDE_VERSION, remoteControlName, STRIP_ENV, tuiSettings, versionAtLeast } from './argv.js';
 import { blockedShort, deniedConnectorCount, PermissionBook, type Brain, type BrainOptions, type BrainSession, type PermissionAnswer, type TurnFlags } from './brain.js';
-import { addDirAccepted, addDirDialog, boxHoldsOnly, boxText, exact, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, resumeDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
+import { addDirAccepted, addDirDialog, boxHoldsOnly, boxText, boxTyped, exact, importsAccepted, importsDialogOpen, loadBuffer, paneAboveFoot, paneBusy, paneHasBox, paneIdle, paneMidTurn, pasteLanded, permissionDialog, resumeDialog, submitPasted, tmux, TMUX_SOCKET, trustAccepted, trustDialogOpen } from './tmux.js';
 import { HOOK_GIVE_UP_MS, paneVerdict, PermissionRelay, REJECTED, RELAY_BEAT_MS, relayedPermission, ScreenDialogs, type RelayedRequest, type RequestOrigin } from './tui-permissions.js';
 import { LOST_SESSION_LINE, placeTranscript, transcriptPath } from './transcripts.js';
 import { mcpLaunch, readRecord } from '../capabilities/compile.js';
@@ -1445,6 +1445,9 @@ export class TuiBrain extends EventEmitter implements Brain {
    *  box held and what is still in it ('' and '' for a box that was empty). */
   private async clearBox(): Promise<{ held: string; left: string }> {
     const first = boxText(await this.capture(20));
+    // A reply Claude Code guesses, drawn dim in the empty box, is no text: nothing to clear, and the
+    // paste takes its place (0.4.11: 0.4.10 sent nothing while one was drawn).
+    if (first && (await this.typedInBox()) === '') return { held: '', left: '' };
     let last = first;
     for (let i = 0; last && i < CLEAR_ROUNDS; i++) {
       await this.tm(['send-keys', '-t', exact(this.name), 'C-k', 'C-u']);
@@ -1453,7 +1456,16 @@ export class TuiBrain extends EventEmitter implements Brain {
       if (now === last) { await sleep(1200); const again = boxText(await this.capture(20)); if (again === last) break; last = again; continue; }
       last = now;
     }
+    // What is left may be such a guess, drawn once the text before it went.
+    if (last && (await this.typedInBox()) === '') last = '';
     return { held: first, left: last };
+  }
+
+  /** The box's text without what is drawn dim (boxTyped), from a capture with colours; null when the
+   *  capture failed or shows no box. */
+  private async typedInBox(): Promise<string | null> {
+    const r = await this.tm(['capture-pane', '-e', '-p', '-t', exact(this.name), '-S', '-20']);
+    return r.code === 0 ? boxTyped(r.out) : null;
   }
 
   /** The transcript from `offset` on shows Claude Code took a message keyed `key`: it queued one (its

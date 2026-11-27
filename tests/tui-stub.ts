@@ -34,6 +34,9 @@ const halfTyped = readFileSync(join(here, 'fixtures', 'pane-busy-halftyped-332.t
  *  with a prompt called back by Up (claude 2.1.332, measured: `─── History 2/2 ───`). */
 const resume = readFileSync(join(here, 'fixtures', 'pane-resume.txt'), 'utf8').replace('❯ 1. Resume', '  1. Resume').replace('  2. Start a new', '❯ 2. Start a new').replace('Esc to resume', 'Esc to cancel');
 const history = readFileSync(join(here, 'fixtures', 'pane-history-332.txt'), 'utf8');
+// Claude Code's guessed reply in the empty box: drawn dim, so a plain capture shows it as text.
+const suggestion = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ Yes a');
+const suggestionColours = idle.replace(/❯\s+Try "refactor <filepath>"/, '\x1b[39m❯ \x1b[2mYes a\x1b[0m');
 
 /** Rows shaped as the readers in src/brain take them from a session's transcript. Content made up. */
 export const ROW = {
@@ -109,8 +112,9 @@ export interface PaneStub {
    *  `dialog` (a permission dialog), `half` (a turn at work, someone's text in the box). A paste into
    *  `busy` shows in the box; its Enter queues it (Claude Code's own queue) and the box is empty again.
    *  `resume`: the resume dialog, which closes by itself right before an Up, so the Up calls an old
-   *  prompt back into the box (`history`); Ctrl-K Ctrl-U clears it. */
-  show(screen: 'idle' | 'busy' | 'dialog' | 'half' | 'draft' | 'draft2' | 'resume' | 'history'): void;
+   *  prompt back into the box (`history`); Ctrl-K Ctrl-U clears it. `suggestion`: a reply Claude Code
+   *  guesses, dim in the empty box; no key clears it, a paste takes its place. */
+  show(screen: 'idle' | 'busy' | 'dialog' | 'half' | 'draft' | 'draft2' | 'resume' | 'history' | 'suggestion'): void;
   /** Messages Enter queued into a running turn, as typed. */
   queued: string[];
   /** Whether Angelia's absorb lock was there at each Enter that queued a message into a turn. */
@@ -167,7 +171,7 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
     marked: () => { try { readFileSync(join(b.dir, 'turn.json')); return true; } catch { return false; } },
     typed: '',
     prompt: (at) => ROW.prompt(stub.typed, at),
-    show: (screen) => { shown = { idle, busy: busyBox, dialog, half: halfTyped, draft, draft2, resume, history }[screen]; },
+    show: (screen) => { shown = { idle, busy: busyBox, dialog, half: halfTyped, draft, draft2, resume, history, suggestion }[screen]; },
     queued: [],
     buffers: [],
     lockedAtEnter: [],
@@ -188,6 +192,7 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
   b.capture = async () => shown;
   b.sessionAlive = async () => !dead;
   b.tm = async (a: string[]) => {
+    if (a[0] === 'capture-pane') return { code: 0, out: shown === suggestion ? suggestionColours : shown, err: '' };
     if (a[0] === 'load-buffer') {
       buffer = readFileSync(a[a.length - 1], 'utf8'); stub.buffers.push(buffer);
       landed = idleWith(drawnPaste(buffer)); busyLanded = busyBox.replace(/^❯\s*$/m, `❯ ${drawnPaste(buffer)}`);
