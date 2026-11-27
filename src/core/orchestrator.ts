@@ -2524,6 +2524,9 @@ export class Orchestrator {
       const held = this.queue.heldTags(key).filter(isWaiting);
       for (const h of held) this.carried.add(h.inbound);
       const all = [...held, ...this.queue.waitingTags(key).filter(isWaiting)];
+      // A message queued again after a failed turn (intoTurnAgain) can be older than a held one: when
+      // every one says when it was sent, that order (join review). A stable sort keeps ties as they are.
+      if (all.every((w) => typeof w.inbound.at === 'number')) all.sort((a, b) => a.inbound.at! - b.inbound.at!);
       const app = all.filter((w) => w.inbound.surface === 'app').length;
       if (app) this.log(`shutdown: ${app} message(s) from the desk app waiting behind the turn not carried key=${key}`);
       return all.filter((w) => w.inbound.surface !== 'app');
