@@ -245,4 +245,32 @@ describe('0.4.10 lost or doubled answers', { concurrency: true, timeout: 180_000
     assert.ok(!p.logs.some((l) => /a person typed it/.test(l)), p.logs.join('\n'));
     assert.equal(p.enters, 1);
   });
+  test('fable recheck 2: the same text pressed into a quiet-closed turn and not taken: the late Stop is the turn\'s own, and each answer reaches the chat once', { timeout: 40_000 }, async (t) => {
+    const c = await stubChat(); t.after(() => c.o.shutdown());
+    c.onEnter((n, p) => { if (n === 1) working(p); });
+    const first = c.say('?');
+    await until(() => c.pane()?.enters === 1);
+    await wait(150);
+    const p = c.pane();
+    p.slowRow(2500);
+    const second = c.say('?');
+    await until(() => p.queued.length === 1 && p.logs.some((l) => /for the running turn was not taken/.test(l)), 10_000);
+    p.show('idle');
+    await first;
+    await second;
+    // Turn one's Stop comes late, with one typed prompt: the same key as the message that waits.
+    p.rows(ROW.result('t1'), ROW.text('One.'));
+    p.stop('One.');
+    await until(() => !p.marked());
+    p.rows(ROW.over());
+    // Claude Code runs the queued message as the next turn.
+    p.rows(ROW.prompt(p.queued[0]), ROW.text('Two.'));
+    p.stop('Two.');
+    await until(() => !p.marked());
+    await until(() => c.sent.includes('Two.'), 3000).catch(() => {});
+    assert.equal(c.sent.filter((x) => x === 'One.').length, 1, `${JSON.stringify(c.sent)}\n${p.logs.join('\n')}`);
+    assert.equal(c.sent.filter((x) => x === 'Two.').length, 1, `${JSON.stringify(c.sent)}\n${p.logs.join('\n')}`);
+    assert.ok(!p.logs.some((l) => /a person typed it/.test(l)), p.logs.join('\n'));
+    assert.equal(p.enters, 1);
+  });
 });

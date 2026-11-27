@@ -2238,7 +2238,12 @@ export class TuiBrain extends EventEmitter implements Brain {
     // A message of the chat's typed into a running turn that the turn did not take: Claude Code ran it
     // as the next turn, by itself (measured on 2.1.332). Its one typed prompt is that message.
     // Several such messages run as one turn (their prompts joined): the hook counts each, and keys the last.
-    const follower = this.followerOf(m);
+    // But a late Stop of the turn closed on the quiet path, whose one prompt is Angelia's, is that
+    // turn's: a message of the same text pressed into it waits for a turn of its own.
+    const q = inTurn ? undefined : this.quietEnd;
+    const lateOwn = !!q && m.at >= q.sentAt && m.prompts === 1 && typeof m.prompt_at === 'number' && m.prompt_at >= q.sentAt - 1000 && m.prompt_at <= q.endedAt
+      && (m.prompt_key === q.key || (!!q.cmd && m.prompt_key === q.cmd));
+    const follower = lateOwn ? null : this.followerOf(m);
     if (follower) {
       {
         ours();
