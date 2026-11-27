@@ -2266,7 +2266,9 @@ export class TuiBrain extends EventEmitter implements Brain {
         // Its prompts are Angelia's (`own` above): the turn is the chat's. A message taken late into it
         // is answered here, and waits for no other turn.
         ours(late.peer);
-        this.absorbed = this.absorbed.filter((a) => a.turn !== late.sentAt);
+        // One typed prompt: only Angelia's own message ran in that turn. A message pressed into it and
+        // found queued later did not: Claude Code runs it as its own turn, whose marker it answers.
+        if (m.prompts !== 1) this.absorbed = this.absorbed.filter((a) => a.turn !== late.sentAt);
         // A usage limit comes as the CLI's error row too: named as what it is.
         if (isLimitText(text)) return no('late, and a usage limit of the CLI');
         if (failedRow) return no('late, and an API error of the CLI, not an answer');

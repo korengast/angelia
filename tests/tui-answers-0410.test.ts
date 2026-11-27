@@ -216,4 +216,33 @@ describe('0.4.10 lost or doubled answers', { concurrency: true, timeout: 180_000
     const kept = JSON.parse(readFileSync(join(c.stateDir, 'adopt-turns.json'), 'utf8')).turns[0];
     assert.deepEqual(kept.waiting.map((w: { inbound: { text: string } }) => w.inbound.text), ['older, queued again', 'newer, held']);
   });
+  test('fable recheck: a message taken late, which the quiet-closed turn did not take (its Stop has one prompt): Claude Code runs it alone, and its answer reaches the chat', { timeout: 40_000 }, async (t) => {
+    const c = await stubChat(); t.after(() => c.o.shutdown());
+    c.onEnter((n, p) => { if (n === 1) working(p); });
+    const first = c.say('one');
+    await until(() => c.pane()?.enters === 1);
+    await wait(150);
+    const p = c.pane();
+    p.slowRow(2500);
+    const second = c.say('two');
+    await until(() => p.queued.length === 1 && p.logs.some((l) => /for the running turn was not taken/.test(l)), 10_000);
+    p.show('idle');
+    await first;
+    await second;
+    assert.ok(p.logs.some((l) => /taken late; it is not typed again/.test(l)), p.logs.join('\n'));
+    // Turn one ends by itself: its Stop comes late, with one typed prompt ("two" was not in it).
+    p.rows(ROW.result('t1'), ROW.text('One.'));
+    p.stop('One.');
+    await until(() => !p.marked());
+    p.rows(ROW.over());
+    // Claude Code runs the queued message as the next turn.
+    p.rows(ROW.prompt(p.queued[0]), ROW.text('Two.'));
+    p.stop('Two.');
+    await until(() => !p.marked());
+    await until(() => c.sent.includes('Two.'), 3000).catch(() => {});
+    assert.ok(c.sent.includes('One.') && c.sent.includes('Two.'), `${JSON.stringify(c.sent)}\n${p.logs.join('\n')}`);
+    assert.equal(c.sent.filter((x) => x === 'Two.').length, 1);
+    assert.ok(!p.logs.some((l) => /a person typed it/.test(l)), p.logs.join('\n'));
+    assert.equal(p.enters, 1);
+  });
 });
