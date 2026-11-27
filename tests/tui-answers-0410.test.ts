@@ -126,4 +126,37 @@ describe('0.4.10 lost or doubled answers', { concurrency: true, timeout: 180_000
     assert.equal(p.enters, 1, 'not typed a second time');
     assert.equal(out.at(-1)?.text, TAKEN_LATE_LINE);
   });
+  test('midturn final look L1: an untaken message and a late-taken one that Claude Code joins into one prompt: one answer, none typed again', { timeout: 40_000 }, async (t) => {
+    const c = await stubChat({ followStartMs: 1500 } as object); t.after(() => c.o.shutdown());
+    c.onEnter((n, p) => {
+      if (n === 1) { working(p); return; }
+      p.rows(p.prompt(), ROW.text(`Answer ${n}.`));
+      p.stop(`Answer ${n}.`);
+      p.rows(ROW.over());
+    });
+    const first = c.say('one');
+    await until(() => c.pane()?.enters === 1);
+    await wait(150);
+    await c.say('first message typed in');
+    const p = c.pane();
+    // The second one's queue row comes after the confirm wait: it is not seen taken (unsure).
+    p.slowRow(2500);
+    const second = c.say('second message typed in');
+    await until(() => p.queued.length === 2 && p.logs.some((l) => /for the running turn was not taken/.test(l)), 10_000);
+    await wait(1200);
+    // The turn takes neither; Claude Code joins both into one prompt and runs it.
+    p.rows(ROW.result('t1'), ROW.text('One.'));
+    p.stop('One.');
+    p.rows(ROW.over(), ROW.prompt(`${p.queued[0]}\n\n${p.queued[1]}`), ROW.text('Both at once.'));
+    p.show('idle');
+    await wait(300);
+    p.stop('Both at once.');
+    p.rows(ROW.over());
+    await first; await second;
+    await until(() => c.sent.includes('Both at once.'), 10_000).catch(() => {});
+    await wait(1500);
+    assert.ok(c.sent.includes('Both at once.'), `${JSON.stringify(c.sent)}\n${p.logs.join('\n')}`);
+    assert.equal(c.sent.filter((x) => x === 'Both at once.').length, 1, JSON.stringify(c.sent));
+    assert.equal(p.enters, 1, 'neither typed again');
+  });
 });
