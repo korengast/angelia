@@ -307,7 +307,8 @@ export function backgroundOfRows(rows: unknown[], calls: Map<string, 'bash' | 'a
 }
 
 /** How much of a transcript's end is read for open tasks: a long conversation's file is tens of MB,
- *  and the read holds the daemon. A task started before it, with no end after, is not seen. */
+ *  and the read holds the daemon. A task started before it is seen only by an end of another such task
+ *  in it (openTasksInTranscript). */
 export const OPEN_TASKS_BYTES = 8 * 1024 * 1024;
 
 /** The last \`max\` bytes of a file, from the first whole line in them. */
@@ -331,6 +332,9 @@ const openTasksRead = new Map<string, { size: number; mtime: number; open: Map<s
  * Null when the file cannot be read: nobody can tell, so a caller keeps the pane. It is how the pane
  * reap knows a pane's work after a restart, when no brain of this daemon tracked it (Orchestrator.
  * mayEndPane). A file that did not change since the last read is not read again.
+ *
+ * In a file read only at its end, an end with no start says the session had tasks from before the part
+ * read, and others of them may still run: it counts as one open, by its row's time.
  */
 export function openTasksInTranscript(path: string, now = Date.now()): number | null {
   let st;
@@ -340,14 +344,20 @@ export function openTasksInTranscript(path: string, now = Date.now()): number | 
     let text: string;
     try { text = tailOf(path, st.size, OPEN_TASKS_BYTES); } catch { return null; }
     const calls = new Map<string, 'bash' | 'agent'>(), open = new Map<string, number>();
+    const cut = st.size > OPEN_TASKS_BYTES, started = new Set<string>(), orphans = new Map<string, number>();
     for (const line of text.split('\n')) {
       if (!line.includes('tool_result') && !line.includes('tool_use') && !line.includes('task-notification')) continue;
       const { starts, ends } = backgroundRows(line, calls);
       // A row with no time of its own counts as started now: kept, rather than guessed old.
       const at = Date.parse(/"timestamp"\s*:\s*"([^"]+)"/.exec(line)?.[1] ?? '');
-      for (const t of starts) open.set(t.id, Number.isNaN(at) ? now : at);
-      for (const id of ends) open.delete(id);
+      for (const t of starts) { started.add(t.id); open.set(t.id, Number.isNaN(at) ? now : at); }
+      for (const id of ends) {
+        open.delete(id);
+        if (cut && !started.has(id)) orphans.set(id, Number.isNaN(at) ? now : at);
+      }
     }
+    // Under a key of their own, so a second row naming the same end does not take it away.
+    for (const [id, at] of orphans) open.set(`before:${id}`, at);
     openTasksRead.set(path, seen = { size: st.size, mtime: st.mtimeMs, open });
     if (openTasksRead.size > 200) openTasksRead.delete(openTasksRead.keys().next().value!);
   }
@@ -521,8 +531,8 @@ export function hookSettings(hook = HOOK, permission = PERMISSION_HOOK, pretool:
 /** For a dialog on the pane that did not come through the hook (tui-permissions.ts, ScreenDialogs).
  *  `socket`: the tmux server the pane is on, when not Angelia's own. */
 export function screenOnlyLine(pane: string, socket = TMUX_SOCKET, dialog?: { tool: string; from?: string }): string {
-  if (dialog) return `A permission waits: ${askedBy(dialog)}. It did not come through Angelia, so only the screen says what it asks and it cannot be answered from here. Answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t ${pane}); /stop ends the turn.`;
-  return `A permission dialog is open that did not come through Angelia, so only the screen says what it asks and it cannot be answered from here. Answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t ${pane}); /stop ends the turn.`;
+  if (dialog) return `A permission waits: ${askedBy(dialog)}. It did not come through Angelia, so only the screen says what it asks and it cannot be answered from here. Answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t '=${pane}'); /stop ends the turn.`;
+  return `A permission dialog is open that did not come through Angelia, so only the screen says what it asks and it cannot be answered from here. Answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t '=${pane}'); /stop ends the turn.`;
 }
 
 /**
@@ -898,7 +908,7 @@ export class TuiBrain extends EventEmitter implements Brain {
     } catch { this.emit('log', `pane ${this.name} never reached a prompt`); }
     // Named, so the owner sees which folder to list (or why claude asks about it) without the log.
     if (unlisted !== undefined) return `the session did not start: claude asks to add the folder ${unlisted}, which is not in this profile's add_dirs`;
-    return `the session never reached a prompt (look with: tmux -L ${this.socket} attach -t ${this.name})`;
+    return `the session never reached a prompt (look with: tmux -L ${this.socket} attach -t '=${this.name}')`;
   }
 
   private argv(resume: boolean): string[] {

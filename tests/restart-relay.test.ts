@@ -212,7 +212,7 @@ test('a teammate\'s dialog (claude 2.1.332, the screen seen 2026-11-25): read as
 
   const line = screenAlarmLine({ name: 'pane-1', ...d! }, SOCKET);
   assert.match(line, /^A permission waits: Bash command from the restart-relay agent \(Run shell command · rm -rf /);
-  assert.match(line, /It did not come through the chat, and the chat cannot answer it: answer it in the Claude app, or in the pane \(tmux -L \S+ attach -t pane-1\)/);
+  assert.match(line, /It did not come through the chat, and the chat cannot answer it: answer it in the Claude app, or in the pane \(tmux -L \S+ attach -t '=pane-1'\)/);
 
   // The scan: at first sight nothing, told once ORPHAN_MS (20 s) on, at the next look; a scan every
   // SCAN_MS (10 s), so within about 30 s. Once per dialog: a new dialog is told again.
@@ -260,7 +260,7 @@ test('a dialog in a chat\'s pane with no hook request is told once after ORPHAN_
   assert.equal(told.length, 1, 'once');
   const line = screenAlarmLine(told[0], SOCKET);
   assert.match(line, /^A permission waits: Bash command \(/);
-  assert.match(line, /the chat cannot answer it: answer it in the Claude app, or in the pane \(tmux -L \S+ attach -t rr-dialog-\d+\)/);
+  assert.match(line, /the chat cannot answer it: answer it in the Claude app, or in the pane \(tmux -L \S+ attach -t '=rr-dialog-\d+'\)/);
   assert.doesNotMatch(line, /reply "yes"|can answer it here/);
   await sleep(300);
   assert.equal(readFileSync(keys, 'utf8'), '', 'no key was pressed in the pane');

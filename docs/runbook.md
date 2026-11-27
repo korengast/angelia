@@ -49,7 +49,7 @@ first and refuses a broken one.
 | the daemon's own stdout and stderr | `~/.angelia/daemon.out` |
 | what the service does | `angelia service status`; `launchctl print gui/$(id -u)/angelia.daemon` (macOS), `systemctl --user status angelia` (Linux) |
 | a job timer's output | `~/.angelia/jobs.log`, `~/.angelia/jobs.out` |
-| a tui pane that will not answer | `tmux -L angelia ls`, then `tmux -L angelia attach -t <name>` (detach with `C-b d`) |
+| a tui pane that will not answer | `tmux -L angelia ls`, then `tmux -L angelia attach -t '=<name>'` (detach with `C-b d`) |
 | the agent's own transcript | `~/.claude/projects/<cwd with non-alphanumerics as ->/<session>.jsonl` |
 
 The first thing to read when a chat says "Something broke on my side" is the `turn failed` line in
