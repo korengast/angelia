@@ -71,5 +71,5 @@ test('a key that names a file keeps its path; the same key with a value is maske
 
 test('a file key whose value starts with / but is a secret, not a path, is masked', () => {
   for (const v of ['/Ab3xK9qLm2Pz', '/Zm9v+YmFy/YmF6cXV4', '/abcd/Ab3xK9qLm2PzQ7', '/c2VjcmV0dmFsdWU=']) assert.equal(redactLog(`token_path=${v}`), 'token_path=<redacted>', v);
-  for (const v of ['/etc/keys/openai.key', '~/.angelia/Secrets2/token', '/Users/Sam/Library/ApplicationSupport/key']) assert.equal(redactLog(`token_path=${v}`), `token_path=${v}`, v);
+  for (const v of ['/etc/keys/openai.key', '~/.angelia/Secrets2/token', '/Users/example/Library/ApplicationSupport/key']) assert.equal(redactLog(`token_path=${v}`), `token_path=${v}`, v);
 });
