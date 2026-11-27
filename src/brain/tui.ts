@@ -1741,12 +1741,19 @@ export class TuiBrain extends EventEmitter implements Brain {
         if (rows.length) { quietSince = 0; movedAt = Date.now(); }
         // This turn's reader: whether the CLI's error row is the last word it read (turnRows).
         if (this.at !== readTo) failed = this.rows === 'error';
+        const lines: string[] = [];
         for (const ev of rows) {
-          if (ev.kind === 'api-error') { if (pending) yield { kind: 'progress', text: pending }; pending = null; apiFailed = ev.text; continue; }
+          if (ev.kind === 'api-error') { if (pending) lines.push(pending); pending = null; apiFailed = ev.text; continue; }
           apiFailed = null; // the turn went on after it
-          if (ev.kind === 'text') { if (pending) yield { kind: 'progress', text: pending }; pending = ev.text; }
-          else if (pending) { yield { kind: 'progress', text: pending }; pending = null; }
+          if (ev.kind === 'text') { if (pending) lines.push(pending); pending = ev.text; }
+          else if (pending) { lines.push(pending); pending = null; }
         }
+        // The marker's words are never a progress line too: its own turn's answer carries them, or the
+        // reader between turns gives them as another turn's (a follower, a task's end), so a line read in
+        // the same poll as that marker would go out twice (midturn final2).
+        const mk = background || !lines.length ? null : this.readMarker();
+        const marked = mk?.at && mk.at >= sentAt ? String(mk.text ?? '') : '';
+        for (const line of lines) if (!marked || !sameAnswer(marked, line)) yield { kind: 'progress', text: line };
         // Let go of while a progress line was taken (a restart stops the reader before the adapters):
         // the Stop marker stays where it is, for whoever reads the pane next.
         if (gen !== this.gen) { this.recording = false; yield { kind: 'result', text: '', isError: true, reason: 'released' }; return; }
@@ -1756,8 +1763,9 @@ export class TuiBrain extends EventEmitter implements Brain {
         if (!background) {
           const m = this.readMarker();
           if (m?.at && m.at >= sentAt && m.origin === 'notification') {
-            // Its last text was read here as this turn's: it is that turn's answer, never a progress line of this one.
-            pending = null;
+            // Its last text was read here as this turn's: it is that turn's answer, never a progress line of
+            // this one. Text of this turn's own read after it in the same poll stays this turn's.
+            if (pending !== null && sameAnswer(String(m.text ?? ''), pending)) pending = null;
             const a = this.takeIdle(true, failed);
             if (a) yield { kind: 'unasked', ...a };
             // That error row was the other turn's: it says nothing of this turn's own answer.
@@ -1774,7 +1782,9 @@ export class TuiBrain extends EventEmitter implements Brain {
           // unread), so its answer is the chat's, never a key miss to drop.
           const follower = m?.at && m.at >= sentAt ? this.followerOf(m) : null;
           if (follower && (follower.every((a) => a.turn !== sentAt) || (typeof m!.prompt_key === 'string' && !!typed.key && m!.prompt_key !== typed.key && !this.followKeys.includes(m!.prompt_key)))) {
-            pending = null;
+            // Only that turn's own words: this turn's text read after them in the same poll is still
+            // this turn's answer, which the quiet path needs when its Stop hook fails (review-keymiss2).
+            if (pending !== null && sameAnswer(String(m!.text ?? ''), pending)) pending = null;
             const a = this.takeIdle(true, failed);
             if (a) yield { kind: 'unasked', ...a };
             failed = false; apiFailed = null;
