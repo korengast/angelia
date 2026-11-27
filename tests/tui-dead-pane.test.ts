@@ -24,7 +24,7 @@ test('a warm pane whose session is gone before the next message: launched again 
   const p = c.pane();
   p.die();
   await c.say('two');
-  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}`);
+  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}\nlog:\n${c.log.join('\n')}`);
   assert.ok(!c.sent.some((s) => s.startsWith('Something broke')), 'no failure line');
   assert.equal(c.pane(), p, 'the same brain: launched again in place');
   assert.equal(p.launches.length, 1);
@@ -52,7 +52,7 @@ test('the launch again starts the brain fresh: no task, teammate, spawn or reque
   const p = c.pane();
   p.die();
   await c.say('two');
-  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}`);
+  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}\nlog:\n${c.log.join('\n')}`);
   assert.equal(c.brain(), b, 'the same brain, launched again in place');
   assert.equal(b.pendingPermissionCount, 0, 'no request of the dead process waits');
   assert.equal(b.hasPendingPermission('req-1'), false);
@@ -84,7 +84,7 @@ test('an Up meant for the resume dialog that reached the box after the dialog cl
   const p = c.pane();
   p.show('resume');
   await c.say('two');
-  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}`);
+  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}\nlog:\n${c.log.join('\n')}`);
   assert.match(p.typed, /\ntwo$/);
   assert.ok(!p.typed.includes('beta'), 'the called-back prompt is not sent with it');
   assert.ok(p.logs.some((l) => /the input box held text before a paste; cleared: 29 chars/.test(l)), 'the called-back prompt was cleared before the paste');
@@ -114,7 +114,7 @@ test('a has-session that times out while the message waits: the pane is kept, it
   p.show('busy');
   await c.say('two');
   assert.equal(slow > 0, true, 'has-session was asked');
-  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}`);
+  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}\nlog:\n${c.log.join('\n')}`);
   assert.equal(p.launches.length, 0, 'not launched again');
   assert.ok(!c.log.some((l) => /is gone before the message was typed/.test(l)), c.log.join('\n'));
   assert.ok(b.ours.has('toolu_1'), 'the live process\'s task is still the chat\'s');
