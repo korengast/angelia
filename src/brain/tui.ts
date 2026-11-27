@@ -646,7 +646,7 @@ export class TuiBrain extends EventEmitter implements Brain {
   private recording = false;
   /** The last turn typed here that ended with no Stop marker (the quiet path), until its marker comes
    *  or another turn begins: when it was typed, when it was closed, and what the chat got as its answer. */
-  private quietEnd?: { sentAt: number; endedAt: number; said: string; key: string; taken: string[]; peer: boolean };
+  private quietEnd?: { sentAt: number; endedAt: number; said: string; key: string; taken: string[]; peer: boolean; cmd?: string };
   /** The key (promptKey) of what this turn typed, from its Enter until the turn ends. */
   private typedKey = '';
   /** Which path set typedKey (`turn`: a message typed; `follow`: the untaken messages of the last turn,
@@ -1589,6 +1589,21 @@ export class TuiBrain extends EventEmitter implements Brain {
     return false;
   }
 
+  /** The key (promptKey) of the slash command row this turn's rows begin with (from `from` on), as
+   *  the hook keys it, or undefined when the first typed row is not one. */
+  private commandRowKey(): string | undefined {
+    for (const line of readSlice(this.transcript, this.from).split('\n')) {
+      if (!line.includes('"user"')) continue;
+      let row: { type?: unknown; isSidechain?: unknown; isMeta?: unknown; message?: { content?: unknown } } | null;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (!row || row.type !== 'user' || row.isSidechain === true || row.isMeta === true) continue;
+      const text = promptText(row.message?.content);
+      if (!text.trim()) continue;
+      return COMMAND_ROW.test(text.trimStart()) ? promptKey(text) : undefined;
+    }
+    return undefined;
+  }
+
   /** Read whole rows from `from` (where the last turn's reader began its last read: the prompt row
    *  may have come before its marker was read) up to the prompt row of the turn Claude Code runs for
    *  untaken messages (a typed prompt keyed as one of `keys`), and stand just after it. True once found.
@@ -1926,7 +1941,10 @@ export class TuiBrain extends EventEmitter implements Brain {
             ended(how, answer);
             // The Stop marker may still come (a failed read of the screen, a slow hook): then it is this
             // turn's answer, late (takeIdle).
-            if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: answer, key: typed.key, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key), peer: this.turnPeer };
+            // A slash command is stored as its own row, not as the text typed: that row's key is the one
+            // its late marker carries (late-answers L4).
+            const cmd = command ? this.commandRowKey() : undefined;
+            if (!background) this.quietEnd = { sentAt, endedAt: Date.now(), said: answer, key: typed.key, taken: this.absorbed.filter((a) => a.seen && a.turn === sentAt).map((a) => a.key), peer: this.turnPeer, ...(cmd ? { cmd } : {}) };
             if (!background) this.closeAbsorbed(sentAt, readTo);
             // No answer at all, and not to a slash command: the chat may be told the agent gave none, so
             // keep the screen that read as idle.
@@ -2190,7 +2208,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       // the app inside that window, or into that turn, is theirs.
       // The chat's messages typed into that turn count as Angelia's: then the hook counts them too,
       // and the last typed prompt it keys is one of them.
-      const own = (m.prompt_key === late.key && m.prompts === 1)
+      const own = ((m.prompt_key === late.key || (!!late.cmd && m.prompt_key === late.cmd)) && m.prompts === 1)
         || (late.taken.length > 0 && m.prompts === 1 + late.taken.length && typeof m.prompt_key === 'string' && late.taken.includes(m.prompt_key));
       if (m.origin !== 'notification' && typedAt !== undefined && typedAt >= late.sentAt - 1000 && typedAt <= late.endedAt && !own) {
         return no('late, but the prompt the hook read is not the one Angelia typed');
