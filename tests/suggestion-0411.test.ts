@@ -28,6 +28,12 @@ test('a guessed reply, drawn dim, is no text in the box; typed text is', () => {
   assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[2mdim\x1b[22m typed')), 'typed', 'SGR 22 ends dim');
   assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[2mdim\x1b[m typed')), 'typed', 'an empty SGR ends dim');
   assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[1;2mdim\x1b[0;1m typed')), 'typed', 'dim among other attributes');
+  // The values of an extended colour are not attributes (a 2 there is no dim, a 0 no reset).
+  assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[38;5;2mgreen\x1b[39m')), 'green', '38;5;2 is green');
+  assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[48;2;2;2;2mrgb\x1b[49m')), 'rgb', '48;2;r;g;b');
+  assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[38:5:2mcolon\x1b[39m')), 'colon', 'the colon form');
+  assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b[2;38;5;0mstill dim\x1b[0m')), '', 'a 0 inside a colour ends nothing');
+  assert.equal(boxTyped(live.replace('\x1b[2mYes a\x1b[0m', '\x1b]8;;https://x.example\x07link\x1b]8;;\x07')), 'link', 'an OSC 8 link is drawn text');
   assert.equal(boxTyped('no box here'), null);
 });
 
