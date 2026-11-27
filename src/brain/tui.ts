@@ -1011,8 +1011,11 @@ export class TuiBrain extends EventEmitter implements Brain {
     return why === null;
   }
 
+  /** A has-session killed at its time limit says nothing of the session (a loaded machine, as watch()
+   *  reads it): what was known stays, so a live pane is not launched again and its state not cleared. */
   private async sessionAlive(): Promise<boolean> {
     const r = await this.tm(['has-session', '-t', exact(this.name)]);
+    if (r.timedOut) return this.up;
     this.up = r.code === 0;
     return this.up;
   }

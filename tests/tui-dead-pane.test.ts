@@ -89,3 +89,33 @@ test('an Up meant for the resume dialog that reached the box after the dialog cl
   assert.ok(!p.typed.includes('beta'), 'the called-back prompt is not sent with it');
   assert.ok(p.logs.some((l) => /the input box held text before a paste; cleared: 29 chars/.test(l)), 'the called-back prompt was cleared before the paste');
 });
+
+// Fable recheck (0.4.10): a has-session that timed out read as a session that is gone, so the launch
+// again cleared the state of a live process, which ensure() then found alive. A timeout is no answer:
+// the pane is kept as it was, as the reader between turns does (watch).
+test('a has-session that times out while the message waits: the pane is kept, its state too, and nothing is launched', { timeout: 30_000 }, async (t) => {
+  const c = await stubChat(); t.after(() => c.o.shutdown());
+  c.onEnter((n, p) => {
+    if (n === 1) { p.rows(p.prompt(), ...ROW.background('toolu_1'), ROW.text('Answer 1.')); p.stop('Answer 1.'); }
+    else answer(n, p);
+  });
+  await c.say('one');
+  const b = c.brain();
+  assert.ok(b.ours.has('toolu_1'), 'the first turn\'s task is the chat\'s');
+  const p = c.pane();
+  // The brain's own has-session check, with a tmux that does not answer once.
+  b.sessionAlive = Object.getPrototypeOf(b).sessionAlive;
+  const tm = b.tm;
+  let slow = 0;
+  b.tm = async (a: string[], ...rest: unknown[]) => {
+    if (a[0] === 'has-session' && slow++ === 0) { setTimeout(() => p.show('idle'), 200); return { code: 1, out: '', err: '', timedOut: true }; }
+    return tm(a, ...rest);
+  };
+  p.show('busy');
+  await c.say('two');
+  assert.equal(slow > 0, true, 'has-session was asked');
+  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}`);
+  assert.equal(p.launches.length, 0, 'not launched again');
+  assert.ok(!c.log.some((l) => /is gone before the message was typed/.test(l)), c.log.join('\n'));
+  assert.ok(b.ours.has('toolu_1'), 'the live process\'s task is still the chat\'s');
+});
