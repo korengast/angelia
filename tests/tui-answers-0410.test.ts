@@ -62,4 +62,28 @@ describe('0.4.10 lost or doubled answers', { concurrency: true, timeout: 180_000
     assert.ok(c.sent.includes('Answer 2.'), `typed again and answered: ${JSON.stringify(c.sent)}\n${p.logs.join('\n')}`);
     assert.ok(p.logs.some((l) => l.startsWith(NOT_RUN_LINE)), p.logs.join('\n'));
   });
+  test('review-keymiss2: a short untaken message that another message starts with is not taken for run: it is typed again and answered', { timeout: 40_000 }, async (t) => {
+    const c = await stubChat(); t.after(() => c.o.shutdown());
+    c.onEnter((n, p) => {
+      if (n === 1) { working(p); return; }
+      p.rows(p.prompt(), ROW.text(`Answer ${n}.`));
+      p.stop(`Answer ${n}.`);
+      p.rows(ROW.over());
+    });
+    const first = c.say('one');
+    await until(() => c.pane()?.enters === 1);
+    await wait(150);
+    await c.say('ok');
+    await c.say('ok and the logs too');
+    const p = c.pane();
+    assert.equal(p.queued.length, 2);
+    // The turn takes the second one only; the first is back in the box, and no turn runs it.
+    p.rows(ROW.queuedPrompt(p.queued[1]), ROW.result('t1'), ROW.text('One, and the logs.'));
+    p.show('draft');
+    p.stop('One, and the logs.');
+    p.rows(ROW.over());
+    await first;
+    await until(() => c.sent.includes('Answer 2.'), 10_000).catch(() => {});
+    assert.ok(c.sent.includes('Answer 2.'), `typed again and answered: ${JSON.stringify(c.sent)}\n${p.logs.join('\n')}`);
+  });
 });

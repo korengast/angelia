@@ -157,6 +157,21 @@ function promptText(c: unknown): string {
   return typeof c === 'string' ? c : Array.isArray(c) ? c.map((b: { type?: unknown; text?: unknown }) => (b?.type === 'text' ? String(b.text ?? '') : '')).join('\n') : '';
 }
 
+/** A prompt Claude Code ran holds a message whole (`want`, in promptForm): it is that message, or runs of
+ *  its blank-line parts are (Claude Code joins queued messages with one blank line). Not a message that
+ *  only starts the same: "ok" is not run by "ok and the logs too" (review-keymiss2). */
+function holdsWhole(got: string, want: string): boolean {
+  const parts = got.split(/\n[ \t]*\n/);
+  for (let i = 0; i < parts.length; i++) {
+    for (let j = i + 1; j <= parts.length; j++) {
+      const form = promptForm(parts.slice(i, j).join('\n\n'));
+      if (form === want) return true;
+      if (form.length > want.length) break;
+    }
+  }
+  return false;
+}
+
 /** intoTurnBlocked: no turn of the chat's is read any more, so the message will not go into one. */
 const NOT_READ = 'no turn of the chat is read';
 /** How long a message waits for a safe moment in the running turn: the whole turn, polled. How long a
@@ -1413,7 +1428,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       if (!row || typeof row !== 'object' || row.isSidechain === true) continue;
       const got = row.type === 'attachment' && row.attachment?.type === 'queued_command' && typeof row.attachment.prompt === 'string' ? row.attachment.prompt
         : row.type === 'user' ? promptText(row.message?.content) : '';
-      if (got && promptForm(got).includes(want)) return true;
+      if (got && holdsWhole(got, want)) return true;
     }
     return false;
   }
