@@ -59,14 +59,17 @@ export class ChatNotes {
     this.save();
   }
 
-  /** Take in another file's lines, by time, a line in both once. False when it could not be saved. */
+  /** Take in another, older file's lines, by time, a line in both once. A line only the older file has
+   *  is marked seen: it is old news to the agent. False when it could not be saved. */
   join(other: ChatNotes): boolean {
     const all = this.read();
     for (const [key, list] of Object.entries(other.read())) {
       const merged = new Map<string, Kept>();
-      for (const n of [...list, ...(all[key] ?? [])]) {
-        const id = JSON.stringify([n.at, n.source, n.text]);
-        merged.set(id, merged.get(id)?.seen ? { ...n, seen: true } : n);
+      const id = (n: Kept) => JSON.stringify([n.at, n.source, n.text]);
+      for (const n of list) merged.set(id(n), { ...n, seen: true });
+      for (const n of all[key] ?? []) {
+        const old = list.find((o) => id(o) === id(n));
+        merged.set(id(n), old?.seen ? { ...n, seen: true } : n);
       }
       all[key] = newest([...merged.values()].sort((a, b) => a.at.localeCompare(b.at)));
     }

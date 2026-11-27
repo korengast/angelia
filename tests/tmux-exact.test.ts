@@ -44,3 +44,23 @@ test('a tmux brain whose name is the start of a live session\'s name sees no ses
   await b.stop();
   assert.equal(execFileSync('tmux', ['-L', socket, 'ls', '-F', '#S'], { encoding: 'utf8' }).trim(), longer, 'stop ended no other session');
 });
+
+// Fable recheck (0.4.10): a lone chip is taken on its count only on a pane under 12 rows, so a capture
+// reads the pane's height too, in the same tmux call, and gives back the screen without it.
+test('a capture gives the screen as tmux draws it, and the pane\'s height', { skip: !hasTmux && 'no tmux', timeout: 30_000 }, async (t) => {
+  const socket = `angelia-exact-c-${process.pid}`;
+  t.after(() => { try { execFileSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' }); } catch { /* already gone */ } });
+  const { TuiBrain } = await import('../src/brain/tui.js');
+  const dir = tmp(t, 'angelia-exact-');
+  const profile = Config.parse({ profiles: { x: { cwd: dir, tui: true } }, routes: [] }).profiles.x;
+  const b = new TuiBrain(profile, { id: crypto.randomUUID(), started: false }, { stateDir: dir, tmuxSocket: socket });
+  execFileSync('tmux', ['-L', socket, 'new-session', '-d', '-s', b.name, '-x', '80', '-y', '10', 'printf "line 7\\n"; exec cat']);
+  await new Promise((r) => setTimeout(r, 500));
+  const want = execFileSync('tmux', ['-L', socket, 'capture-pane', '-p', '-t', exact(b.name), '-S', '-30'], { encoding: 'utf8' });
+  assert.equal(await (b as any).capture(30), want);
+  assert.equal((b as any).paneRows, 10);
+  execFileSync('tmux', ['-L', socket, 'resize-window', '-t', exact(b.name), '-y', '14']);
+  await (b as any).capture(30);
+  assert.equal((b as any).paneRows, 14);
+  await b.stop();
+});

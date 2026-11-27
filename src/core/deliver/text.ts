@@ -38,9 +38,15 @@ export const PERMISSION_TIMEOUT_LINE = 'No answer to the permission request in t
 export const DENIED_LINE = 'Denied; the agent stopped.';
 export const NO_ANSWER_LINE = 'The agent ended its turn without an answer. Send your message again, or /new for a fresh session.';
 /** tmux mode: the agent's answers to turns it started by itself (the end of a background task), past
- *  the hourly cap for one chat. Said at most once an hour; the answers past the cap are not kept. */
+ *  the hourly cap for one chat. Said at most once an hour; the answers past the cap are held and sent
+ *  later (heldLine). Held in memory only: a daemon restart loses them, and /new drops them. */
 export function selfCapLine(max: number): string {
-  return `The agent keeps reporting by itself, as its background work ends: ${max} such messages reached this chat in the last hour, so more are held back. Ask it for what you miss.`;
+  return `The agent keeps reporting by itself, as its background work ends: ${max} such messages reached this chat in the last hour, so more are held back. They come later, as one message. They are kept until Angelia restarts, or until /new.`;
+}
+/** The one message that carries the answers held back by that cap: a first line, then each one. */
+export function heldLine(answers: string[], dropped: number): string {
+  const lost = dropped ? ` ${dropped} older one${dropped === 1 ? ' was' : 's were'} dropped to keep within the limit.` : '';
+  return [`Held back by the hourly limit, sent now (${answers.length}).${lost}`, ...answers].join('\n\n———\n\n');
 }
 export const UNMATCHED_LINE = '[Angelia] This chat is not routed to a profile.';
 export const NOT_OWNER_LINE = 'Only an owner of this chat can do that.';
@@ -156,7 +162,13 @@ export function followsCloseLine(buttons: boolean): string {
  */
 const LIMIT = /(reached|hit|exceeded) (your|the) [\w .-]{0,40}limit|usage limit|out of (usage|credits)|quota (exceeded|exhausted)|rate[ _-]?limit(ed)?\b|model_requires_usage_credits/i;
 
+/** The API's own per-minute 429, which a wait answers (brain/api-error.ts retries it), unless its words
+ *  say the plan's allowance is gone. */
+const API_429 = /\bAPI Error:?\s*\(?\s*429\b|"status"\s*:\s*429\b|\brate_limit_error\b/i;
+const SPENT = /usage limit|out of (usage|credits)|quota (exceeded|exhausted)|model_requires_usage_credits/i;
+
 export function isLimitText(text: string): boolean {
+  if (API_429.test(text) && !SPENT.test(text)) return false;
   return text.length > 0 && text.length <= 400 && LIMIT.test(text);
 }
 

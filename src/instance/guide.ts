@@ -40,7 +40,7 @@ By hand:
 2. Add it under \`profiles:\` in routing.yaml. Fields: cwd, backend (claude-code | grok | pi | codex | agy),
    permission_mode (default | acceptEdits | bypassPermissions | plan: which actions the CLI asks
    about at all), permissions (what Angelia does with each of those requests; see below), model, effort, add_dirs,
-   shell, shell_timeout_seconds, chrome, tui (claude-code only), media_tags, bin (the CLI's full
+   shell, shell_timeout_seconds, chrome, tui (claude-code only), media_tags, self_per_hour, bin (the CLI's full
    path when it is not found), unsafe_ok, agent_commands (CLI slash commands every group member
    may send, e.g. [compact]), sandbox (claude-code: the CLI's own sandbox on, no escape; shell
    network only to sandbox.network.allowedDomains in settings.local.json; codex, pi and agy: on unless false),

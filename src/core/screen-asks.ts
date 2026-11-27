@@ -34,7 +34,7 @@ export function askedBy(a: Pick<ScreenAlarm, 'tool' | 'from'>): string {
 }
 
 export function screenAlarmLine(a: Pick<ScreenAlarm, 'name' | 'tool' | 'preview' | 'from'>, socket = TMUX_SOCKET): string {
-  return `A permission waits: ${askedBy(a)} (${shown(a.preview, PREVIEW_MAX)}, as the screen draws it). It did not come through the chat, and the chat cannot answer it: answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t ${a.name}); /stop ends the turn.`;
+  return `A permission waits: ${askedBy(a)} (${shown(a.preview, PREVIEW_MAX)}, as the screen draws it). It did not come through the chat, and the chat cannot answer it: answer it in the Claude app, or in the pane (tmux -L ${socket} attach -t '=${a.name}'); /stop ends the turn.`;
 }
 
 /** Short, and with anything shaped like a credential masked: the line goes to a chat. */

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
+import { drawnPaste, idleWith } from './tui-stub.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frame = (name: string) => readFileSync(join(here, 'fixtures', `pane-${name}.txt`), 'utf8');
@@ -23,16 +24,17 @@ test('tmux mode: a turn typed in the Claude app while the chat\'s message waits 
   const marker = (text: string) => writeFileSync(join(b.dir, 'turn.json'), JSON.stringify({ text, at: Date.now() }));
   // The pane: busy with the app's turn for three looks, which then ends with its own Stop marker;
   // idle; the pasted text lands; after Enter the chat's turn answers with a marker of its own.
-  let looks = 0, entered = false;
-  const landed = frame('idle').replace(/❯\s+Try "refactor <filepath>"/, '❯ [Pasted text #1 +2 lines]');
+  // The box shows the paste once it is pasted, drawn for its text.
+  let looks = 0, entered = false, landed = '';
   b.capture = async () => {
     looks++;
     if (looks <= 3) return frame('busy');
     if (looks === 4) { marker('the app turn\'s answer'); return frame('idle'); }
-    return entered ? frame('idle') : landed;
+    return entered || !landed ? frame('idle') : landed;
   };
   b.sessionAlive = async () => true;
   b.tm = async (a: string[]) => {
+    if (a[0] === 'load-buffer') landed = idleWith(drawnPaste(readFileSync(a[a.length - 1], 'utf8')));
     if (a[0] === 'send-keys' && a.includes('Enter')) { entered = true; setTimeout(() => marker('the chat\'s answer'), 2000); }
     return { code: 0, out: '' };
   };

@@ -74,8 +74,8 @@ test('H1: the tmux settings carry the PreToolUse hook only where midturn is on',
 
 test('L3: right before Enter the box must hold our text alone, on the busy screen with its prompt', () => {
   const busy = fixture('busy-box-332');
-  const chip = busy.replace(/^❯\s*$/m, '❯ [Pasted text #1 +2 lines]');
-  assert.equal(paneMidTurn(chip, 'any\nmessage\nhere'), true);
+  const chip = busy.replace(/^❯\s*$/m, '❯ [Pasted text #1 +3 lines]');
+  assert.equal(paneMidTurn(chip, 'any\nmessage\nhere\nnow'), true);
   assert.equal(paneMidTurn(busy.replace(/^❯\s*$/m, '❯ hello there'), 'hello there'), true);
   // Someone's text before ours, or ours with more after it: no.
   assert.equal(paneMidTurn(busy.replace(/^❯\s*$/m, '❯ wait hello there'), 'hello there'), false);

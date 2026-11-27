@@ -217,6 +217,17 @@ test('the open tasks a transcript leaves: a background shell or subagent with no
   const big = join(dir, 'big.jsonl');
   writeFileSync(big, jsonl(ROW.background('toolu_early')) + `${JSON.stringify({ pad: 'x'.repeat(9 * 1024 * 1024) })}\n` + jsonl(ROW.background('toolu_late')));
   assert.equal(openTasksInTranscript(big), 1);
+  // An end in that part with no start in it: tasks from before may still run, so one counts as open.
+  const cut = join(dir, 'cut.jsonl');
+  writeFileSync(cut, jsonl(ROW.background('toolu_a')) + `${JSON.stringify({ pad: 'x'.repeat(9 * 1024 * 1024) })}\n` + jsonl([end('toolu_a')]));
+  assert.equal(openTasksInTranscript(cut), 1);
+  // The same end in a file read whole says nothing.
+  const whole = join(dir, 'whole.jsonl');
+  writeFileSync(whole, jsonl([end('toolu_a')]));
+  assert.equal(openTasksInTranscript(whole), 0);
+  const stale = join(dir, 'stale.jsonl');
+  writeFileSync(stale, `${JSON.stringify({ pad: 'x'.repeat(9 * 1024 * 1024) })}\n` + jsonl([{ ...end('toolu_a'), timestamp: new Date(Date.now() - 13 * HOUR).toISOString() }]));
+  assert.equal(openTasksInTranscript(stale), 0, 'an old end holds nothing');
   // A start older than the longest time holds nothing, by its row's own time.
   const old = new Date(Date.now() - 13 * HOUR).toISOString();
   writeFileSync(join(dir, 'old.jsonl'), jsonl(ROW.background('toolu_old').map((r) => ({ ...r, timestamp: old }))));

@@ -54,7 +54,7 @@ test('compile: a user-level MCP server with a password in its address is left ou
   const { cwd, plan } = userInfoPlan({ tav: { type: 'http', url: secretUrl }, plain: { type: 'http', url: 'https://other.example.com/mcp' } });
   assert.deepEqual(plan.conflicts, []);
   const note = plan.notes.find((x) => x.includes('MCP server tav'));
-  assert.ok(note && /user or password/.test(note) && /does not load/.test(note), plan.notes.join(' | '));
+  assert.ok(note && /user or password/.test(note) && /may not load/.test(note), plan.notes.join(' | '));
   assert.ok(!JSON.stringify([plan.changes, plan.notes]).includes('S3CRET'), 'the password is nowhere in the plan');
   plan.apply();
   const rec = JSON.parse(readFileSync(join(cwd, RECORD), 'utf8'));
@@ -88,4 +88,24 @@ test('stderr: a blocked-connector warning cut between two chunks is no failure t
   assert.equal(failures.at(-1), '', 'once the line is whole it is out of the failure text');
   child.stderr.emit('data', Buffer.from('Error: real trouble\n'));
   assert.equal(failures.at(-1), 'Error: real trouble\n', failures.join(' | '));
+});
+
+test('compile: a left-out user-level server whose name the profile\'s .mcp.json also has gets a note', () => {
+  const { plan } = userInfoPlan({ tav: { type: 'http', url: secretUrl } }, {}, { tav: { type: 'http', url: 'https://ok.example.com/mcp' } });
+  assert.deepEqual(plan.conflicts, []);
+  assert.ok(plan.notes.some((x) => x.includes('MCP server tav') && /same name/.test(x)), plan.notes.join(' | '));
+  assert.ok(!plan.notes.join().includes('S3CRET'));
+});
+
+test('stderr: after the cut at 16 KB the part of a line left at the front is no failure text', () => {
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), pid: undefined }) as any;
+  const failures: string[] = [];
+  wireChild(child, { exit: () => {}, failure: (t) => failures.push(t), line: () => {}, benign: () => {} });
+  const warn = 'Warning: claude.ai MCP server blocked by enterprise policy: claude.ai Gmail\n';
+  // The cut falls inside the first benign line; every later one is whole.
+  child.stderr.emit('data', Buffer.from(warn.repeat(Math.ceil(17_000 / warn.length))));
+  assert.equal(failures.at(-1) ?? '', '', failures.join(' | '));
+  // One line longer than the cut is still shown.
+  child.stderr.emit('data', Buffer.from(`${'x'.repeat(20_000)}\n`));
+  assert.match(failures.at(-1)!, /x{100}/);
 });

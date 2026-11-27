@@ -215,7 +215,7 @@ test('the add-dir dialog (claude 2.1.326) names its folder and is accepted only 
 
 test('a paste is only submitted once it is visible in the box', () => {
   assert.equal(pasteLanded('  ❯ hello there\n', 'hello there'), true);
-  assert.equal(pasteLanded('  ❯ [Pasted text +14 lines]\n', 'a very long message'), true);
+  assert.equal(pasteLanded('  ❯ [Pasted text +14 lines]\n', Array.from({ length: 15 }, (_, i) => `line ${i}`).join('\n')), true);
   assert.equal(pasteLanded('  ❯ \n', 'hello there'), false);
 });
 
@@ -389,4 +389,8 @@ test('a pasted message is pressed again when a fresh Claude Code drops the Enter
   assert.deepEqual(await run([pasted, dialog]), { ok: true, enters: 1 }, 'a dialog opened: never pressed again');
   assert.deepEqual(await run([pasted]), { ok: false, enters: 3 }, 'never taken: three presses, then no');
   assert.deepEqual(await run(['']), { ok: false, enters: 1 }, 'the pane is gone');
+  // 0.4.10 (review-keymiss): pressed again only while the box holds the message alone; text typed
+  // after it meanwhile would go with it.
+  assert.deepEqual(await run([pasted, box('[Pasted text #1 +3 lines] and some more')]), { ok: false, enters: 1 }, 'someone typed after it: no second Enter');
+  assert.deepEqual(await run([box('[Pasted text #7 +9 lines][Pasted text #1 +3 lines]')]), { ok: false, enters: 1 }, 'another chip with it: no second Enter');
 });

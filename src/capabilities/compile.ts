@@ -1363,13 +1363,15 @@ export function planProfile(cfg: Config, name: string, opts: PlanOptions = {}): 
         // note (the owner's own config, not this profile's); a name in this folder's .mcp.json stops
         // the compile, since its server would silently not load (fix2 L-b).
         const user = Object.fromEntries(Object.entries(userAll).filter(([n]) => SERVER_NAME.test(n)));
-        for (const n of Object.keys(userAll)) if (!(n in user) && !mcpOwn.includes(n)) notes.push(`the user-level MCP server "${n}" has a character other than letters, digits, - and _, which Claude Code drops from its allow list, so it does not load beside the connectors; rename it in your Claude config to have it`);
+        for (const n of Object.keys(userAll)) if (!(n in user) && !mcpOwn.includes(n)) notes.push(`the user-level MCP server "${n}" has a character other than letters, digits, - and _, which Claude Code drops from its allow list, so it may not load beside the connectors; rename it in your Claude config to have it`);
         // A user or password in the address: no pattern lets in just that server (urlPattern). A
         // user-level one is left off the list, with a note, so it does not load here.
         for (const [n, s] of Object.entries(user)) {
           if (!s.url || !userInfo(s.url)) continue;
           delete user[n];
-          if (!mcpOwn.includes(n)) notes.push(`the address of the user-level MCP server ${n} holds a user or password before its host, which no allow-list pattern can match without letting in other addresses too, so it does not load beside the connectors; take them out of the address in your Claude config and send them in a header to have it`);
+          const why = `the address of the user-level MCP server ${n} holds a user or password before its host, which no allow-list pattern can match without letting in other addresses too`;
+          const fix = 'take them out of the address in your Claude config and send them in a header';
+          notes.push(mcpOwn.includes(n) ? `${why}; this folder's .mcp.json has a server of the same name, so the name stays on the allow list; ${fix}, or rename it` : `${why}, so it may not load beside the connectors; ${fix} to have it`);
         }
         mcpAllow = [...new Set([...mcpOwn, ...Object.keys(user)])].sort();
         // A remote server passes the list by its address only, once a connector's url is on it (mcpUrls).

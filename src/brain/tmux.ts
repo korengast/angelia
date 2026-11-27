@@ -106,8 +106,51 @@ const TAIL_LINES = 14;
  *  working pane reads as idle (pane-busy-teammates-4.txt: the same capture with three rows added by
  *  hand). So the box is the anchor, and what is under it is never read. */
 const ABOVE_BOX = 16;
-/** Claude collapses a long paste into a chip like `[Pasted text +12 lines]`. */
+/** Claude collapses a long paste into a chip like `[Pasted text #4 +5 lines]`. */
 export const PASTED_MARKER = '[Pasted text';
+/** A chip as drawn: its number, and the paste's line breaks (none drawn for a paste of one line).
+ *  Older versions drew no number. */
+const CHIP_RE = /\[Pasted text(?: #\d+)? ?(?:\+(\d+) lines?)?\]/g;
+/** A paste of more characters than this, or of CHIP_BREAKS line breaks or more, is drawn as a chip
+ *  (a pane of at least 12 rows; a shorter one collapses fewer breaks: chipFits). */
+const CHIP_CHARS = 800;
+const CHIP_BREAKS = 3;
+/** A pane of fewer rows than this collapses fewer line breaks than CHIP_BREAKS (chipFits). */
+export const SHORT_PANE_ROWS = 12;
+/** A chip that is all the box holds. */
+const LONE_CHIP_RE = /^\[Pasted text(?: #\d+)? ?(?:\+(\d+) lines?)?\]$/;
+
+/** The length Claude Code measures against CHIP_CHARS: it turns each tab into 4 spaces first (measured
+ *  on 2.1.332, 2026-11-27: one line of 740 characters with 20 tabs is drawn as text, 741 as a chip). */
+const pastedLength = (text: string): number => text.length + 3 * (text.match(/\t/g)?.length ?? 0);
+
+/** `chip` (a CHIP_RE match) can be the chip of a paste of `text`: its count is the text's line breaks,
+ *  and the text is one Claude Code collapses. Measured on 2.1.332 (2026-11-27, a 220-column pane): 3
+ *  breaks or more than 800 characters collapse, 2 breaks and 800 characters do not; the count is the
+ *  breaks ("+5 lines" for 6 lines, "+1 lines" for one break); a paste of one line has none. Anything
+ *  else is a chip of some other paste: a message pasted earlier and never cleared, someone's in the app.
+ *  A short pane collapses less (measured the same day: at 11 rows 2 breaks, at 10 rows and under 1
+ *  break; one line of up to 800 characters never, down to 6 rows), so on a pane of `rows` under
+ *  SHORT_PANE_ROWS a chip `alone` in the box is taken on its count. A pane of unknown height is
+ *  checked in full. A chip with no count is always of one line of more than 800 characters. */
+function chipFits(chip: RegExpMatchArray, text: string, alone = false, rows?: number): boolean {
+  const breaks = text.split('\n').length - 1;
+  const long = pastedLength(text) > CHIP_CHARS;
+  if (chip[1] === undefined) return breaks === 0 && long;
+  if (Number(chip[1]) !== breaks) return false;
+  return breaks >= CHIP_BREAKS || long || (alone && rows !== undefined && rows < SHORT_PANE_ROWS);
+}
+
+/** The box shows a chip that can be the paste of `text`. */
+function chipOf(box: string, text: string): boolean {
+  return [...box.matchAll(CHIP_RE)].some((m) => chipFits(m, text));
+}
+
+/** The box holds one chip and nothing else, and it can be the paste of `text` (chipFits, alone). */
+function loneChipOf(pane: string, text: string, rows?: number): boolean | null {
+  const chip = LONE_CHIP_RE.exec(boxText(pane));
+  return chip ? chipFits(chip, text, true, rows) : null;
+}
 
 export function paneBusy(pane: string): boolean {
   const lines = pane.replace(/\n+$/, '').split('\n');
@@ -168,25 +211,28 @@ export function boxText(pane: string): string {
   return t;
 }
 
-export function paneMidTurn(pane: string, text?: string): boolean {
+export function paneMidTurn(pane: string, text?: string, rows?: number): boolean {
   if (!pane || !paneBusy(pane) || permissionDialog(pane)) return false;
   const box = inputBoxStrict(pane);
   if (box === null || !PROMPT_MARKERS.some((m) => `\n${box}`.includes(m))) return false;
   // With `text`: the same screen, with that text in the box and nothing else (right before its Enter).
-  return text === undefined ? boxText(pane) === '' : boxHoldsOnly(pane, text);
+  return text === undefined ? boxText(pane) === '' : boxHoldsOnly(pane, text, rows);
 }
 
-/** The box holds `text` and nothing else: its collapsed chip (one paste), or the text itself, as the
- *  box wraps it. Not text someone typed before or after it, and not a second chip: Claude Code sends
- *  all of the box, so text left in it goes with the paste and the prompt it stores is not the one
- *  typed (a key miss: measured on 2.1.332, a line or a chip left with the cursor at its start).
- *  Only letters and digits are compared: the box draws a line's `>` as its prompt mark (boxText takes
- *  it off), and a terminal may not give back an emoji's joiners, a variation selector or a combining
- *  mark as they were typed; text left in the box that has none of those is not what a key miss is made of. */
-export function boxHoldsOnly(pane: string, text: string): boolean {
+/** The box holds `text` and nothing else: its collapsed chip (one paste, of its shape: chipFits), or the
+ *  text itself, as the box wraps it. Not text someone typed before or after it, and not a second chip
+ *  or another paste's: Claude Code sends all of the box, so text left in it goes with the paste and the
+ *  prompt it stores is not the one typed (a key miss: measured on 2.1.332, a line or a chip left with
+ *  the cursor at its start). Every character is compared but space, `>` (the box draws a line's `>` as
+ *  its prompt mark, which boxText takes off), and what a terminal may not give back as it was typed: an
+ *  emoji's joiners and skin tones, a variation selector, a combining mark. A symbol or an emoji left in
+ *  the box goes with the paste as a letter does (review-keymiss, 0.4.8). `rows`: the pane's height
+ *  (chipFits), when known. */
+export function boxHoldsOnly(pane: string, text: string, rows?: number): boolean {
+  const lone = loneChipOf(pane, text, rows);
+  if (lone !== null) return lone;
   const shown = boxText(pane);
-  if (/^\[Pasted text #\d+(?: \+\d+ lines?)?\]$/.test(shown)) return true;
-  const flat = (s: string) => s.normalize('NFC').replace(/[^\p{L}\p{N}]+/gu, '');
+  const flat = (s: string) => s.normalize('NFC').replace(/[\s>\p{M}\p{Cf}\u{1F3FB}-\u{1F3FF}]+/gu, '');
   const want = flat(text);
   if (!want) return false;
   // A long text drawn with its middle cut (`[...Truncated text #2 +40 lines...]`): the parts shown are
@@ -379,10 +425,11 @@ export function addDirAccepted(pane: string): boolean {
 }
 
 /** The pasted text (or its collapsed chip) is in the input box, so Enter submits that and
- *  nothing else. Never press Enter without this. */
-export function pasteLanded(pane: string, text: string): boolean {
+ *  nothing else. Never press Enter without this. `rows`: the pane's height (chipFits), when known. */
+export function pasteLanded(pane: string, text: string, rows?: number): boolean {
   const box = inputBox(pane);
-  if (box.includes(PASTED_MARKER)) return true;
+  // A chip of another paste is not this one: an Enter on it would send that paste (review-keymiss).
+  if (box.includes(PASTED_MARKER) && (loneChipOf(pane, text, rows) || chipOf(box, text))) return true;
   const head = text.split(/\s+/).join(' ').slice(0, 24);
   return head.length > 0 && box.split(/\s+/).join(' ').includes(head);
 }
@@ -399,26 +446,33 @@ export async function submitPasted(
   text: string,
   capture: () => Promise<string>,
   enter: () => Promise<unknown>,
-  o: { tries?: number; polls?: number; pollMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+  o: { tries?: number; polls?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; rows?: () => number | undefined } = {},
 ): Promise<boolean> {
   const { tries = 3, polls = 6, pollMs = 250 } = o;
   const nap = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   for (let t = 0; t < tries; t++) {
     await enter();
+    let last = '';
     for (let p = 0; p < polls; p++) {
       await nap(pollMs);
       const pane = await capture();
       if (!pane) return false; // the pane is gone
-      if (paneBusy(pane) || permissionDialog(pane) || !pasteLanded(pane, text)) return true;
+      if (paneBusy(pane) || permissionDialog(pane) || !pasteLanded(pane, text, o.rows?.())) return true;
+      last = pane;
     }
+    // Pressed again only while the box holds the text alone: text typed after it meanwhile, or a chip
+    // pasted with it, would go with it (review-keymiss, 0.4.8).
+    if (!boxHoldsOnly(last, text, o.rows?.())) return false;
   }
   return false;
 }
 
 /** A rule may carry the session's name near its right end once the session is named
  *  (`───── trip-planning ─`, measured 2026-09-21); without it a named session's box is never
- *  found and every paste is judged not landed. */
-const RULE_RE = /^\s*─{10,}(\s+\S.{0,80}?\s+─+)?\s*$/;
+ *  found and every paste is judged not landed. While Up calls back an earlier prompt, the top rule
+ *  says so near its left end (`─── History 2/2 ─────`, measured on 2.1.332, 2026-11-27): without it
+ *  that screen had no box, read as not idle, and the prompt in it was never cleared. */
+const RULE_RE = /^\s*(?:─{10,}(\s+\S.{0,80}?\s+─+)?|─{3}\s+History\s+\d+\/\d+\s+─{10,})\s*$/;
 
 /** The input box only: the lines between the last two horizontal rules. Everything above them is
  *  the conversation, where every submitted prompt is echoed with the same `❯`, so a match there

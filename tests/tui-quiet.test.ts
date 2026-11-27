@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
+import { drawnPaste, idleWith } from './tui-stub.js';
 
 // Own state dir before tui.js reads it at import, so nothing here can touch a live Angelia.
 process.env.ANGELIA_STATE_DIR = mkdtempSync(join(tmpdir(), 'angelia-tuiquiet-'));
@@ -69,10 +70,10 @@ async function turnWith(text: string, steps: Step[], stub: Stub = {}) {
   });
   let entered = false, looks = 0, enteredAt = 0;
   const start = () => { entered = true; enteredAt = Date.now(); for (const s of steps) if (typeof s.when === 'number') timers.push(setTimeout(() => run(s), s.when)); };
-  const landed = frame('idle').replace(/❯\s+Try "refactor <filepath>"/, '❯ [Pasted text #1 +2 lines]');
-  b.capture = async () => (entered ? (stub.pane?.(++looks) ?? frame('idle')) : landed);
+  let landed = '';
+  b.capture = async () => (entered ? (stub.pane?.(++looks) ?? frame('idle')) : landed || frame('idle'));
   b.sessionAlive = async () => true;
-  b.tm = async (a: string[]) => { if (a[0] === 'send-keys' && a.includes('Enter') && !entered) start(); return { code: 0, out: '' }; };
+  b.tm = async (a: string[]) => { if (a[0] === 'load-buffer') landed = idleWith(drawnPaste(readFileSync(a[a.length - 1], 'utf8'))); if (a[0] === 'send-keys' && a.includes('Enter') && !entered) start(); return { code: 0, out: '' }; };
   const events: any[] = [];
   try {
     if (stub.follow) { b.turnSentAt = Date.now() - 60_000; start(); for await (const e of brain.follow()) events.push(e); }

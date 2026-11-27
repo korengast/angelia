@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { selfCapLine } from '../src/core/deliver/text.js';
+import { heldLine, selfCapLine } from '../src/core/deliver/text.js';
 import { ROW, stubChat, until, wait, type PaneStub } from './tui-stub.js';
 
 // Own state dir and socket before the brain modules load: nothing here can touch a live Angelia. The
@@ -125,11 +125,76 @@ describe('tmux mode: a turn the agent started by itself, between turns', { concu
     const p = c.pane();
     for (let n = 1; n <= 9; n++) { p.mark(woke(`Report ${n}.`)); await taken(p); }
     assert.deepEqual(c.sent, ['Started.', 'Report 1.', 'Report 2.', 'Report 3.', 'Report 4.', 'Report 5.', 'Report 6.', selfCapLine(6)], 'a loop of notifications does not flood the chat');
-    assert.equal(c.lines().filter((l) => l === `self-started answer not delivered key=${c.key} reason=hourly-limit chars=9`).length, 3);
+    assert.equal(c.lines().filter((l) => l === `self-started answer held key=${c.key} reason=hourly-limit chars=9`).length, 3);
     await c.say('what did I miss?');
     assert.equal(c.sent.at(-1), 'Two reports.');
     // A late answer is not one of them: the cap is for turns the agent started.
     assert.equal((c.o as any).selfSent.get(c.key).at.length, 6);
+    // Nothing goes while the hour is full; once it frees a place, the held ones go as one message, once.
+    const n = c.sent.length;
+    await c.o.sendHeld();
+    assert.equal(c.sent.length, n);
+    const later = Date.now() + 3601_000;
+    await c.o.sendHeld(later);
+    await c.o.sendHeld(later);
+    assert.deepEqual(c.sent.slice(n), [heldLine(['Report 7.', 'Report 8.', 'Report 9.'], 0)]);
+    assert.equal((c.o as any).selfSent.get(c.key).at.length, 1, 'the one message takes one place');
+  });
+
+  test('self_per_hour sets the cap; held answers are bounded, oldest dropped first and counted', { timeout: 25_000 }, async (t) => {
+    const c = await stubChat({}, {}, { self_per_hour: 1 }); t.after(() => c.o.shutdown());
+    c.onEnter(first);
+    await c.say('start the build');
+    const p = c.pane();
+    for (let n = 1; n <= 24; n++) { p.mark(woke(`Report ${n}.`)); await taken(p); }
+    assert.deepEqual(c.sent, ['Started.', 'Report 1.', selfCapLine(1)]);
+    await c.o.sendHeld(Date.now() + 3601_000);
+    assert.equal(c.sent.at(-1), heldLine(Array.from({ length: 20 }, (_, i) => `Report ${i + 5}.`), 3));
+    // By characters too: of three long ones only the last two fit, and one longer than the room is cut.
+    const o = c.o as any;
+    for (const ch of ['a', 'b', 'c']) o.hold(c.key, false, ch.repeat(8000));
+    assert.deepEqual(o.held.get(c.key).list.map((x: any) => x.text[0]), ['b', 'c']);
+    assert.equal(o.held.get(c.key).dropped, 1);
+    o.hold(c.key, false, 'd'.repeat(30_000));
+    assert.deepEqual(o.held.get(c.key).list.map((x: any) => x.text.length), [20_000]);
+    assert.equal(o.held.get(c.key).dropped, 3);
+  });
+
+  // Review fix (Fable, 0.4.10): held answers are the old conversation's; after /new they would arrive in
+  // the new one up to an hour later. /stop keeps them: the conversation goes on at the next message.
+  test('the cap line says how long the held answers are kept', () => {
+    assert.match(selfCapLine(6), /They are kept until Angelia restarts, or until \/new\.$/);
+    assert.doesNotMatch(selfCapLine(6), /kept and come later/);
+  });
+
+  test('/new drops the chat\'s held answers; /stop keeps them', { timeout: 18_000 }, async (t) => {
+    const c = await stubChat({}, {}, { self_per_hour: 1 }); t.after(() => c.o.shutdown());
+    c.onEnter(first);
+    await c.say('start the build');
+    const p = c.pane();
+    for (const s of ['One.', 'Two.', 'Three.']) { p.mark(woke(s)); await taken(p); }
+    const o = c.o as any;
+    assert.deepEqual(o.held.get(c.key).list.map((x: any) => x.text), ['Two.', 'Three.']);
+    await c.say('/stop');
+    assert.deepEqual(o.held.get(c.key).list.map((x: any) => x.text), ['Two.', 'Three.'], 'kept at /stop');
+    await c.say('/new');
+    assert.equal(o.held.has(c.key), false);
+    assert.ok(c.log.includes(`held answers dropped key=${c.key} reason=new-session count=2`), c.log.join('\n'));
+    const n = c.sent.length;
+    await c.o.sendHeld(Date.now() + 3601_000);
+    assert.equal(c.sent.length, n, 'nothing of the old conversation comes later');
+  });
+
+  test('a held answer goes first when a new one finds a free place: one message, in order', { timeout: 18_000 }, async (t) => {
+    const c = await stubChat({}, {}, { self_per_hour: 1 }); t.after(() => c.o.shutdown());
+    c.onEnter(first);
+    await c.say('start the build');
+    const p = c.pane();
+    for (const s of ['One.', 'Two.']) { p.mark(woke(s)); await taken(p); }
+    (c.o as any).selfSent.get(c.key).at = [Date.now() - 3601_000];
+    p.mark(woke('Three.')); await taken(p);
+    await until(() => c.sent.length === 4);
+    assert.equal(c.sent[3], heldLine(['Two.', 'Three.'], 0));
   });
 
   test('a session the daemon let go of is not read: no reader stays, and what it said meanwhile is not sent later', { timeout: 18_000 }, async (t) => {
