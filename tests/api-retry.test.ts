@@ -30,11 +30,10 @@ test('a lost login is told by the words Claude Code and the API use for it, and 
 });
 
 test('only an error a wait may answer is retried: 5xx, 408, 409, 429, overload, rate limit, network, login', () => {
-  const long = ' '.repeat(400); // past isLimitText's 400 characters, so a rate limit reaches the retry
   for (const t of ['API Error: 500 {"type":"error"}', 'API Error: 529 {"type":"overloaded_error"}', 'API Error: Connection error.', 'Request timed out.', 'API Error: fetch failed', 'Not logged in · Please run /login',
-    `API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}${long}`,
+    `API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}`,
     'API Error: 408 {"type":"error","error":{"type":"timeout_error","message":"Request timed out"}}', 'API Error: 409 {"type":"error","error":{"type":"conflict"}}',
-    'API Error (429 Too Many Requests)', 'Too many requests, slow down', `Rate limited by the server${long}`, '{"status": 503, "message": "unavailable"}', 'request failed with status code 429', 'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}'])
+    'API Error (429 Too Many Requests)', 'Too many requests, slow down', '{"status": 503, "message": "unavailable"}', 'request failed with status code 429', 'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}'])
     assert.equal(retryableApiError(apiErrorReason(t)), true, t);
   for (const t of ['Prompt is too long', 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"bad"}}', 'API Error: 413 request too large',
     // A 4xx whose text holds the loose words is no network failure: the code decides.
@@ -43,6 +42,17 @@ test('only an error a wait may answer is retried: 5xx, 408, 409, 429, overload, 
     'the networking module failed', 'timeouts.json is missing'])
     assert.equal(retryableApiError(apiErrorReason(t)), false, t);
   assert.equal(retryableApiError('exit'), false);
+});
+
+test('the API\'s own 429 is no usage limit: its row is held back and tried again', () => {
+  const row = (text: string) => ({ type: 'assistant', isApiErrorMessage: true, message: { content: [{ type: 'text', text }] } });
+  for (const t of ['API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit"}}',
+    'API Error: 429 Rate limited', '{"status": 429, "message": "rate limit"}', 'API Error: {"type":"rate_limit_error","message":"You have exceeded your rate limit"}']) {
+    const text = apiErrorText(row(t));
+    assert.equal(text, t);
+    assert.equal(retryableApiError(apiErrorReason(text!)), true, t);
+  }
+  for (const t of ['API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"You have reached your usage limit"}}', "You've hit your limit · resets 3pm"]) assert.equal(apiErrorText(row(t)), null, t);
 });
 
 test('only a row Claude Code marks as a failed API call counts, and a usage limit stays an answer', () => {

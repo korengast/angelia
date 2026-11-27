@@ -156,7 +156,13 @@ export function followsCloseLine(buttons: boolean): string {
  */
 const LIMIT = /(reached|hit|exceeded) (your|the) [\w .-]{0,40}limit|usage limit|out of (usage|credits)|quota (exceeded|exhausted)|rate[ _-]?limit(ed)?\b|model_requires_usage_credits/i;
 
+/** The API's own per-minute 429, which a wait answers (brain/api-error.ts retries it), unless its words
+ *  say the plan's allowance is gone. */
+const API_429 = /\bAPI Error:?\s*\(?\s*429\b|"status"\s*:\s*429\b|\brate_limit_error\b/i;
+const SPENT = /usage limit|out of (usage|credits)|quota (exceeded|exhausted)|model_requires_usage_credits/i;
+
 export function isLimitText(text: string): boolean {
+  if (API_429.test(text) && !SPENT.test(text)) return false;
   return text.length > 0 && text.length <= 400 && LIMIT.test(text);
 }
 
