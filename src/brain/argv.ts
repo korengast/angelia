@@ -102,7 +102,8 @@ function shellWord(v: string, home: string): string {
  *  exactly them the keys go inline. */
 export function claudeTerminalLine(p: Profile, id: string, home = homedir(), o: { mcp?: McpLaunch; settingsFile?: string } = {}): string {
   const w = (v: string) => shellWord(v, home);
-  const a = [`cd ${w(p.cwd)}`, '&&', ...Object.entries(CLAUDE_ENV).map(([k, v]) => `${k}=${v}`), w(p.bin ?? 'claude')];
+  // Not prompt suggestions off: at a terminal a person reads them as Claude Code draws them.
+  const a = [`cd ${w(p.cwd)}`, '&&', ...Object.entries(MEMORY_ENV).map(([k, v]) => `${k}=${v}`), w(p.bin ?? 'claude')];
   if (p.permission_mode === 'bypassPermissions') a.push('--dangerously-skip-permissions');
   else if (p.permission_mode !== 'default') a.push('--permission-mode', p.permission_mode);
   a.push('--resume', id);
@@ -125,7 +126,8 @@ export function claudeTerminalLine(p: Profile, id: string, home = homedir(), o: 
  *
  *  Prompt suggestions off: Claude Code draws a reply it guesses in the empty box, dim, and a plain
  *  capture of the screen reads it as typed text (0.4.11; boxTyped reads it right where one is drawn). */
-export const CLAUDE_ENV: Record<string, string> = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: '0' };
+const MEMORY_ENV: Record<string, string> = { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
+export const CLAUDE_ENV: Record<string, string> = { ...MEMORY_ENV, CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: '0' };
 
 export function childEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};

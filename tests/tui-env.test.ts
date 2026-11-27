@@ -58,6 +58,7 @@ test('tmux panes: no secret from a server an older daemon started, only their ow
   assert.equal(existsSync(join(state, 'tui', money.b.name, 'env')), false);
   assert.doesNotMatch(tmux('show-environment', '-t', money.b.name), /canary-bank/);
   assert.match(tmux('show-environment', '-t', money.b.name), /^CLAUDE_CODE_DISABLE_AUTO_MEMORY=1$/m, 'Claude\'s auto memory is off in the pane too');
+  assert.match(tmux('show-environment', '-t', money.b.name), /^CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0$/m, 'and its prompt suggestions (0.4.11)');
   assert.doesNotMatch(tmux('list-panes', '-a', '-F', '#{pane_start_command}'), /canary-bank\b/);
 
   // The daemon's clean-up at start: names out of the server, reported by name only.
