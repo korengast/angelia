@@ -1119,7 +1119,9 @@ export class TuiBrain extends EventEmitter implements Brain {
     if (u && (u.answered || (u.transcript === this.transcript && this.queuedSince(u.offset, u.key)))) {
       this.emit('log', `tmux: a message typed into the last turn was taken late; it is not typed again${u.answered ? ' (its answer went to the chat already)' : ''} pane=${this.name}`);
       // A turn Claude Code still runs for it by itself is the chat's (followerOf), from its Enter on.
-      if (!u.answered) this.absorbed.push({ key: u.key, text: u.text, at: u.at, turn: 0, seen: false, offset: u.offset });
+      // It keeps the turn it was pressed into: when that turn was closed on the quiet path, its late
+      // marker counts it as a prompt of that turn (judgeIdle, recheck-lows-046).
+      if (!u.answered) this.absorbed.push({ key: u.key, text: u.text, at: u.at, turn: u.turn, seen: false, offset: u.offset });
       yield { kind: 'result', text: TAKEN_LATE_LINE, isError: false };
       return;
     }
@@ -2208,14 +2210,18 @@ export class TuiBrain extends EventEmitter implements Brain {
       // the app inside that window, or into that turn, is theirs.
       // The chat's messages typed into that turn count as Angelia's: then the hook counts them too,
       // and the last typed prompt it keys is one of them.
+      // A message taken late into that turn (turn(): found queued after the turn closed) is one of them too.
+      const taken = [...new Set([...late.taken, ...this.absorbed.filter((a) => a.turn === late.sentAt).map((a) => a.key)])];
       const own = ((m.prompt_key === late.key || (!!late.cmd && m.prompt_key === late.cmd)) && m.prompts === 1)
-        || (late.taken.length > 0 && m.prompts === 1 + late.taken.length && typeof m.prompt_key === 'string' && late.taken.includes(m.prompt_key));
+        || (taken.length > 0 && m.prompts === 1 + taken.length && typeof m.prompt_key === 'string' && taken.includes(m.prompt_key));
       if (m.origin !== 'notification' && typedAt !== undefined && typedAt >= late.sentAt - 1000 && typedAt <= late.endedAt && !own) {
         return no('late, but the prompt the hook read is not the one Angelia typed');
       }
       if (m.origin !== 'notification' && typedAt !== undefined && typedAt >= late.sentAt - 1000 && typedAt <= late.endedAt) {
-        // Its prompts are Angelia's (`own` above): the turn is the chat's.
+        // Its prompts are Angelia's (`own` above): the turn is the chat's. A message taken late into it
+        // is answered here, and waits for no other turn.
         ours(late.peer);
+        this.absorbed = this.absorbed.filter((a) => a.turn !== late.sentAt);
         // A usage limit comes as the CLI's error row too: named as what it is.
         if (isLimitText(text)) return no('late, and a usage limit of the CLI');
         if (failedRow) return no('late, and an API error of the CLI, not an answer');

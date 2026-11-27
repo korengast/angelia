@@ -173,4 +173,31 @@ describe('0.4.10 lost or doubled answers', { concurrency: true, timeout: 180_000
     await until(() => c.sent.includes('Reviewed: all good.'), 3000).catch(() => {});
     assert.ok(c.sent.includes('Reviewed: all good.'), `${JSON.stringify(c.sent)}\n${p.logs.join('\n')}`);
   });
+  test('recheck-lows-046: a message taken late into a turn closed on the quiet path: that turn\'s late answer, which covers it, reaches the chat', { timeout: 40_000 }, async (t) => {
+    const c = await stubChat(); t.after(() => c.o.shutdown());
+    c.onEnter((n, p) => { if (n === 1) working(p); });
+    const first = c.say('one');
+    await until(() => c.pane()?.enters === 1);
+    await wait(150);
+    const p = c.pane();
+    // Its queue row comes after the confirm wait: not seen taken (unsure), so it waits for a turn of its own.
+    p.slowRow(2500);
+    const second = c.say('two');
+    await until(() => p.queued.length === 1 && p.logs.some((l) => /for the running turn was not taken/.test(l)), 10_000);
+    // The turn takes it late; the screen then reads idle with the call still open, and the quiet path
+    // closes the turn with no answer.
+    p.rows(ROW.queuedPrompt(p.queued[0]));
+    p.show('idle');
+    await first;
+    // Its own turn finds it taken late: not typed again.
+    await second;
+    assert.ok(p.logs.some((l) => /taken late; it is not typed again/.test(l)), p.logs.join('\n'));
+    // The turn goes on and its Stop comes: one answer for both.
+    p.rows(ROW.result('t1'), ROW.text('One and two.'));
+    p.stop('One and two.');
+    await until(() => !p.marked());
+    await until(() => c.sent.includes('One and two.'), 3000).catch(() => {});
+    assert.ok(c.sent.includes('One and two.'), `${JSON.stringify(c.sent)}\n${p.logs.join('\n')}`);
+    assert.equal(p.enters, 1);
+  });
 });
