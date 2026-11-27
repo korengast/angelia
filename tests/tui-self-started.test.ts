@@ -162,6 +162,11 @@ describe('tmux mode: a turn the agent started by itself, between turns', { concu
 
   // Review fix (Fable, 0.4.10): held answers are the old conversation's; after /new they would arrive in
   // the new one up to an hour later. /stop keeps them: the conversation goes on at the next message.
+  test('the cap line says how long the held answers are kept', () => {
+    assert.match(selfCapLine(6), /They are kept until Angelia restarts, or until \/new\.$/);
+    assert.doesNotMatch(selfCapLine(6), /kept and come later/);
+  });
+
   test('/new drops the chat\'s held answers; /stop keeps them', { timeout: 18_000 }, async (t) => {
     const c = await stubChat({}, {}, { self_per_hour: 1 }); t.after(() => c.o.shutdown());
     c.onEnter(first);

@@ -39,9 +39,9 @@ export const DENIED_LINE = 'Denied; the agent stopped.';
 export const NO_ANSWER_LINE = 'The agent ended its turn without an answer. Send your message again, or /new for a fresh session.';
 /** tmux mode: the agent's answers to turns it started by itself (the end of a background task), past
  *  the hourly cap for one chat. Said at most once an hour; the answers past the cap are held and sent
- *  later (heldLine). */
+ *  later (heldLine). Held in memory only: a daemon restart loses them, and /new drops them. */
 export function selfCapLine(max: number): string {
-  return `The agent keeps reporting by itself, as its background work ends: ${max} such messages reached this chat in the last hour, so more are held back. They are kept and come later, as one message.`;
+  return `The agent keeps reporting by itself, as its background work ends: ${max} such messages reached this chat in the last hour, so more are held back. They come later, as one message. They are kept until Angelia restarts, or until /new.`;
 }
 /** The one message that carries the answers held back by that cap: a first line, then each one. */
 export function heldLine(answers: string[], dropped: number): string {
