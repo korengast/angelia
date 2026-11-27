@@ -552,6 +552,10 @@ export class Orchestrator {
 
   private async newSession(key: string): Promise<string> {
     await this.dropBrain(key);
+    // Answers the hourly cap held back are the old conversation's: sent later, they would land in the
+    // new one. A /stop keeps them (the conversation goes on at the next message).
+    const held = this.held.get(key);
+    if (held) { this.held.delete(key); this.log(`held answers dropped key=${key} reason=new-session count=${held.list.length}`); }
     return `New session ${this.map.startNew(key).id.slice(0, 8)} started.`;
   }
 

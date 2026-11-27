@@ -160,6 +160,26 @@ describe('tmux mode: a turn the agent started by itself, between turns', { concu
     assert.equal(o.held.get(c.key).dropped, 3);
   });
 
+  // Review fix (Fable, 0.4.10): held answers are the old conversation's; after /new they would arrive in
+  // the new one up to an hour later. /stop keeps them: the conversation goes on at the next message.
+  test('/new drops the chat\'s held answers; /stop keeps them', { timeout: 18_000 }, async (t) => {
+    const c = await stubChat({}, {}, { self_per_hour: 1 }); t.after(() => c.o.shutdown());
+    c.onEnter(first);
+    await c.say('start the build');
+    const p = c.pane();
+    for (const s of ['One.', 'Two.', 'Three.']) { p.mark(woke(s)); await taken(p); }
+    const o = c.o as any;
+    assert.deepEqual(o.held.get(c.key).list.map((x: any) => x.text), ['Two.', 'Three.']);
+    await c.say('/stop');
+    assert.deepEqual(o.held.get(c.key).list.map((x: any) => x.text), ['Two.', 'Three.'], 'kept at /stop');
+    await c.say('/new');
+    assert.equal(o.held.has(c.key), false);
+    assert.ok(c.log.includes(`held answers dropped key=${c.key} reason=new-session count=2`), c.log.join('\n'));
+    const n = c.sent.length;
+    await c.o.sendHeld(Date.now() + 3601_000);
+    assert.equal(c.sent.length, n, 'nothing of the old conversation comes later');
+  });
+
   test('a held answer goes first when a new one finds a free place: one message, in order', { timeout: 18_000 }, async (t) => {
     const c = await stubChat({}, {}, { self_per_hour: 1 }); t.after(() => c.o.shutdown());
     c.onEnter(first);
