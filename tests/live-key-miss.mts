@@ -105,6 +105,9 @@ try {
   if (want('lines-mid')) await one(r, 'three lines left, cursor on the middle one', list, async () => { typeIn('first line'); key('C-j'); typeIn('second line'); key('C-j'); typeIn('third line'); await sleep(500); key('Up'); key('C-a'); await sleep(800); });
   if (want('line-end')) await one(r, 'a line left, cursor at its end', `${posted}\n\n${quoteDot}`, async () => { typeIn('half typed words'); await sleep(800); });
   if (want('long')) await one(r, 'a long message (80 lines)', long);
+  // Review fix (Fable, 0.4.10): one line of 780 characters with 20 tabs is a chip (each tab counts as 4
+  // spaces). It used to be refused, untyped.
+  if (want('tabs')) await one(r, 'one line, 780 characters with 20 tabs', `${'Reply with exactly: ok.'.padEnd(38, ' ')}\t${`${'x'.repeat(38)}\t`.repeat(19)}`);
   if (want('restart')) {
     await r.b.stop();
     r = rig(true);

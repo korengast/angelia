@@ -45,3 +45,17 @@ test('a symbol or an emoji left in the box is text that would go with the paste'
   assert.equal(boxHoldsOnly(box('Family 👨👩👧 heart ❤ thumbs 👍 café ★ ok'), 'Family 👨‍👩‍👧 heart ❤️ thumbs 👍🏽 café ★ ok'), true);
   assert.equal(boxHoldsOnly(box('Family 👨‍👩‍👧 flag 🇮🇱 → done ✓ ™ ok'), 'Family 👨‍👩‍👧 flag 🇮🇱 → done ✓ ™ ok'), true, 'as the 2.1.332 box drew them');
 });
+
+// Review fix (Fable, 0.4.10): Claude Code turns each tab into 4 spaces before it measures the 800
+// characters (measured on 2.1.332, 2026-11-27: 740 characters with 20 tabs drawn as text, 741 as a chip).
+test('a one-line paste with tabs is a chip by its length with each tab as 4 spaces', () => {
+  const tabs780 = `${'x'.repeat(38)}\t`.repeat(20); // 780 characters, 840 as Claude Code counts them
+  assert.equal(tabs780.length, 780);
+  const chip = box('[Pasted text #1]');
+  assert.equal(pasteLanded(chip, tabs780), true, 'the chip of this paste: Enter may follow');
+  assert.equal(boxHoldsOnly(chip, tabs780), true);
+  // Among other text the length decides: 740 with 20 tabs is 800, drawn as text, so a chip is another paste's.
+  const tabs740 = `${'x'.repeat(36)}\t`.repeat(20);
+  assert.equal(pasteLanded(box('[Pasted text #1] [Pasted text #2]'), tabs740), false);
+  assert.equal(pasteLanded(box('[Pasted text #1] [Pasted text #2]'), `${tabs740}y`), true);
+});

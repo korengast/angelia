@@ -115,6 +115,10 @@ const CHIP_RE = /\[Pasted text(?: #\d+)? ?(?:\+(\d+) lines?)?\]/g;
 const CHIP_CHARS = 800;
 const CHIP_BREAKS = 3;
 
+/** The length Claude Code measures against CHIP_CHARS: it turns each tab into 4 spaces first (measured
+ *  on 2.1.332, 2026-11-27: one line of 740 characters with 20 tabs is drawn as text, 741 as a chip). */
+const pastedLength = (text: string): number => text.length + 3 * (text.match(/\t/g)?.length ?? 0);
+
 /** `chip` (a CHIP_RE match) can be the chip of a paste of `text`: its count is the text's line breaks,
  *  and the text is one Claude Code collapses. Measured on 2.1.332 (2026-11-27, a 220-column pane): 3
  *  breaks or more than 800 characters collapse, 2 breaks and 800 characters do not; the count is the
@@ -122,7 +126,7 @@ const CHIP_BREAKS = 3;
  *  else is a chip of some other paste: a message pasted earlier and never cleared, someone's in the app. */
 function chipFits(chip: RegExpMatchArray, text: string): boolean {
   const breaks = text.split('\n').length - 1;
-  if (breaks < CHIP_BREAKS && text.length <= CHIP_CHARS) return false;
+  if (breaks < CHIP_BREAKS && pastedLength(text) <= CHIP_CHARS) return false;
   return chip[1] === undefined ? breaks === 0 : Number(chip[1]) === breaks;
 }
 
