@@ -161,9 +161,10 @@ describe('0.4.10 lost or doubled answers', { concurrency: true, timeout: 180_000
   });
   test('late-answers L4: a slash command Angelia typed, closed on the quiet path: its late answer reaches the chat', { timeout: 30_000 }, async (t) => {
     const c = await stubChat(); t.after(() => c.o.shutdown());
-    const cmd = { type: 'user', timestamp: new Date().toISOString(), origin: { kind: 'human' }, message: { role: 'user', content: '<command-name>/review-it</command-name>\n<command-message>review-it</command-message>\n<command-args>now</command-args>' } };
+    // Written at the Enter (its time is the hook's prompt_at).
+    const cmd = () => ({ type: 'user', timestamp: new Date().toISOString(), origin: { kind: 'human' }, message: { role: 'user', content: '<command-name>/review-it</command-name>\n<command-message>review-it</command-message>\n<command-args>now</command-args>' } });
     // Claude Code stores the command as its own row, not as the text typed; the screen reads idle.
-    c.onEnter((n, p) => { if (n === 1) p.rows(cmd); });
+    c.onEnter((n, p) => { if (n === 1) p.rows(cmd()); });
     await c.say('/review-it now');
     const p = c.pane();
     // The command's turn goes on after the quiet path closed it, and its Stop comes late.
