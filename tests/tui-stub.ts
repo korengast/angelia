@@ -242,8 +242,13 @@ export async function stubChat(waits: Partial<typeof FAST> = {}, defaults: Recor
   const cfg = Config.parse({ profiles: { a: { cwd, tui: true, ...profile } }, routes: [{ platform: 'telegram', chat: 1, profile: 'a' }], defaults: { max_out_per_min: 1000, ...defaults } });
   const sent: string[] = [], log: string[] = [];
   const stateDir = place.stateDir ?? mkdtempSync(join(tmpdir(), 'angelia-unasked-orch-'));
+  // A stand-in for claude that fails as /bin/false does, but prints a Claude Code version for the launch
+  // check (a relaunch runs it): /bin/false itself prints a version on some systems (uutils coreutils
+  // 0.10.0 on GitHub's Ubuntu runner), and that reads as a claude older than the minimum.
+  const bin = join(stateDir, 'claude-stand-in');
+  writeFileSync(bin, '#!/bin/sh\necho "2.1.332 (Claude Code)"\nexit 1\n', { mode: 0o755 });
   const o = new Orchestrator(cfg, { telegram: { send: async (_c: string, text: string) => { sent.push(text); } } },
-    { stateDir, bins: { 'claude-code': '/bin/false' }, log: (l) => log.push(l) });
+    { stateDir, bins: { 'claude-code': bin }, log: (l) => log.push(l) });
   const panes: PaneStub[] = [], brains: any[] = [];
   const enters: ((n: number, p: PaneStub) => void)[] = [], pastes: ((n: number, p: PaneStub) => void)[] = [];
   let entered = 0;
