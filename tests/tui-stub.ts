@@ -11,7 +11,16 @@ import { cleanText } from '../src/core/types.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const idle = readFileSync(join(here, 'fixtures', 'pane-idle.txt'), 'utf8');
 const HOOK = fileURLToPath(new URL('../scripts/tui-stop-hook.mjs', import.meta.url));
-const landed = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ [Pasted text #1 +2 lines]');
+/** What the input box shows for a paste of `text`, as claude 2.1.332 draws it (measured 2026-11-27): a
+ *  chip once it has 3 line breaks or more than 800 characters, with the breaks counted; else the text,
+ *  its next lines indented. */
+export function drawnPaste(text: string, n = 1): string {
+  const breaks = text.split('\n').length - 1;
+  if (breaks >= 3 || text.length > 800) return `[Pasted text #${n}${breaks ? ` +${breaks} lines` : ''}]`;
+  return text.split('\n').join('\n  ');
+}
+/** The idle screen with `inner` in its box. */
+export const idleWith = (inner: string): string => idle.replace(/❯\s+Try "refactor <filepath>"/, `❯ ${inner}`);
 /** The prompt with text left in the box (a paste a restart cut before its Enter): C-u clears it. */
 const draft = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ half of an old message');
 /** The same with a second line: one C-u clears the cursor's line only (the last), so two are needed. */
@@ -19,9 +28,12 @@ const draft2 = idle.replace(/❯\s+Try "refactor <filepath>"/, '❯ half of an o
 // A turn at work with its empty input box, measured on claude 2.1.332; the same with a paste in the box;
 // a permission dialog of the same version (it replaces the box).
 const busyBox = readFileSync(join(here, 'fixtures', 'pane-busy-box-332.txt'), 'utf8');
-const busyLanded = busyBox.replace(/^❯\s*$/m, '❯ [Pasted text #1 +2 lines]');
 const dialog = readFileSync(join(here, 'fixtures', 'pane-permission-332.txt'), 'utf8');
 const halfTyped = readFileSync(join(here, 'fixtures', 'pane-busy-halftyped-332.txt'), 'utf8');
+/** The resume dialog with the cursor on "Start a new conversation" and no Esc in its foot; and the box
+ *  with a prompt called back by Up (claude 2.1.332, measured: `─── History 2/2 ───`). */
+const resume = readFileSync(join(here, 'fixtures', 'pane-resume.txt'), 'utf8').replace('❯ 1. Resume', '  1. Resume').replace('  2. Start a new', '❯ 2. Start a new').replace('Esc to resume', 'Esc to cancel');
+const history = readFileSync(join(here, 'fixtures', 'pane-history-332.txt'), 'utf8');
 
 /** Rows shaped as the readers in src/brain take them from a session's transcript. Content made up. */
 export const ROW = {
@@ -95,8 +107,10 @@ export interface PaneStub {
   marked(): boolean;
   /** What the screen shows from now on: `idle` (the default), `busy` (a turn at work, its box empty),
    *  `dialog` (a permission dialog), `half` (a turn at work, someone's text in the box). A paste into
-   *  `busy` shows in the box; its Enter queues it (Claude Code's own queue) and the box is empty again. */
-  show(screen: 'idle' | 'busy' | 'dialog' | 'half' | 'draft' | 'draft2'): void;
+   *  `busy` shows in the box; its Enter queues it (Claude Code's own queue) and the box is empty again.
+   *  `resume`: the resume dialog, which closes by itself right before an Up, so the Up calls an old
+   *  prompt back into the box (`history`); Ctrl-K Ctrl-U clears it. */
+  show(screen: 'idle' | 'busy' | 'dialog' | 'half' | 'draft' | 'draft2' | 'resume' | 'history'): void;
   /** Messages Enter queued into a running turn, as typed. */
   queued: string[];
   /** Whether Angelia's absorb lock was there at each Enter that queued a message into a turn. */
@@ -153,7 +167,7 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
     marked: () => { try { readFileSync(join(b.dir, 'turn.json')); return true; } catch { return false; } },
     typed: '',
     prompt: (at) => ROW.prompt(stub.typed, at),
-    show: (screen) => { shown = { idle, busy: busyBox, dialog, half: halfTyped, draft, draft2 }[screen]; },
+    show: (screen) => { shown = { idle, busy: busyBox, dialog, half: halfTyped, draft, draft2, resume, history }[screen]; },
     queued: [],
     buffers: [],
     lockedAtEnter: [],
@@ -164,6 +178,8 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
     loseTake: () => { lost = true; },
     slowRow: (ms) => { rowMs = ms; },
   };
+  // The screens with the last paste in the box, idle and busy: drawn for the text loaded.
+  let landed = idleWith(drawnPaste('x')), busyLanded = busyBox.replace(/^❯\s*$/m, `❯ ${drawnPaste('x')}`);
   let buffer = '', dead = false, takeMs = 0, taking = false, lost = false, rowMs = 0, launchFails = false;
   const paste = b.paste.bind(b);
   b.paste = (text: string, ...rest: unknown[]) => { stub.typed = cleanText(text); return paste(text, ...rest); };
@@ -172,11 +188,15 @@ export function stubPane(brain: unknown, cwd: string, keep = false): PaneStub {
   b.capture = async () => shown;
   b.sessionAlive = async () => !dead;
   b.tm = async (a: string[]) => {
-    if (a[0] === 'load-buffer') { buffer = readFileSync(a[a.length - 1], 'utf8'); stub.buffers.push(buffer); }
+    if (a[0] === 'load-buffer') {
+      buffer = readFileSync(a[a.length - 1], 'utf8'); stub.buffers.push(buffer);
+      landed = idleWith(drawnPaste(buffer)); busyLanded = busyBox.replace(/^❯\s*$/m, `❯ ${drawnPaste(buffer)}`);
+    }
     else if (a[0] === 'paste-buffer' && shown === busyBox) shown = busyLanded;
-    else if (a[0] === 'send-keys' && a.includes('C-u') && shown === draft) shown = idle;
+    else if (a[0] === 'send-keys' && a.includes('C-u') && (shown === draft || shown === history)) shown = idle;
+    else if (a[0] === 'send-keys' && a.includes('Up') && shown === resume) shown = history;
     else if (a[0] === 'send-keys' && a.includes('C-u') && shown === draft2) shown = draft;
-    else if (a[0] === 'paste-buffer' && shown === draft) shown = landed.replace('❯ [Pasted', '❯ half of an old message[Pasted');
+    else if (a[0] === 'paste-buffer' && shown === draft) shown = idleWith(`half of an old message${drawnPaste(buffer)}`);
     else if (a[0] === 'paste-buffer') { for (const fn of pastes) fn(stub.enters + 1); shown = landed; }
     else if (a[0] === 'send-keys' && a.includes('Enter') && shown === busyLanded) {
       stub.lockedAtEnter.push(existsSync(join(b.dir, 'absorb.lock')));

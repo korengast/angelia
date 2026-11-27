@@ -84,7 +84,7 @@ function rig(t: { after(fn: () => unknown): void }, opts: Record<string, unknown
   writeFileSync(b.transcript, jsonl([ROW.prompt('an earlier message', Date.now() - 60_000), ROW.text('An earlier answer.'), ROW.over()]));
   const ed = new Editor();
   const logs: string[] = [], stored: string[] = [], keysSent: string[] = [];
-  let buffer = '', enters = 0;
+  let buffer = '', enters = 0, pastes = 0;
   const stop = (text: string) => execFileSync(process.execPath, [HOOK], {
     input: JSON.stringify({ hook_event_name: 'Stop', transcript_path: b.transcript, session_id: b.session.id, last_assistant_message: text }),
     env: { ...process.env, ANGELIA_TUI_MARKER: join(b.dir, 'turn.json') },
@@ -95,6 +95,7 @@ function rig(t: { after(fn: () => unknown): void }, opts: Record<string, unknown
     /** What the session does at Enter, with the prompt as stored. */
     turn: (prompt: string) => { rows(ROW.prompt(prompt), ROW.text('The answer.')); stop('The answer.'); },
     get enters() { return enters; },
+    get pastes() { return pastes; },
     async say(text: string, flags?: { peer?: boolean }) {
       let result: any;
       for await (const e of brain.turn(text, flags)) if (e.kind === 'result') result = e;
@@ -108,7 +109,7 @@ function rig(t: { after(fn: () => unknown): void }, opts: Record<string, unknown
   b.sessionAlive = async () => true;
   b.tm = async (a: string[]) => {
     if (a[0] === 'load-buffer') buffer = readFileSync(a[a.length - 1], 'utf8');
-    else if (a[0] === 'paste-buffer') ed.insert(buffer);
+    else if (a[0] === 'paste-buffer') { pastes++; ed.insert(buffer); }
     else if (a[0] === 'send-keys') {
       for (const k of a.slice(3)) {
         keysSent.push(k);
@@ -155,20 +156,22 @@ describe('the input box held text before a paste: what Enter sends is the messag
     assert.match(p, new RegExp(`</pasted_content id="${ID}">\\n+half typed words$`), 'stored as 2.1.332 stored it live: the old line after the pasted block');
   });
 
-  test('a box that cannot be cleared: no Enter is pressed, and the message goes back to the chat', { timeout: 20_000 }, async (t) => {
+  test('a box that cannot be cleared: nothing is pasted into it, no Enter is pressed, and the message goes back to the chat', { timeout: 20_000 }, async (t) => {
     const s = rig(t);
     s.ed.insert('half typed words'); s.ed.key('C-a');
     s.ed.stuck = true;
-    // The paste still lands (tmux types it): only the keys do nothing.
+    // A paste would still land (tmux types it): only the keys do nothing.
     const insert = s.ed.insert.bind(s.ed);
     s.ed.insert = (x: string) => { s.ed.cur = 0; insert(x); };
     const r = await s.say(QUOTE_DOT);
     assert.equal(s.enters, 0, 'nothing was sent');
+    // Before 0.4.10 each of the three tries pasted once more: three unsent copies left in the box.
+    assert.equal(s.pastes, 0, 'never pasted over text the clear could not take');
+    assert.equal(s.ed.text, 'half typed words', 'the box as it was');
     assert.equal(r?.isError, true);
     assert.equal(r?.keep, true, 'the pane is kept');
     assert.ok(!s.keysSent.includes('Enter'), 'no Enter on a box that holds more than the message');
-    assert.ok(s.logs.some((l) => /the input box held text before a paste; it did not change/.test(l)), s.logs.join('\n'));
-    assert.ok(s.logs.some((l) => /the input box held other text with the pasted message \(attempt 1\)/.test(l)), s.logs.join('\n'));
+    assert.ok(s.logs.some((l) => /the input box held text before a paste; it did not change, nothing is pasted while it is there/.test(l)), s.logs.join('\n'));
   });
 });
 

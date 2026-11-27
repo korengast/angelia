@@ -1027,10 +1027,17 @@ export class TuiBrain extends EventEmitter implements Brain {
       }
       // Text already in the box would go with ours: a message half cleared by an earlier failure, a
       // paste a restart cut before its Enter, something typed in the app and not sent, a prompt called
-      // back from the history. Cleared from any cursor (clearBox), and what it was is said; what the
-      // clear could not reach keeps the paste from its Enter (boxHoldsOnly, below).
+      // back from the history. Cleared from any cursor (clearBox), and what it was is said. Nothing is
+      // pasted while text the clear could not reach is there: no Enter could follow (boxHoldsOnly), and
+      // each try left one more unsent copy in the box (review-keymiss, 0.4.8).
       const box = await this.clearBox();
-      if (box.held) this.emit('log', `tmux: the input box held text before a paste; ${box.left ? `${box.left === box.held ? 'it did not change' : 'not all of it went'}, the paste goes in only if the box then holds it alone` : 'cleared'}: ${box.held.length} chars pane=${this.name}`);
+      if (box.held) this.emit('log', `tmux: the input box held text before a paste; ${box.left ? `${box.left === box.held ? 'it did not change' : 'not all of it went'}, nothing is pasted while it is there (attempt ${attempt})` : 'cleared'}: ${box.held.length} chars pane=${this.name}`);
+      if (box.left) {
+        if (gen !== this.gen) return { ok: false, why: 'released', keep: true };
+        if (attempt >= PASTE_TRIES || Date.now() > deadline) return { ok: false, why: 'the input box holds text that could not be cleared', keep: true };
+        await sleep(POLL_MS);
+        continue;
+      }
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       if ((await loadBuffer(this.name, text, this.dir, (a) => this.tm(a))).code !== 0) {
         this.emit('log', `tmux: the message could not be loaded into a paste buffer pane=${this.name}`);

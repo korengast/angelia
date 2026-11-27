@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
+import { drawnPaste, idleWith } from './tui-stub.js';
 import { isLimitText } from '../src/core/deliver/text.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -28,11 +29,11 @@ async function turnWith(rows: string[], said: string | null) {
   // Its own transcript in the temp folder, never under the real ~/.claude.
   b.transcript = join(cwd, 'transcript.jsonl');
   writeFileSync(b.transcript, '');
-  let entered = false;
-  const landed = frame('idle').replace(/❯\s+Try "refactor <filepath>"/, '❯ [Pasted text #1 +2 lines]');
-  b.capture = async () => (entered ? frame('idle') : landed);
+  let entered = false, landed = '';
+  b.capture = async () => (entered || !landed ? frame('idle') : landed);
   b.sessionAlive = async () => true;
   b.tm = async (a: string[]) => {
+    if (a[0] === 'load-buffer') landed = idleWith(drawnPaste(readFileSync(a[a.length - 1], 'utf8')));
     if (a[0] === 'send-keys' && a.includes('Enter') && !entered) {
       entered = true;
       appendFileSync(b.transcript, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);

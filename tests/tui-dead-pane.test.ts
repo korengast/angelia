@@ -45,3 +45,16 @@ test('the same, and that launch fails: the turn fails as before, after one try',
   assert.ok(!c.sent.includes('Answer 2.'));
   assert.ok(c.sent.some((s) => s.startsWith(FAILURE_LINE.slice(0, 20))), `the chat got: ${JSON.stringify(c.sent)}`);
 });
+
+test('an Up meant for the resume dialog that reached the box after the dialog closed: the old prompt is cleared, and only the message is sent', { timeout: 30_000 }, async (t) => {
+  const c = await stubChat({ promptTimeoutMs: 8000 } as never); t.after(() => c.o.shutdown());
+  c.onEnter((n, p) => { p.rows(p.prompt(), ROW.text(`Answer ${n}.`)); p.stop(`Answer ${n}.`); });
+  await c.say('one');
+  const p = c.pane();
+  p.show('resume');
+  await c.say('two');
+  assert.ok(c.sent.includes('Answer 2.'), `the chat got: ${JSON.stringify(c.sent)}`);
+  assert.match(p.typed, /\ntwo$/);
+  assert.ok(!p.typed.includes('beta'), 'the called-back prompt is not sent with it');
+  assert.ok(p.logs.some((l) => /the input box held text before a paste; cleared: 29 chars/.test(l)), 'the called-back prompt was cleared before the paste');
+});

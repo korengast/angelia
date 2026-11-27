@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Config } from '../src/instance/config/schema.js';
 import { parseCommand } from '../src/core/commands.js';
 import { tmp } from './tmp.js';
+import { drawnPaste, idleWith } from './tui-stub.js';
 // @ts-expect-error: a plain script, no types
 import { requestOrigin, turnOrigin } from '../scripts/turn-origin.mjs';
 
@@ -129,7 +130,7 @@ async function rigWith(t: { after(fn: () => unknown): void }, fault: Fault = {})
   };
   b.ensure = async () => { b.up = !fault.start; return fault.start ?? null; };
   b.sessionAlive = async () => alive;
-  b.capture = async () => (!alive ? '' : screen === 'pasted' ? frame('idle').replace(/❯\s+Try "refactor <filepath>"/, '❯ [Pasted text #1 +1 lines]') : frame(screen === 'dialog' ? 'model-dialog' : screen));
+  b.capture = async () => (!alive ? '' : screen === 'pasted' ? idleWith(drawnPaste(pasted)) : frame(screen === 'dialog' ? 'model-dialog' : screen));
   b.tm = async (a: string[]) => {
     if (a[0] === 'load-buffer') pasted = readFileSync(a[3], 'utf8');
     else if (a[0] === 'paste-buffer') screen = 'pasted';
