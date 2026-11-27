@@ -692,6 +692,8 @@ export class TuiBrain extends EventEmitter implements Brain {
   private absorbing: Promise<unknown> = Promise.resolve();
   /** The last capture's tmux call timed out (TmuxResult.timedOut): an empty screen that is no answer. */
   private captureTimedOut = false;
+  /** The pane's height at the last capture (its chips: chipFits); unknown before the first. */
+  private paneRows: number | undefined;
   /** The daemon stops (stopAbsorbing): no message is typed into the turn from now on. */
   private closing = false;
   /** A message typed into the turn is between its Enter and the end of its absorb (taken or not). */
@@ -1016,10 +1018,14 @@ export class TuiBrain extends EventEmitter implements Brain {
   }
 
   private async capture(lines = 30): Promise<string> {
-    const r = await this.tm(['capture-pane', '-p', '-t', exact(this.name), '-S', `-${lines}`]);
+    // The pane's height in the same call: its last line of output.
+    const r = await this.tm(['capture-pane', '-p', '-t', exact(this.name), '-S', `-${lines}`, ';', 'display-message', '-p', '-t', exact(this.name), '#{pane_height}']);
     // A call killed at its time limit says nothing of the pane: the next poll reads it again.
     this.captureTimedOut = r.timedOut === true;
-    return r.code === 0 ? r.out : '';
+    if (r.code !== 0) return '';
+    const m = /(?:^|\n)(\d+)\n?$/.exec(r.out);
+    this.paneRows = m ? Number(m[1]) : undefined;
+    return m ? r.out.slice(0, m.index + (m[0].startsWith('\n') ? 1 : 0)) : r.out;
   }
 
   /** Type one message into the pane: wait for a prompt, paste (newlines stay inside one message),
@@ -1084,16 +1090,16 @@ export class TuiBrain extends EventEmitter implements Brain {
       while (Date.now() < landBy) {
         await sleep(300);
         const now = await this.capture(20);
-        if (!pasteLanded(now, text)) continue;
+        if (!pasteLanded(now, text, this.paneRows)) continue;
         // Enter sends all of the box: with anything else in it (text the clear did not reach, a second
         // chip) the prompt is not the message, and its turn would be keyed as none Angelia typed. Looked
         // at again until the landing time is up (a redraw half done), then cleared and pasted again.
-        if (!boxHoldsOnly(now, text)) { why = 'the input box held other text with the pasted message'; continue; }
+        if (!boxHoldsOnly(now, text, this.paneRows)) { why = 'the input box held other text with the pasted message'; continue; }
         // A turn started in the app between the idle check and now: Claude would queue our text
         // after it, and its answer would look like ours. Clear the box and say no.
         if (gen !== this.gen || paneBusy(now)) { why = 'the pane became busy before Enter'; break; }
         submit();
-        if (await submitPasted(text, () => this.capture(20), () => this.tm(['send-keys', '-t', exact(this.name), 'Enter']))) return { ok: true };
+        if (await submitPasted(text, () => this.capture(20), () => this.tm(['send-keys', '-t', exact(this.name), 'Enter']), { rows: () => this.paneRows })) return { ok: true };
         // Enter was pressed: Claude may yet take it, and a second paste would send it twice.
         why = 'the pasted message was not taken after three Enters';
         again = false;
@@ -1370,7 +1376,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       }
       stalls = 0;
       if (!pane) return false;
-      if (!pasteLanded(pane, text)) {
+      if (!pasteLanded(pane, text, this.paneRows)) {
         // An Enter was pressed, and now the box is on screen without the text: taken, late (a redraw a
         // second or more after the key). Never pressed again: it would go twice.
         if (presses > 0 && paneHasBox(pane) && !permissionDialog(pane)) { if (await confirm()) return took(); break; }
@@ -1387,7 +1393,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       try { writeFileSync(lock, String(Date.now()), { mode: 0o600 }); lockedAt = Date.now(); } catch { break; }
       let taken = false, emptied = false;
       try {
-        if (blocked() || this.pretoolBusy(sentAt) || !paneMidTurn(await this.capture(30), text)) continue;
+        if (blocked() || this.pretoolBusy(sentAt) || !paneMidTurn(await this.capture(30), text, this.paneRows)) continue;
         // The checks took long (a loaded machine): the hook may already read the lock as left over
         // (LOCK_STALE_MS), so it holds nothing now. Start again.
         if (Date.now() - lockedAt > (this.opts.lockFreshMs ?? LOCK_FRESH_MS)) continue;
@@ -1408,7 +1414,7 @@ export class TuiBrain extends EventEmitter implements Brain {
           if (!now) return false;
           // Gone from the box, and the box is there: Claude Code took it (it shows above, as queued), if
           // the transcript says so too (confirm). The lock stands meanwhile.
-          emptied = paneHasBox(now) && !pasteLanded(now, text);
+          emptied = paneHasBox(now) && !pasteLanded(now, text, this.paneRows);
         }
         if (emptied) taken = await confirm();
       } finally {
@@ -1490,7 +1496,7 @@ export class TuiBrain extends EventEmitter implements Brain {
       const pane = await this.capture(30);
       if (!pane) return false;
       if (paneHasBox(pane) && !permissionDialog(pane)) {
-        if (!pasteLanded(pane, text)) return true;
+        if (!pasteLanded(pane, text, this.paneRows)) return true;
         await this.clearBox();
         return false;
       }
