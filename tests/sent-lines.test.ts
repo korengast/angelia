@@ -372,6 +372,7 @@ test('the old app-notes.json takes the new name at start, 0600; with both there 
   adoptOldNotes(dir);
   assert.ok(!existsSync(old));
   assert.deepEqual(new ChatNotes(path).sentOf('telegram:1').map((n) => n.text), ['older line', 'unseen line']);
+  assert.deepEqual(new ChatNotes(path).unseen('telegram:1').notes.map((n) => n.text), ['unseen line'], 'a joined old line is seen; the new file\'s keep their state');
   const target = join(dir, 'target.json');
   writeFileSync(target, '{"version":1,"chats":{}}', { mode: 0o644 });
   chmodSync(target, 0o644);
