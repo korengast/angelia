@@ -1,9 +1,9 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { KEY_MISS_LINE, NOT_RUN_LINE, promptKey } from '../src/brain/tui.js';
+import { KEY_MISS_LINE, NOT_RUN_LINE, promptKey, TAKEN_LATE_LINE } from '../src/brain/tui.js';
 import { ROW, stubChat, until, wait } from './tui-stub.js';
 
 // 0.4.10: the rare timing cases where an answer was lost or a message typed twice in tmux mode. Each
@@ -105,5 +105,25 @@ describe('0.4.10 lost or doubled answers', { concurrency: true, timeout: 180_000
     await until(() => c.sent.length >= 2, 3000).catch(() => {});
     // Once each: the pressed one's words are not also a progress line of this turn (midturn final2).
     assert.deepEqual(c.sent, ['The pressed one.', 'Own answer.'], p.logs.join('\n'));
+  });
+  test('review-lows-046: a message Claude Code ran and the chat got the answer of is not typed again after a new conversation', { timeout: 30_000 }, async (t) => {
+    const c = await stubChat(); t.after(() => c.o.shutdown());
+    c.onEnter((n, p) => { p.rows(p.prompt(), ROW.text(`Answer ${n}.`)); p.stop(`Answer ${n}.`); p.rows(ROW.over()); });
+    await c.say('one');
+    const b = c.brain(), p = c.pane();
+    // A message pressed into a turn, never seen taken; Claude Code ran it by itself and the chat got its
+    // answer (followerOf marks it answered).
+    const text = 'a message pressed into the turn before';
+    b.unsure.set('m-1', { key: promptKey(text), text, transcript: b.transcript, offset: 0, at: Date.now() - 5000, turn: 1, answered: true });
+    // A turn's marker then names a new conversation (another session id): the old file's offsets go.
+    const other = join(c.cwd, '00000000-0000-4000-8000-000000000abc.jsonl');
+    writeFileSync(other, '');
+    p.mark({ text: 'x', transcript_path: other });
+    b.takeMarker(Date.now() - 1000);
+    // Its own turn comes: not typed again (it ran, and was answered).
+    const out: { kind: string; text?: string }[] = [];
+    for await (const e of b.turn(text, { msg: 'm-1' })) out.push(e);
+    assert.equal(p.enters, 1, 'not typed a second time');
+    assert.equal(out.at(-1)?.text, TAKEN_LATE_LINE);
   });
 });

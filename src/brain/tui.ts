@@ -1114,7 +1114,9 @@ export class TuiBrain extends EventEmitter implements Brain {
     // Typed into the turn before and not seen taken then: Claude Code may have taken it since.
     const id = o.msg ?? promptKey(cleanText(text)), u = this.unsure.get(id);
     this.unsure.delete(id);
-    if (u && u.transcript === this.transcript && this.queuedSince(u.offset, u.key)) {
+    // Answered already: a turn Claude Code ran for it gave the chat its answer (followerOf), in this
+    // transcript or one before a new conversation.
+    if (u && (u.answered || (u.transcript === this.transcript && this.queuedSince(u.offset, u.key)))) {
       this.emit('log', `tmux: a message typed into the last turn was taken late; it is not typed again${u.answered ? ' (its answer went to the chat already)' : ''} pane=${this.name}`);
       // A turn Claude Code still runs for it by itself is the chat's (followerOf), from its Enter on.
       if (!u.answered) this.absorbed.push({ key: u.key, text: u.text, at: u.at, turn: 0, seen: false, offset: u.offset });
@@ -2058,7 +2060,8 @@ export class TuiBrain extends EventEmitter implements Brain {
       if (id && id !== this.session.id) this.backendSessionId = id; // the CLI forked the session
       // Another conversation: the names of the old one's teammates tie nothing in it, and an Enter's
       // offset in the old file says nothing of the new one.
-      if (id !== sessionOf(was)) { this.forgetTeammates(); this.unsure.clear(); }
+      // One answered already stays (review-lows-046): its own turn must not type it a second time.
+      if (id !== sessionOf(was)) { this.forgetTeammates(); for (const [k, u] of this.unsure) if (!u.answered) this.unsure.delete(k); }
     }
     return String(row.text ?? '');
   }
